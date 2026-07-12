@@ -1285,6 +1285,10 @@
     @apply text-muted mb-0 h-9 w-9 flex-shrink-0 opacity-40 hover:opacity-100;
   }
 
+  .page-dialog__draft {
+    @apply text-interface-text flex items-center gap-2 text-sm;
+  }
+
   .dialog__path {
     @apply text-muted font-mono text-xs;
   }

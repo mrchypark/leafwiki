@@ -3,6 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
 )
 
@@ -31,6 +32,23 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 		}
 
 	case PageOperationUpdate:
+		if event.DraftChanged {
+			// Draft saves never enter public history. When a draft becomes public,
+			// capture each newly visible page exactly once as its published baseline.
+			seen := make(map[string]struct{}, len(event.AffectedPages)+1)
+			pages := append(event.AffectedPages, event.After)
+			for _, page := range pages {
+				if page == nil || pagevisibility.IsInDraftSubtree(page.PageNode) {
+					continue
+				}
+				if _, ok := seen[page.ID]; ok {
+					continue
+				}
+				seen[page.ID] = struct{}{}
+				e.recordPublishedBaseline(page.ID, event.UserID, event.Summary)
+			}
+			return
+		}
 		if event.SlugChanged {
 			for _, p := range event.AffectedPages {
 				if event.ContentChanged && p.ID == event.After.ID {
@@ -64,6 +82,12 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 func (e *RevisionSideEffect) recordContent(pageID, userID, summary string) {
 	if _, _, err := e.svc.RecordContentUpdate(pageID, userID, summary); err != nil {
 		e.log.Warn("failed to record content revision", "pageID", pageID, "error", err)
+	}
+}
+
+func (e *RevisionSideEffect) recordPublishedBaseline(pageID, userID, summary string) {
+	if _, err := e.svc.RecordPublishedBaseline(pageID, userID, summary); err != nil {
+		e.log.Warn("failed to record published baseline", "pageID", pageID, "error", err)
 	}
 }
 

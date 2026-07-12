@@ -162,6 +162,18 @@ func (s *Service) RecordContentUpdates(pages []*tree.Page, authorID, summary str
 // This method hashes the current assets and only writes a new revision when
 // content or the asset manifest actually changed.
 func (s *Service) RecordAssetChange(pageID, authorID, summary string) (*Revision, bool, error) {
+	return s.recordFullSnapshot(pageID, authorID, summary, RevisionTypeAssetUpdate, false)
+}
+
+// RecordPublishedBaseline always appends a full snapshot for content that has
+// just become public. Unlike regular content updates it never deduplicates or
+// coalesces with history from before the draft period.
+func (s *Service) RecordPublishedBaseline(pageID, authorID, summary string) (*Revision, error) {
+	rev, _, err := s.recordFullSnapshot(pageID, authorID, summary, RevisionTypeContentUpdate, true)
+	return rev, err
+}
+
+func (s *Service) recordFullSnapshot(pageID, authorID, summary string, revisionType RevisionType, force bool) (*Revision, bool, error) {
 	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
 		return nil, false, err
 	}
@@ -179,7 +191,7 @@ func (s *Service) RecordAssetChange(pageID, authorID, summary string) (*Revision
 		return nil, false, err
 	}
 
-	if prev != nil &&
+	if !force && prev != nil &&
 		prev.ContentHash == state.ContentHash &&
 		prev.AssetManifestHash == state.AssetManifestHash {
 		return prev, false, nil
@@ -205,7 +217,7 @@ func (s *Service) RecordAssetChange(pageID, authorID, summary string) (*Revision
 		return nil, false, fmt.Errorf(errAssetManifestHashMismatch, state.AssetManifestHash, savedManifestHash)
 	}
 
-	rev, err := s.newRevision(RevisionTypeAssetUpdate, state, authorID, summary, savedManifestHash)
+	rev, err := s.newRevision(revisionType, state, authorID, summary, savedManifestHash)
 	if err != nil {
 		return nil, false, err
 	}

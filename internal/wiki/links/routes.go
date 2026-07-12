@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
 	"github.com/perber/wiki/internal/http/middleware/security"
@@ -64,6 +65,12 @@ func (r *Routes) handleGetLinkStatus(c *gin.Context) {
 	if err != nil {
 		respondWithLinkError(c, err)
 		return
+	}
+	if r.getLinkStatus != nil && r.getLinkStatus.tree != nil {
+		if node, findErr := r.getLinkStatus.tree.FindPageByID(pageID); findErr == nil && pagevisibility.IsInDraftSubtree(node) {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
+		}
 	}
 	c.JSON(http.StatusOK, out.Status)
 }

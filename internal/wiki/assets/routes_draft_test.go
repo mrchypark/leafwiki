@@ -10,7 +10,7 @@ import (
 	"github.com/perber/wiki/internal/core/tree"
 )
 
-func TestRequireStaticAssetVisibility_HidesDraftAssetsFromOtherUsers(t *testing.T) {
+func TestRequireStaticAssetVisibility_AllowsDraftAssetsOnlyForEditorsAndAdmins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	treeService := tree.NewTreeService(t.TempDir())
 	if err := treeService.LoadTree(); err != nil {
@@ -29,14 +29,16 @@ func TestRequireStaticAssetVisibility_HidesDraftAssetsFromOtherUsers(t *testing.
 
 	routes := &Routes{tree: treeService}
 	for _, tc := range []struct {
-		name   string
-		user   *auth.User
-		status int
+		name         string
+		user         *auth.User
+		authDisabled bool
+		status       int
 	}{
-		{name: "owner", user: &auth.User{ID: "owner"}, status: http.StatusNoContent},
+		{name: "editor", user: &auth.User{ID: "other", Role: auth.RoleEditor}, status: http.StatusNoContent},
 		{name: "admin", user: &auth.User{ID: "admin", Role: auth.RoleAdmin}, status: http.StatusNoContent},
+		{name: "creator viewer", user: &auth.User{ID: "owner", Role: auth.RoleViewer}, status: http.StatusNotFound},
 		{name: "anonymous", status: http.StatusNotFound},
-		{name: "other", user: &auth.User{ID: "other", Role: auth.RoleEditor}, status: http.StatusNotFound},
+		{name: "auth disabled editor", user: &auth.User{ID: "other", Role: auth.RoleEditor}, authDisabled: true, status: http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := gin.New()
@@ -44,7 +46,7 @@ func TestRequireStaticAssetVisibility_HidesDraftAssetsFromOtherUsers(t *testing.
 				if tc.user != nil {
 					c.Set("user", tc.user)
 				}
-			}, routes.requireStaticAssetVisibility(false), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			}, routes.requireStaticAssetVisibility(tc.authDisabled), func(c *gin.Context) { c.Status(http.StatusNoContent) })
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/"+*id+"/secret.png", nil))
 			if recorder.Code != tc.status {
@@ -102,7 +104,7 @@ func TestRequireStaticAssetVisibility_DisablesCachingOnlyForDraftSubtrees(t *tes
 	}
 }
 
-func TestRequireDraftManagement_HidesDraftFromOtherEditors(t *testing.T) {
+func TestRequireDraftManagement_AllowsDraftOnlyForEditorsAndAdmins(t *testing.T) {
 	treeService := tree.NewTreeService(t.TempDir())
 	if err := treeService.LoadTree(); err != nil {
 		t.Fatalf("LoadTree: %v", err)
@@ -119,16 +121,35 @@ func TestRequireDraftManagement_HidesDraftFromOtherEditors(t *testing.T) {
 	node.Draft = true
 	routes := &Routes{tree: treeService}
 
-	router := gin.New()
-	router.GET("/pages/:id", func(c *gin.Context) { c.Set("user", &auth.User{ID: "other", Role: auth.RoleEditor}) }, routes.requireDraftManagement(false), func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/pages/"+*id, nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	for _, tc := range []struct {
+		name         string
+		user         *auth.User
+		authDisabled bool
+		status       int
+	}{
+		{name: "editor", user: &auth.User{ID: "other", Role: auth.RoleEditor}, status: http.StatusNoContent},
+		{name: "admin", user: &auth.User{ID: "admin", Role: auth.RoleAdmin}, status: http.StatusNoContent},
+		{name: "creator viewer", user: &auth.User{ID: "owner", Role: auth.RoleViewer}, status: http.StatusNotFound},
+		{name: "anonymous", status: http.StatusNotFound},
+		{name: "auth disabled editor", user: &auth.User{ID: "other", Role: auth.RoleEditor}, authDisabled: true, status: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.GET("/pages/:id", func(c *gin.Context) {
+				if tc.user != nil {
+					c.Set("user", tc.user)
+				}
+			}, routes.requireDraftManagement(tc.authDisabled), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/pages/"+*id, nil))
+			if recorder.Code != tc.status {
+				t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
+			}
+		})
 	}
 }
 
-func TestRequireDraftManagement_HidesNonDraftDescendantFromOtherEditors(t *testing.T) {
+func TestRequireDraftManagement_NonDraftDescendantInheritsDraftAncestorVisibility(t *testing.T) {
 	treeService := tree.NewTreeService(t.TempDir())
 	if err := treeService.LoadTree(); err != nil {
 		t.Fatalf("LoadTree: %v", err)
@@ -149,11 +170,24 @@ func TestRequireDraftManagement_HidesNonDraftDescendantFromOtherEditors(t *testi
 		t.Fatalf("CreateNode child: %v", err)
 	}
 	routes := &Routes{tree: treeService}
-	router := gin.New()
-	router.GET("/pages/:id", func(c *gin.Context) { c.Set("user", &auth.User{ID: "other", Role: auth.RoleEditor}) }, routes.requireDraftManagement(false), func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/pages/"+*childID, nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	for _, tc := range []struct {
+		name         string
+		user         *auth.User
+		authDisabled bool
+		status       int
+	}{
+		{name: "editor", user: &auth.User{ID: "other", Role: auth.RoleEditor}, status: http.StatusNoContent},
+		{name: "creator viewer", user: &auth.User{ID: "owner", Role: auth.RoleViewer}, status: http.StatusNotFound},
+		{name: "auth disabled", user: &auth.User{Role: auth.RoleEditor}, authDisabled: true, status: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.GET("/pages/:id", func(c *gin.Context) { c.Set("user", tc.user) }, routes.requireDraftManagement(tc.authDisabled), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/pages/"+*childID, nil))
+			if recorder.Code != tc.status {
+				t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
+			}
+		})
 	}
 }

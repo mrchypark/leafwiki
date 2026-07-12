@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -17,6 +18,7 @@ type EnsurePathInput struct {
 	TargetPath  string
 	TargetTitle string
 	Kind        *tree.NodeKind
+	Draft       bool
 }
 
 // EnsurePathOutput is the output of EnsurePathUseCase.
@@ -70,6 +72,10 @@ func (uc *EnsurePathUseCase) Execute(_ context.Context, in EnsurePathInput) (*En
 		if err != nil {
 			return nil, err
 		}
+		if in.Draft && !pagevisibility.IsInDraftSubtree(page.PageNode) {
+			ve.Add("draft", "Draft cannot be applied to an existing published page")
+			return nil, ve
+		}
 		return &EnsurePathOutput{Page: page}, nil
 	}
 
@@ -84,9 +90,13 @@ func (uc *EnsurePathUseCase) Execute(_ context.Context, in EnsurePathInput) (*En
 		return nil, ve
 	}
 
-	result, err := uc.tree.EnsurePagePath(in.UserID, cleanPath, cleanTitle, in.Kind)
+	result, err := uc.tree.EnsurePagePathWithDraft(in.UserID, cleanPath, cleanTitle, in.Kind, in.Draft)
 	if err != nil {
 		return nil, err
+	}
+	if in.Draft && !pagevisibility.IsInDraftSubtree(result.Page) {
+		ve.Add("draft", "Draft cannot be applied to an existing published page")
+		return nil, ve
 	}
 
 	ids := make([]string, 0, len(result.Created)+1)

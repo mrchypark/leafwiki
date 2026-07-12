@@ -115,6 +115,30 @@ func TestCreatePageUseCase_HappyPath_Root(t *testing.T) {
 	}
 }
 
+func TestCreatePageUseCase_PersistsDraftBeforePostSaveEffects(t *testing.T) {
+	deps := newTestDeps(t)
+	effect := &captureEffect{}
+	uc := pages.NewCreatePageUseCase(
+		deps.tree,
+		deps.slug,
+		pagesave.NewPageSaveOrchestrator(effect),
+		slog.Default(),
+	)
+
+	out, err := uc.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Private Draft", Slug: "private-draft", Kind: pageKind(), Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("Create draft: %v", err)
+	}
+	if !out.Page.Draft || !strings.Contains(out.Page.RawContent, "\ndraft: true\n") {
+		t.Fatalf("draft was not persisted on initial create: draft=%v raw=%q", out.Page.Draft, out.Page.RawContent)
+	}
+	if len(effect.events) != 1 || effect.events[0].After == nil || !effect.events[0].After.Draft {
+		t.Fatalf("post-save effect observed a published page: %#v", effect.events)
+	}
+}
+
 func TestCreatePageUseCase_HappyPath_WithParent(t *testing.T) {
 	deps := newTestDeps(t)
 	uc := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
@@ -578,6 +602,35 @@ func TestEnsurePathUseCase_CreatesNewPath(t *testing.T) {
 	}
 }
 
+func TestEnsurePathUseCase_PersistsFinalPageAsDraftOnCreate(t *testing.T) {
+	deps := newTestDeps(t)
+	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+
+	out, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "notes/private", TargetTitle: "Private", Kind: pageKind(), Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("Ensure draft path: %v", err)
+	}
+	if !out.Page.Draft || !strings.Contains(out.Page.RawContent, "\ndraft: true\n") {
+		t.Fatalf("final page was not created as draft: draft=%v raw=%q", out.Page.Draft, out.Page.RawContent)
+	}
+	lookup, err := deps.tree.LookupPagePath("notes")
+	if err != nil {
+		t.Fatalf("Lookup intermediate section: %v", err)
+	}
+	if !lookup.Exists || len(lookup.Segments) != 1 || lookup.Segments[0].ID == nil {
+		t.Fatalf("intermediate section was not created: %#v", lookup)
+	}
+	parent, err := deps.tree.FindPageByID(*lookup.Segments[0].ID)
+	if err != nil {
+		t.Fatalf("Find intermediate section: %v", err)
+	}
+	if parent.Draft {
+		t.Fatal("intermediate section unexpectedly inherited the final page draft state")
+	}
+}
+
 func TestEnsurePathUseCase_ExistingPath_ReturnsExistingPage(t *testing.T) {
 	deps := newTestDeps(t)
 	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
@@ -597,6 +650,24 @@ func TestEnsurePathUseCase_ExistingPath_ReturnsExistingPage(t *testing.T) {
 	}
 	if out1.Page.ID != out2.Page.ID {
 		t.Errorf("expected same page ID, got %q vs %q", out1.Page.ID, out2.Page.ID)
+	}
+}
+
+func TestEnsurePathUseCase_RejectsDraftForExistingPublishedPage(t *testing.T) {
+	deps := newTestDeps(t)
+	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+
+	if _, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "published", TargetTitle: "Published", Kind: pageKind(),
+	}); err != nil {
+		t.Fatalf("create published page: %v", err)
+	}
+	_, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "published", TargetTitle: "Published", Kind: pageKind(), Draft: true,
+	})
+	var validationErr *sharederrors.ValidationErrors
+	if !errors.As(err, &validationErr) || len(validationErr.Errors) != 1 || validationErr.Errors[0].Field != "draft" {
+		t.Fatalf("error = %#v, want draft validation error", err)
 	}
 }
 
@@ -957,16 +1028,19 @@ func TestCopyPageUseCase_HappyPath(t *testing.T) {
 func TestCopyPageUseCase_PreservesDraftVisibility(t *testing.T) {
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
-	copyUC := pages.NewCopyPageUseCase(deps.tree, deps.slug, deps.orchestrator(), deps.assets, slog.Default())
+	effect := &captureEffect{}
+	copyUC := pages.NewCopyPageUseCase(
+		deps.tree,
+		deps.slug,
+		pagesave.NewPageSaveOrchestrator(effect),
+		deps.assets,
+		slog.Default(),
+	)
 	original, err := createUC.Execute(context.Background(), pages.CreatePageInput{
-		UserID: "owner", Title: "Draft", Slug: "draft", Kind: pageKind(),
+		UserID: "owner", Title: "Draft", Slug: "draft", Kind: pageKind(), Draft: true,
 	})
 	if err != nil {
 		t.Fatalf("create draft source: %v", err)
-	}
-	draft := true
-	if err := deps.tree.UpdateNodeWithDraft("owner", original.Page.ID, original.Page.Title, original.Page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
-		t.Fatalf("mark source draft: %v", err)
 	}
 
 	out, err := copyUC.Execute(context.Background(), pages.CopyPageInput{
@@ -977,6 +1051,9 @@ func TestCopyPageUseCase_PreservesDraftVisibility(t *testing.T) {
 	}
 	if !out.Page.Draft || out.Page.Metadata.CreatorID != "copier" {
 		t.Fatalf("copy visibility/owner = draft:%v creator:%q", out.Page.Draft, out.Page.Metadata.CreatorID)
+	}
+	if len(effect.events) != 1 || effect.events[0].After == nil || !effect.events[0].After.Draft {
+		t.Fatalf("copy create event observed a published page: %#v", effect.events)
 	}
 }
 

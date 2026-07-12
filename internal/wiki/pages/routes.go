@@ -288,6 +288,7 @@ func (r *Routes) handleCreate(c *gin.Context) {
 		Title    string  `json:"title" binding:"required"`
 		Slug     string  `json:"slug" binding:"required"`
 		Kind     *string `json:"kind"`
+		Draft    bool    `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -297,12 +298,16 @@ func (r *Routes) handleCreate(c *gin.Context) {
 	if user == nil {
 		return
 	}
+	if req.Draft && r.authDisabled {
+		respondWithDraftUnavailable(c)
+		return
+	}
 	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	kind := kindFromString(req.Kind)
 	out, err := r.createPage.Execute(c.Request.Context(), CreatePageInput{
-		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind,
+		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind, Draft: req.Draft,
 	})
 	if err != nil {
 		respondWithPageError(c, err)
@@ -340,7 +345,7 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		return
 	}
 	if req.Draft != nil && *req.Draft != node.Draft && !pagevisibility.CanManageDraft(node, user, r.authDisabled) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "draft can only be changed by its owner or an admin"})
+		respondWithDraftUnavailable(c)
 		return
 	}
 
@@ -496,6 +501,7 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 		Path  string  `json:"path" binding:"required"`
 		Title string  `json:"title" binding:"required"`
 		Kind  *string `json:"kind"`
+		Draft bool    `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -503,6 +509,10 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
+		return
+	}
+	if req.Draft && r.authDisabled {
+		respondWithDraftUnavailable(c)
 		return
 	}
 	lookup, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: req.Path})
@@ -522,7 +532,7 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 	}
 	kind := kindFromString(req.Kind)
 	out, err := r.ensurePath.Execute(c.Request.Context(), EnsurePathInput{
-		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind,
+		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind, Draft: req.Draft,
 	})
 	if err != nil {
 		respondWithPageError(c, err)

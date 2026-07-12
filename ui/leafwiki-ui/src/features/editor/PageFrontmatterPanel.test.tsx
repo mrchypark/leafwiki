@@ -1,21 +1,28 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useConfigStore } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PageFrontmatterPanel } from './PageFrontmatterPanel'
 
-vi.mock('@/stores/session', async () => {
-  const { create } = await import('zustand')
-  return { useSessionStore: create(() => ({ user: null })) }
+vi.hoisted(() => {
+  const values = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => [...values.keys()][index] ?? null,
+    removeItem: (key: string) => values.delete(key),
+    setItem: (key: string, value: string) => values.set(key, value),
+  } satisfies Storage)
 })
 
-function renderPanel(
-  creatorId = 'owner-id',
-  onDraftChange = vi.fn(),
-) {
+afterAll(() => vi.unstubAllGlobals())
+
+function renderPanel(onDraftChange = vi.fn()) {
   render(
     <PageFrontmatterPanel
-      creatorId={creatorId}
       draft={false}
       tags={[]}
       fields={[]}
@@ -51,7 +58,7 @@ describe('PageFrontmatterPanel', () => {
     expect(onDraftChange).toHaveBeenCalledWith(true)
   })
 
-  it('lets an admin change another users draft status', () => {
+  it('shows the draft control to an admin', () => {
     useSessionStore.setState({
       user: {
         id: 'admin-id',
@@ -68,8 +75,17 @@ describe('PageFrontmatterPanel', () => {
     expect(screen.getByRole('checkbox', { name: 'Draft' })).toBeInTheDocument()
   })
 
-  it('hides the draft control from an editor who does not own the page', () => {
-    renderPanel('another-user-id')
+  it('hides the draft control from a viewer', () => {
+    useSessionStore.setState({
+      user: {
+        id: 'viewer-id',
+        username: 'viewer',
+        email: 'viewer@example.com',
+        role: 'viewer',
+      },
+    })
+
+    renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: /Metadata/ }))
 

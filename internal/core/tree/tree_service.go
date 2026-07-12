@@ -196,13 +196,19 @@ type createNodeResult struct {
 
 type createNodeOptions struct {
 	existingID string
+	draft      bool
 }
 
 // Create Node adds a new node to the tree
 func (t *TreeService) CreateNode(userID string, parentID *string, title string, slug string, nodeKind *NodeKind) (*string, error) {
+	return t.CreateNodeWithDraft(userID, parentID, title, slug, nodeKind, false)
+}
+
+// CreateNodeWithDraft creates a node with its initial draft state persisted atomically.
+func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title string, slug string, nodeKind *NodeKind, draft bool) (*string, error) {
 	var result *string
 	err := t.withLockedTree(func() error {
-		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{})
+		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{draft: draft})
 		if err != nil {
 			return err
 		}
@@ -307,6 +313,7 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 		Kind:     k,
 		Position: len(parent.Children), // Set the position to the end of the list
 		Children: []*PageNode{},
+		Draft:    opts.draft,
 		Metadata: PageMetadata{
 			CreatedAt:    now,
 			UpdatedAt:    now,
@@ -1218,6 +1225,11 @@ func (t *TreeService) lookupPagePathLocked(p string) (*PathLookup, error) {
 // It creates any missing segments as needed
 // Returns the final page node and a list of created nodes
 func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string, kind *NodeKind) (*EnsurePathResult, error) {
+	return t.EnsurePagePathWithDraft(userID, p, targetTitle, kind, false)
+}
+
+// EnsurePagePathWithDraft ensures a path and persists the final node's initial draft state atomically.
+func (t *TreeService) EnsurePagePathWithDraft(userID string, p string, targetTitle string, kind *NodeKind, draft bool) (*EnsurePathResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -1262,7 +1274,9 @@ func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string
 			kindToUse = *kind
 		}
 
-		createdNode, err := t.createNodeLocked(userID, currentID, segTitle, segment.Slug, &kindToUse, createNodeOptions{})
+		createdNode, err := t.createNodeLocked(userID, currentID, segTitle, segment.Slug, &kindToUse, createNodeOptions{
+			draft: draft && i == len(lookup.Segments)-1,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("could not create segment %q: %w", segment.Slug, err)
 		}

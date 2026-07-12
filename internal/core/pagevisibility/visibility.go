@@ -6,22 +6,15 @@ import (
 )
 
 func CanView(node *tree.PageNode, user *auth.User, authDisabled bool) bool {
-	if node == nil {
-		return false
-	}
-	if authDisabled {
-		return true
-	}
-	for current := node; current != nil; current = current.Parent {
-		if current.Draft && (user == nil || user.ID != current.Metadata.CreatorID && !user.HasRole(auth.RoleAdmin)) {
-			return false
-		}
-	}
-	return true
+	return node != nil && (!IsInDraftSubtree(node) || canAccessDraft(user, authDisabled))
 }
 
 func CanManageDraft(node *tree.PageNode, user *auth.User, authDisabled bool) bool {
-	return node != nil && !authDisabled && user != nil && (user.ID == node.Metadata.CreatorID || user.HasRole(auth.RoleAdmin))
+	return node != nil && canAccessDraft(user, authDisabled)
+}
+
+func canAccessDraft(user *auth.User, authDisabled bool) bool {
+	return !authDisabled && user != nil && (user.HasRole(auth.RoleEditor) || user.HasRole(auth.RoleAdmin))
 }
 
 // CanViewSubtree reports whether every node in the subtree is visible.

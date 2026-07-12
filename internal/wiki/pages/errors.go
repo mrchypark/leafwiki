@@ -29,6 +29,7 @@ const (
 	ErrCodePageInvalidRequest    = "page_invalid_request"
 	ErrCodePageInvalidPayload    = "page_invalid_payload"
 	ErrCodePageInvalidTargetKind = "page_invalid_target_kind"
+	ErrCodePageDraftUnavailable  = "page_draft_unavailable"
 )
 
 func newPageRootOperationError(operation string) *sharederrors.LocalizedError {
@@ -62,6 +63,16 @@ func respondWithPageStatusError(c *gin.Context, status int, code, message, templ
 			Args:     append([]string(nil), args...),
 		},
 	})
+}
+
+func respondWithDraftUnavailable(c *gin.Context) {
+	respondWithPageStatusError(
+		c,
+		http.StatusForbidden,
+		ErrCodePageDraftUnavailable,
+		"Drafts are unavailable when authentication is disabled",
+		"drafts are unavailable when authentication is disabled",
+	)
 }
 
 // respondWithPageError is the central error handler for all page endpoints.
@@ -121,6 +132,8 @@ func pageErrorStatus(code string) int {
 		return http.StatusBadRequest
 	case ErrCodePageVersionConflict:
 		return http.StatusConflict
+	case ErrCodePageDraftUnavailable:
+		return http.StatusForbidden
 	default:
 		return http.StatusInternalServerError
 	}

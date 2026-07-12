@@ -19,7 +19,6 @@ import { EditorFrontmatterField } from './frontmatter'
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
-  creatorId?: string
   draft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
@@ -51,7 +50,6 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
-  creatorId,
   draft,
   tags,
   fields,
@@ -63,11 +61,9 @@ export function PageFrontmatterPanel({
 }: PageFrontmatterPanelProps) {
   const { t } = useTranslation('editor')
   const authDisabled = useConfigStore((state) => state.authDisabled)
-  const userId = useSessionStore((state) => state.user?.id)
   const userRole = useSessionStore((state) => state.user?.role)
   const draftEnabled =
-    !authDisabled &&
-    (userRole === 'admin' || Boolean(userId && userId === creatorId))
+    !authDisabled && (userRole === 'admin' || userRole === 'editor')
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {

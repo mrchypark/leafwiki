@@ -7,41 +7,58 @@ import (
 	"github.com/perber/wiki/internal/core/tree"
 )
 
-func TestCanView_DraftIsLimitedToOwnerOrAdmin(t *testing.T) {
+func TestCanView_DraftIsVisibleOnlyToEditorsAndAdmins(t *testing.T) {
 	node := &tree.PageNode{Draft: true, Metadata: tree.PageMetadata{CreatorID: "owner"}}
-	if CanView(node, nil, false) {
-		t.Fatal("anonymous user can view draft")
+	tests := []struct {
+		name string
+		user *auth.User
+		want bool
+	}{
+		{name: "anonymous"},
+		{name: "viewer who created the page", user: &auth.User{ID: "owner", Role: auth.RoleViewer}},
+		{name: "editor who did not create the page", user: &auth.User{ID: "other", Role: auth.RoleEditor}, want: true},
+		{name: "admin", user: &auth.User{ID: "admin", Role: auth.RoleAdmin}, want: true},
 	}
-	if CanView(node, &auth.User{ID: "other", Role: auth.RoleEditor}, false) {
-		t.Fatal("other editor can view draft")
-	}
-	if !CanView(node, &auth.User{ID: "owner", Role: auth.RoleViewer}, false) {
-		t.Fatal("owner cannot view draft")
-	}
-	if !CanView(node, &auth.User{ID: "admin", Role: auth.RoleAdmin}, false) {
-		t.Fatal("admin cannot view draft")
-	}
-	if !CanView(node, nil, true) {
-		t.Fatal("auth-disabled mode changed existing visibility semantics")
-	}
-}
-
-func TestCanManageDraft_AuthDisabledRejectsToggling(t *testing.T) {
-	node := &tree.PageNode{Metadata: tree.PageMetadata{CreatorID: "public-editor"}}
-	user := &auth.User{ID: "public-editor", Role: auth.RoleEditor}
-	if CanManageDraft(node, user, true) {
-		t.Fatal("auth-disabled mode permits toggling draft")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanView(node, tt.user, false); got != tt.want {
+				t.Fatalf("CanView() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestCanView_NonDraftDescendantRequiresAccessToDraftAncestor(t *testing.T) {
+func TestCanManageDraft_OnlyEditorsAndAdminsCanChangeDraftState(t *testing.T) {
+	node := &tree.PageNode{Metadata: tree.PageMetadata{CreatorID: "owner"}}
+	tests := []struct {
+		name         string
+		user         *auth.User
+		authDisabled bool
+		want         bool
+	}{
+		{name: "anonymous"},
+		{name: "viewer who created the page", user: &auth.User{ID: "owner", Role: auth.RoleViewer}},
+		{name: "editor", user: &auth.User{ID: "editor", Role: auth.RoleEditor}, want: true},
+		{name: "admin", user: &auth.User{ID: "admin", Role: auth.RoleAdmin}, want: true},
+		{name: "auth disabled editor", user: &auth.User{ID: "editor", Role: auth.RoleEditor}, authDisabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanManageDraft(node, tt.user, tt.authDisabled); got != tt.want {
+				t.Fatalf("CanManageDraft() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanView_NonDraftDescendantInheritsDraftAncestorVisibility(t *testing.T) {
 	parent := &tree.PageNode{Draft: true, Metadata: tree.PageMetadata{CreatorID: "owner"}}
 	child := &tree.PageNode{Parent: parent, Metadata: tree.PageMetadata{CreatorID: "other"}}
-	if CanView(child, &auth.User{ID: "other", Role: auth.RoleEditor}, false) {
-		t.Fatal("descendant bypassed its draft ancestor")
+	if CanView(child, &auth.User{ID: "owner", Role: auth.RoleViewer}, false) {
+		t.Fatal("viewer can access descendant through draft ancestor")
 	}
-	if !CanView(child, &auth.User{ID: "owner", Role: auth.RoleViewer}, false) {
-		t.Fatal("draft ancestor owner cannot view descendant")
+	if !CanView(child, &auth.User{ID: "other", Role: auth.RoleEditor}, false) {
+		t.Fatal("editor cannot access descendant through draft ancestor")
 	}
 }
 
@@ -49,8 +66,25 @@ func TestCanViewSubtree_RejectsVisibleAncestorWithHiddenDraftDescendant(t *testi
 	parent := &tree.PageNode{}
 	child := &tree.PageNode{Parent: parent, Draft: true, Metadata: tree.PageMetadata{CreatorID: "owner"}}
 	parent.Children = []*tree.PageNode{child}
-	if CanViewSubtree(parent, &auth.User{ID: "other", Role: auth.RoleEditor}, false) {
+	if CanViewSubtree(parent, &auth.User{ID: "owner", Role: auth.RoleViewer}, false) {
 		t.Fatal("visible ancestor concealed a hidden draft descendant")
+	}
+}
+
+func TestCanView_AuthDisabledHidesDraftSubtreesButKeepsPublishedPagesVisible(t *testing.T) {
+	published := &tree.PageNode{}
+	draft := &tree.PageNode{Draft: true}
+	draftChild := &tree.PageNode{Parent: draft}
+	editor := &auth.User{Role: auth.RoleEditor}
+
+	if !CanView(published, nil, true) {
+		t.Fatal("auth-disabled mode hides published page")
+	}
+	if CanView(draft, editor, true) {
+		t.Fatal("auth-disabled mode exposes draft page")
+	}
+	if CanView(draftChild, editor, true) {
+		t.Fatal("auth-disabled mode exposes draft descendant")
 	}
 }
 
