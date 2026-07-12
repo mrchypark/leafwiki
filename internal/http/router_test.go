@@ -1822,6 +1822,15 @@ func TestDraftPage_PublicReadHidesItFromAnonymousButOwnerCanRead(t *testing.T) {
 	if got := owner.Header().Get("Cache-Control"); got != "private, no-store" {
 		t.Fatalf("owner draft cache control = %q", got)
 	}
+	anonymousLinks := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymousLinks, httptest.NewRequest(http.MethodGet, "/api/pages/"+page.ID+"/links", nil))
+	if anonymousLinks.Code != http.StatusNotFound {
+		t.Fatalf("anonymous draft links status=%d, want 404", anonymousLinks.Code)
+	}
+	ownerLinks := authenticatedRequest(t, publicRouter, http.MethodGet, "/api/pages/"+page.ID+"/links", nil)
+	if ownerLinks.Code != http.StatusOK || !strings.Contains(ownerLinks.Body.String(), `"backlinks":0`) {
+		t.Fatalf("owner draft links were not safely empty: status=%d body=%s", ownerLinks.Code, ownerLinks.Body.String())
+	}
 }
 
 func TestPageVisibilityCacheHeader_AuthDisabledPreservesOrdinaryBehavior(t *testing.T) {
@@ -1910,6 +1919,32 @@ func TestDraftVisibility_BlocksAncestorMutationAndEnsureBelowHiddenPrefix(t *tes
 	missing := authenticatedRequest(t, router, http.MethodGet, "/api/pages/by-path?path=public-section/hidden/new-page", nil)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("ensure created below hidden prefix; lookup status=%d", missing.Code)
+	}
+}
+
+func TestDraftVisibility_BlocksSlugSuggestionForHiddenNodes(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, router, "Draft Section", "draft-section", nil, &sectionKind)
+	child := createPageViaAPI(t, router, "Child", "child", &section.ID, pageNodeKind())
+	payload, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version, "title": section.Title, "slug": section.Slug, "draft": true,
+	})
+	if rec := authenticatedRequest(t, router, http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(payload))); rec.Code != http.StatusOK {
+		t.Fatalf("set draft: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	createUser := `{"username":"slug-editor","email":"slug@example.com","password":"editorpass","role":"editor"}`
+	if rec := authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUser)); rec.Code != http.StatusCreated {
+		t.Fatalf("create editor: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	for _, query := range []string{"parentId=" + section.ID, "currentId=" + child.ID} {
+		rec := authenticatedRequestAs(t, router, "slug-editor", "editorpass", http.MethodGet, "/api/pages/slug-suggestion?title=Hidden&"+query, nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("slug suggestion for %s status=%d, want 404", query, rec.Code)
+		}
 	}
 }
 

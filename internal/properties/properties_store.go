@@ -2,6 +2,7 @@ package properties
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -164,6 +165,46 @@ func (s *PropertiesStore) GetAllPropertyKeys(filter string, limit int) ([]Proper
 	return result, rows.Err()
 }
 
+// GetAllPropertyKeysForPageIDs aggregates keys only from allowed pages. The
+// JSON array keeps the query at one bind regardless of the allowlist size.
+func (s *PropertiesStore) GetAllPropertyKeysForPageIDs(filter string, limit int, pageIDs []string) ([]PropertyKeyCount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pageIDsJSON, err := json.Marshal(pageIDs)
+	if err != nil {
+		return nil, err
+	}
+	query := `
+		WITH allowed_pages(page_id) AS (SELECT DISTINCT value FROM json_each(?))
+		SELECT pp.key, COUNT(DISTINCT pp.page_id) AS count
+		FROM page_properties pp
+		JOIN allowed_pages ap ON ap.page_id = pp.page_id
+		WHERE pp.key LIKE ? || '%' ESCAPE '\'
+		GROUP BY pp.key
+		ORDER BY count DESC, pp.key ASC
+	`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := s.db.Query(query, string(pageIDsJSON), escapeLikePrefix(filter))
+	if err != nil {
+		return nil, err
+	}
+	defer shared.LogClose(rows.Close, logCloseRowsFailed)
+
+	var result []PropertyKeyCount
+	for rows.Next() {
+		var kc PropertyKeyCount
+		if err := rows.Scan(&kc.Key, &kc.Count); err != nil {
+			return nil, err
+		}
+		result = append(result, kc)
+	}
+	return result, rows.Err()
+}
+
 // GetPageIDsByProperty returns page IDs where key = key AND value = value (exact match).
 func (s *PropertiesStore) GetPageIDsByProperty(key, value string) ([]string, error) {
 	s.mu.Lock()
@@ -198,17 +239,17 @@ func (s *PropertiesStore) GetPropertiesForPages(pageIDs []string) (map[string]ma
 		return map[string]map[string]PropertyEntry{}, nil
 	}
 
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(pageIDs)), ",")
-	args := make([]any, len(pageIDs))
-	for i, id := range pageIDs {
-		args[i] = id
+	pageIDsJSON, err := json.Marshal(pageIDs)
+	if err != nil {
+		return nil, err
 	}
 
-	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT page_id, key, value, type FROM page_properties
-		WHERE page_id IN (%s)
-		ORDER BY page_id, key ASC
-	`, placeholders), args...)
+	rows, err := s.db.Query(`
+		SELECT pp.page_id, pp.key, pp.value, pp.type
+		FROM page_properties pp
+		JOIN (SELECT DISTINCT value FROM json_each(?)) ids ON ids.value = pp.page_id
+		ORDER BY pp.page_id, pp.key ASC
+	`, string(pageIDsJSON))
 	if err != nil {
 		return nil, err
 	}

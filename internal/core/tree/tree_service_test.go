@@ -269,7 +269,7 @@ func TestTreeService_UpdateNode_PersistsDraftBoolean(t *testing.T) {
 		t.Fatalf("CreateNode failed: %v", err)
 	}
 	draft := true
-	if err := svc.UpdateNode("alice", *id, "Draft", "draft", nil, VersionUnchecked, nil, nil, false, &draft); err != nil {
+	if err := svc.UpdateNodeWithDraft("alice", *id, "Draft", "draft", nil, VersionUnchecked, nil, nil, false, &draft); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 	page, err := svc.GetPage(*id)

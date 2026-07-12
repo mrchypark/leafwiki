@@ -92,15 +92,11 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 func (r *Routes) requireStaticAssetVisibility(authDisabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		pageID := strings.TrimSpace(c.Param("id"))
-		if pageID == "" {
-			pageID = assetPageID(c.Request.URL.Path)
-		}
 		if r.tree == nil {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		node, err := r.tree.FindPageByID(pageID)
+		node, err := r.tree.FindPageByID(assetPageID(c.Request.URL.Path))
 		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/perber/wiki/internal/core/markdown"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/shared"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
@@ -161,6 +162,9 @@ func (s *Service) RecordContentUpdates(pages []*tree.Page, authorID, summary str
 // This method hashes the current assets and only writes a new revision when
 // content or the asset manifest actually changed.
 func (s *Service) RecordAssetChange(pageID, authorID, summary string) (*Revision, bool, error) {
+	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
+		return nil, false, err
+	}
 	mu := s.pageWriteLock(pageID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -215,6 +219,9 @@ func (s *Service) RecordAssetChange(pageID, authorID, summary string) (*Revision
 }
 
 func (s *Service) RecordStructureChange(pageID, authorID, summary string) (*Revision, bool, error) {
+	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
+		return nil, false, err
+	}
 	mu := s.pageWriteLock(pageID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -739,6 +746,14 @@ func (s *Service) pageWriteLock(pageID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+func (s *Service) shouldSkipRevision(pageID string) (bool, error) {
+	page, err := s.pages.GetPage(pageID)
+	if err != nil {
+		return false, err
+	}
+	return pagevisibility.IsInDraftSubtree(page.PageNode), nil
+}
+
 func (s *Service) shouldCoalesce(prev *Revision, authorID string) bool {
 	if s.coalesceWindow <= 0 || prev == nil {
 		return false
@@ -751,6 +766,9 @@ func (s *Service) shouldCoalesce(prev *Revision, authorID string) bool {
 }
 
 func (s *Service) recordContentUpdateForPage(page *tree.Page, authorID, summary string) (*Revision, bool, error) {
+	if skip, err := s.shouldSkipRevision(page.ID); err != nil || skip {
+		return nil, false, err
+	}
 	mu := s.pageWriteLock(page.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -1046,6 +1064,9 @@ func (s *Service) restoreAssets(pageID string, refs []AssetRef) error {
 }
 
 func (s *Service) recordRestoreRevision(pageID, authorID string) error {
+	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
+		return err
+	}
 	state, err := s.capturePageState(pageID, true)
 	if err != nil {
 		return err

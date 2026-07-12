@@ -87,3 +87,34 @@ func TestPrune_DropsHiddenDraftSubtreeWithoutMutatingSource(t *testing.T) {
 		t.Fatalf("visible positions were not compacted: %d, %d", got.Children[0].Position, got.Children[1].Position)
 	}
 }
+
+func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) {
+	dir := t.TempDir()
+	treeService := tree.NewTreeService(dir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	publicID, err := treeService.CreateNode("owner", nil, "Public", "public", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode public: %v", err)
+	}
+	draftID, err := treeService.CreateNode("owner", nil, "Draft", "draft", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode draft: %v", err)
+	}
+	draft, err := treeService.FindPageByID(*draftID)
+	if err != nil {
+		t.Fatalf("FindPageByID: %v", err)
+	}
+	draft.Draft = true
+
+	got := FilterPublishedPageIDs(treeService, []string{*draftID, "missing", *publicID})
+	if len(got) != 1 || got[0] != *publicID {
+		t.Fatalf("published IDs = %v", got)
+	}
+	all := AllPublishedPageIDs(treeService)
+	if len(all) != 1 || all[0] != *publicID {
+		t.Fatalf("all published IDs = %v", all)
+	}
+}

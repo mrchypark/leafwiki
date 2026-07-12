@@ -69,7 +69,7 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 	if err != nil {
 		return nil, err
 	}
-	fullMatchPageIDs = uc.publicPageIDs(fullMatchPageIDs)
+	fullMatchPageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, fullMatchPageIDs)
 	result, err := uc.index.Search(in.Query, fullMatchPageIDs, in.Offset, in.Limit)
 	if err != nil {
 		return nil, err
@@ -92,7 +92,7 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			},
 		}, nil
 	}
-	pageIDs = uc.publicPageIDs(pageIDs)
+	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, pageIDs)
 
 	excerpts, err := uc.tags.GetExcerptsForPages(pageIDs)
 	if err != nil {
@@ -150,20 +150,6 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			TagFacets: uc.buildTagFacets(pageIDs),
 		},
 	}, nil
-}
-
-func (uc *SearchUseCase) publicPageIDs(pageIDs []string) []string {
-	visible := make([]string, 0, len(pageIDs))
-	if uc.tree == nil {
-		return visible
-	}
-	for _, pageID := range pageIDs {
-		node, err := uc.tree.FindPageByID(pageID)
-		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
-			visible = append(visible, pageID)
-		}
-	}
-	return visible
 }
 
 func (uc *SearchUseCase) attachTags(items []coresearch.SearchResultItem) {

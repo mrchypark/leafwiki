@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useConfigStore } from '@/stores/config'
+import { useSessionStore } from '@/stores/session'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -18,6 +19,7 @@ import { EditorFrontmatterField } from './frontmatter'
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
+  creatorId?: string
   draft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
@@ -49,6 +51,7 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
+  creatorId,
   draft,
   tags,
   fields,
@@ -59,7 +62,12 @@ export function PageFrontmatterPanel({
   onFieldsChange,
 }: PageFrontmatterPanelProps) {
   const { t } = useTranslation('editor')
-  const draftEnabled = !useConfigStore((state) => state.authDisabled)
+  const authDisabled = useConfigStore((state) => state.authDisabled)
+  const userId = useSessionStore((state) => state.user?.id)
+  const userRole = useSessionStore((state) => state.user?.role)
+  const draftEnabled =
+    !authDisabled &&
+    (userRole === 'admin' || Boolean(userId && userId === creatorId))
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {

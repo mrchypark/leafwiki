@@ -45,6 +45,10 @@ func (s *TagsService) GetAllTagsForSelection(filter string, selected []string, l
 	return s.store.GetAllTagsForSelection(filter, selected, limit)
 }
 
+func (s *TagsService) GetAllTagsForPageIDs(filter string, selected []string, limit int, pageIDs []string) ([]TagCount, error) {
+	return s.store.GetAllTagsForPageIDs(filter, selected, limit, pageIDs)
+}
+
 func (s *TagsService) GetPageIDsByTags(tags []string) ([]string, error) {
 	return s.store.GetPageIDsByTags(tags)
 }

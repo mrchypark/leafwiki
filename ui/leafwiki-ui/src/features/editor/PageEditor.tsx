@@ -210,6 +210,7 @@ export default function PageEditor() {
         {initialPage && (
           <>
             <PageFrontmatterPanel
+              creatorId={initialPage.metadata?.creatorId}
               draft={draft}
               tags={tags}
               fields={frontmatterFields}

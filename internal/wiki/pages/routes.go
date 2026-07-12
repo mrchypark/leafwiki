@@ -151,14 +151,11 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 func (r *Routes) handleGetTree(c *gin.Context) {
 	r.setVisibilityCacheHeader(c)
 	root := pagevisibility.Prune(r.treeService.GetTree(), authmw.TryGetUser(c), r.authDisabled)
-	depthStr := strings.TrimSpace(c.Query("depth"))
-	if depthStr == "" {
-		c.JSON(http.StatusOK, dto.ToAPINode(root, "", r.userResolver))
-		return
-	}
-	depth, err := strconv.Atoi(depthStr)
-	if err != nil {
-		depth = -1
+	depth := -1
+	if depthStr := strings.TrimSpace(c.Query("depth")); depthStr != "" {
+		if parsed, err := strconv.Atoi(depthStr); err == nil {
+			depth = parsed
+		}
 	}
 	c.JSON(http.StatusOK, dto.ToAPINodeWithDepth(root, "", r.userResolver, depth))
 }
@@ -268,6 +265,11 @@ func (r *Routes) handleSuggestSlug(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingTitle, "Title query param is required", "title query param is required")
 		return
 	}
+	for _, id := range []string{strings.TrimSpace(c.Query("parentId")), strings.TrimSpace(c.Query("currentId"))} {
+		if id != "" && id != "root" && !r.requireVisibleNode(c, id) {
+			return
+		}
+	}
 	out, err := r.suggestSlug.Execute(c.Request.Context(), SuggestSlugInput{
 		ParentID:  strings.TrimSpace(c.Query("parentId")),
 		CurrentID: strings.TrimSpace(c.Query("currentId")),
@@ -295,7 +297,7 @@ func (r *Routes) handleCreate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleNode(c, *req.ParentID) {
+	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	kind := kindFromString(req.Kind)
@@ -332,11 +334,8 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, id) {
-		return
-	}
 	node, err := r.treeService.FindPageByID(id)
-	if err != nil {
+	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -377,9 +376,18 @@ func (r *Routes) setVisibilityCacheHeader(c *gin.Context) {
 	}
 }
 
-func (r *Routes) requireVisibleNode(c *gin.Context, id string) bool {
+func (r *Routes) requireVisibleSubtree(c *gin.Context, id string) bool {
 	node, err := r.treeService.FindPageByID(id)
 	if err != nil || !pagevisibility.CanViewSubtree(node, authmw.TryGetUser(c), r.authDisabled) {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return false
+	}
+	return true
+}
+
+func (r *Routes) requireVisibleNode(c *gin.Context, id string) bool {
+	node, err := r.treeService.FindPageByID(id)
+	if err != nil || !r.canView(c, node) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return false
 	}
@@ -394,7 +402,7 @@ func (r *Routes) handleDelete(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, id) {
+	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.deletePage.Execute(c.Request.Context(), DeletePageInput{
@@ -420,7 +428,7 @@ func (r *Routes) handleMove(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, id) || req.ParentID != "" && req.ParentID != "root" && !r.requireVisibleNode(c, req.ParentID) {
+	if !r.requireVisibleSubtree(c, id) || req.ParentID != "" && req.ParentID != "root" && !r.requireVisibleSubtree(c, req.ParentID) {
 		return
 	}
 	if err := r.movePage.Execute(c.Request.Context(), MovePageInput{
@@ -441,11 +449,11 @@ func (r *Routes) handleSort(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if parentID != "" && parentID != "root" && !r.requireVisibleNode(c, parentID) {
+	if parentID != "" && parentID != "root" && !r.requireVisibleSubtree(c, parentID) {
 		return
 	}
 	for _, id := range req.OrderedIDs {
-		if !r.requireVisibleNode(c, id) {
+		if !r.requireVisibleSubtree(c, id) {
 			return
 		}
 	}
@@ -468,7 +476,7 @@ func (r *Routes) handlePin(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if !r.requireVisibleNode(c, id) {
+	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	out, err := r.pinPage.Execute(c.Request.Context(), PinPageInput{
@@ -545,7 +553,7 @@ func (r *Routes) handleConvert(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, id) {
+	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.convertPage.Execute(c.Request.Context(), ConvertPageInput{
@@ -572,7 +580,7 @@ func (r *Routes) handleCopy(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, sourceID) || req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleNode(c, *req.ParentID) {
+	if !r.requireVisibleSubtree(c, sourceID) || req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	out, err := r.copyPage.Execute(c.Request.Context(), CopyPageInput{
@@ -599,7 +607,7 @@ func (r *Routes) handleRefactorPreview(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if !r.requireVisibleNode(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleNode(c, *req.NewParentID) {
+	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
 		return
 	}
 	out, err := r.previewRefactor.Execute(c.Request.Context(), RefactorPreviewInput{
@@ -632,7 +640,7 @@ func (r *Routes) handleRefactorApply(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleNode(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleNode(c, *req.NewParentID) {
+	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
 		return
 	}
 	page, err := r.applyRefactor.Execute(c.Request.Context(), RefactorApplyInput{
@@ -652,11 +660,7 @@ func (r *Routes) handleRefactorApply(c *gin.Context) {
 }
 
 func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
-	visible := *page
-	visible.PageNode = pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
-	apiPage := dto.ToAPIPage(&visible, r.userResolver)
-	r.enrichPageMetadata(apiPage)
-	c.JSON(status, apiPage)
+	r.respondPageWithDepth(c, status, page, -1)
 }
 
 func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {

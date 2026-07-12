@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/perber/wiki/internal/core/auth"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	corelinks "github.com/perber/wiki/internal/links"
@@ -66,5 +67,18 @@ func TestGetLinkStatusUseCase_FiltersStaleDraftRowsAndDirectAccess(t *testing.T)
 	localized, ok := sharederrors.AsLocalizedError(err)
 	if !ok || localized.Code != ErrCodeLinkPageNotFound {
 		t.Fatalf("draft direct access error = %#v", err)
+	}
+
+	for _, user := range []*auth.User{
+		{ID: "owner", Role: auth.RoleEditor},
+		{ID: "admin", Role: auth.RoleAdmin},
+	} {
+		out, err := useCase.Execute(context.Background(), GetLinkStatusInput{PageID: draftTargetID, User: user})
+		if err != nil {
+			t.Fatalf("authorized draft Execute: %v", err)
+		}
+		if out.Status == nil || out.Status.Counts != (corelinks.LinkStatusCounts{}) || len(out.Status.Backlinks) != 0 || len(out.Status.Outgoings) != 0 {
+			t.Fatalf("authorized draft status was not safely empty: %#v", out.Status)
+		}
 	}
 }

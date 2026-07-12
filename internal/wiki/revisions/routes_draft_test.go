@@ -45,6 +45,14 @@ func TestRequirePageVisibility_HidesDraftFromOtherUsers(t *testing.T) {
 			if recorder.Code != tc.status {
 				t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
 			}
+			if tc.status == http.StatusNoContent {
+				if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+					t.Fatalf("Cache-Control = %q", got)
+				}
+				if got := recorder.Header().Get("Pragma"); got != "no-cache" {
+					t.Fatalf("Pragma = %q", got)
+				}
+			}
 		})
 	}
 }

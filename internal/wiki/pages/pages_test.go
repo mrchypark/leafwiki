@@ -965,7 +965,7 @@ func TestCopyPageUseCase_PreservesDraftVisibility(t *testing.T) {
 		t.Fatalf("create draft source: %v", err)
 	}
 	draft := true
-	if err := deps.tree.UpdateNode("owner", original.Page.ID, original.Page.Title, original.Page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+	if err := deps.tree.UpdateNodeWithDraft("owner", original.Page.ID, original.Page.Title, original.Page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
 		t.Fatalf("mark source draft: %v", err)
 	}
 

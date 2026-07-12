@@ -103,6 +103,10 @@ func (r *Routes) requirePageVisibility(authDisabled bool) gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
+		if pagevisibility.IsInDraftSubtree(node) {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
+		}
 		c.Next()
 	}
 }

@@ -2,7 +2,6 @@ package properties
 
 import (
 	"context"
-	"sort"
 	"strings"
 
 	"github.com/perber/wiki/internal/core/auth"
@@ -59,31 +58,12 @@ func (uc *GetPropertyKeysUseCase) Execute(_ context.Context, in GetPropertyKeysI
 	}
 
 	filter := strings.ToLower(strings.TrimSpace(in.Filter))
-	pageIDs := publicPropertyPageIDs(uc.tree)
-	propertiesByPage, err := uc.svc.GetPropertiesForPages(pageIDs)
+	keys, err := uc.svc.GetAllPropertyKeysForPageIDs(filter, limit, pagevisibility.AllPublishedPageIDs(uc.tree))
 	if err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int)
-	for _, pageID := range pageIDs {
-		for key := range propertiesByPage[pageID] {
-			if strings.HasPrefix(strings.ToLower(key), filter) {
-				counts[key]++
-			}
-		}
-	}
-	keys := make([]coreprop.PropertyKeyCount, 0, len(counts))
-	for key, count := range counts {
-		keys = append(keys, coreprop.PropertyKeyCount{Key: key, Count: count})
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].Count == keys[j].Count {
-			return keys[i].Key < keys[j].Key
-		}
-		return keys[i].Count > keys[j].Count
-	})
-	if len(keys) > limit {
-		keys = keys[:limit]
+	if keys == nil {
+		keys = []coreprop.PropertyKeyCount{}
 	}
 	return &GetPropertyKeysOutput{Keys: keys}, nil
 }
@@ -124,6 +104,7 @@ func (uc *GetPagesByPropertyUseCase) Execute(_ context.Context, in GetPagesByPro
 	if len(pageIDs) == 0 {
 		return &GetPagesByPropertyOutput{Pages: []*dto.PropertyPage{}}, nil
 	}
+	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.treeService, pageIDs)
 
 	propsPerPage, err := uc.svc.GetPropertiesForPages(pageIDs)
 	if err != nil {
@@ -140,23 +121,4 @@ func (uc *GetPagesByPropertyUseCase) Execute(_ context.Context, in GetPagesByPro
 	}
 
 	return &GetPagesByPropertyOutput{Pages: pages}, nil
-}
-
-func publicPropertyPageIDs(treeService *tree.TreeService) []string {
-	if treeService == nil {
-		return nil
-	}
-	allIDs := make([]string, 0)
-	_ = treeService.WalkNodes(func(id string) error {
-		allIDs = append(allIDs, id)
-		return nil
-	})
-	ids := make([]string, 0, len(allIDs))
-	for _, id := range allIDs {
-		node, err := treeService.FindPageByID(id)
-		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
-			ids = append(ids, id)
-		}
-	}
-	return ids
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
@@ -20,7 +21,9 @@ var ErrLinkServiceUnavailable = sharederrors.NewLocalizedError(
 // ─── GetLinkStatusUseCase ────────────────────────────────────────────────────
 
 type GetLinkStatusInput struct {
-	PageID string
+	PageID       string
+	User         *auth.User
+	AuthDisabled bool
 }
 
 type GetLinkStatusOutput struct {
@@ -43,17 +46,20 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 	page, err := uc.tree.GetPage(in.PageID)
 	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
-			return nil, sharederrors.NewLocalizedError(
-				ErrCodeLinkPageNotFound,
-				"Page not found",
-				"page not found",
-				err,
-			)
+			return nil, linkPageNotFoundError(err)
 		}
 		return nil, err
 	}
 	if pagevisibility.IsInDraftSubtree(page.PageNode) {
-		return nil, linkPageNotFoundError(nil)
+		if !pagevisibility.CanView(page.PageNode, in.User, in.AuthDisabled) {
+			return nil, linkPageNotFoundError(nil)
+		}
+		return &GetLinkStatusOutput{Status: &corelinks.LinkStatusResult{
+			Backlinks:       []corelinks.BacklinkResultItem{},
+			BrokenIncoming:  []corelinks.BacklinkResultItem{},
+			Outgoings:       []corelinks.OutgoingResultItem{},
+			BrokenOutgoings: []corelinks.OutgoingResultItem{},
+		}}, nil
 	}
 	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
 	if err != nil {

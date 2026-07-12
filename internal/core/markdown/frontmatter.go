@@ -76,21 +76,15 @@ func parseFrontmatterYAML(yamlPart string) (Frontmatter, error) {
 			fm.LeafWikiPinned = b
 		}
 	}
-	if value, ok := raw["draft"]; ok {
-		if b, ok := value.(bool); ok {
-			fm.Draft = b
-		}
+	if draft, ok := raw["draft"].(bool); ok {
+		fm.Draft = draft
+		delete(raw, "draft")
 	}
 
 	for key, value := range raw {
 		switch key {
 		case "leafwiki_id", "leafwiki_title", "leafwiki_created_at", "leafwiki_updated_at", "leafwiki_creator_id", "leafwiki_last_author_id", "leafwiki_pinned":
 			continue
-		case "draft":
-			if _, isBoolean := value.(bool); isBoolean {
-				continue
-			}
-			fm.ExtraFields[key] = value
 		default:
 			fm.ExtraFields[key] = value
 		}
