@@ -252,6 +252,57 @@ func TestUpdatePageUseCase_HappyPath(t *testing.T) {
 	}
 }
 
+func TestUpdatePageUseCase_DraftTransitionListsEntireSubtree(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	section, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Section", Slug: "section", Kind: sectionKind(),
+	})
+	if err != nil {
+		t.Fatalf("create section: %v", err)
+	}
+	if _, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", ParentID: &section.Page.ID, Title: "Child", Slug: "child", Kind: pageKind(),
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	effect := &captureEffect{}
+	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, pagesave.NewPageSaveOrchestrator(effect), slog.Default())
+	draft := true
+	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "owner", ID: section.Page.ID, Version: section.Page.Version(), Title: section.Page.Title, Slug: section.Page.Slug, Draft: &draft,
+	}); err != nil {
+		t.Fatalf("mark section draft: %v", err)
+	}
+	if len(effect.events) != 1 || !effect.events[0].DraftChanged || len(effect.events[0].AffectedPages) != 2 {
+		t.Fatalf("draft event = %#v", effect.events)
+	}
+}
+
+func TestUpdatePageUseCase_PreserveFrontmatterCannotChangeSemanticDraft(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	created, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+	if err != nil {
+		t.Fatalf("create page: %v", err)
+	}
+	effect := &captureEffect{}
+	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, pagesave.NewPageSaveOrchestrator(effect), slog.Default())
+	raw := "---\ndraft: true\ncustom: value\n---\nBody"
+	out, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "owner", ID: created.Page.ID, Version: created.Page.Version(), Title: created.Page.Title, Slug: created.Page.Slug,
+		Content: &raw, PreserveFrontmatter: true,
+	})
+	if err != nil {
+		t.Fatalf("preserve-frontmatter update: %v", err)
+	}
+	if out.Page.Draft || len(effect.events) != 1 || effect.events[0].DraftChanged {
+		t.Fatalf("incoming raw draft changed semantics: page=%v events=%#v", out.Page.Draft, effect.events)
+	}
+}
+
 func TestUpdatePageUseCase_VersionConflict_ReturnsVersionConflictError(t *testing.T) {
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
@@ -900,6 +951,32 @@ func TestCopyPageUseCase_HappyPath(t *testing.T) {
 	}
 	if out.Page.ID == original.Page.ID {
 		t.Error("expected copied page to have a different ID")
+	}
+}
+
+func TestCopyPageUseCase_PreservesDraftVisibility(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	copyUC := pages.NewCopyPageUseCase(deps.tree, deps.slug, deps.orchestrator(), deps.assets, slog.Default())
+	original, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Draft", Slug: "draft", Kind: pageKind(),
+	})
+	if err != nil {
+		t.Fatalf("create draft source: %v", err)
+	}
+	draft := true
+	if err := deps.tree.UpdateNode("owner", original.Page.ID, original.Page.Title, original.Page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("mark source draft: %v", err)
+	}
+
+	out, err := copyUC.Execute(context.Background(), pages.CopyPageInput{
+		UserID: "copier", SourcePageID: original.Page.ID, Title: "Draft Copy", Slug: "draft-copy",
+	})
+	if err != nil {
+		t.Fatalf("copy draft: %v", err)
+	}
+	if !out.Page.Draft || out.Page.Metadata.CreatorID != "copier" {
+		t.Fatalf("copy visibility/owner = draft:%v creator:%q", out.Page.Draft, out.Page.Metadata.CreatorID)
 	}
 }
 

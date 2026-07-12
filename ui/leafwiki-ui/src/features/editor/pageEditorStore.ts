@@ -25,6 +25,7 @@ export interface PageEditorState {
   title: string // current title in the editor
   slug: string // current slug in the editor
   content: string // current markdown content in the editor
+  draft: boolean
   tags: string[] // convenient tag editor state
   frontmatterFields: EditorFrontmatterField[]
   frontmatterUnsupported: string
@@ -37,6 +38,7 @@ export interface PageEditorState {
   setTitle: (title: string) => void // set the current title
   setSlug: (slug: string) => void // set the current slug
   setContent: (content: string) => void // set the current markdown content
+  setDraft: (draft: boolean) => void
   setTags: (tags: string[]) => void
   setFrontmatterFields: (fields: EditorFrontmatterField[]) => void
   setFrontmatterErrors: (errors: Record<string, string>) => void
@@ -80,12 +82,13 @@ function buildEditableProperties(
 }
 
 export const isDirtyState = (s: PageEditorState) => {
-  const { page, title, slug, content, tags, frontmatterFields } = s
+  const { page, title, slug, content, draft, tags, frontmatterFields } = s
   if (!page) return false
   return (
     page.title !== title ||
     page.slug !== slug ||
     page.content !== content ||
+    Boolean(page.draft) !== draft ||
     tagsChanged(tags, page.tags ?? []) ||
     propertiesChanged(frontmatterFields, page.properties ?? {})
   )
@@ -106,6 +109,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   path: '',
   slug: '',
   content: '',
+  draft: false,
   tags: [],
   frontmatterFields: [],
   frontmatterUnsupported: '',
@@ -115,6 +119,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   setTitle: (title) => set({ title }),
   setSlug: (slug) => set({ slug }),
   setContent: (content) => set({ content }),
+  setDraft: (draft) => set({ draft }),
   setTags: (tags) =>
     set((state) => {
       const nextErrors = { ...state.frontmatterErrors }
@@ -139,7 +144,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   setError: (error) => set({ error }),
   setPage: (page) => set({ page }),
   savePage: async (options?: { silent?: boolean }) => {
-    const { page, title, slug, content, tags, frontmatterFields } = get()
+    const { page, title, slug, content, draft, tags, frontmatterFields } = get()
     if (!page || !isDirtyState(get())) return
 
     const frontmatterErrors = validateEditorFrontmatterMetadata(
@@ -162,8 +167,10 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       set({ frontmatterErrors: {} })
       const titleChanged = page.title !== title
       const slugChanged = page.slug !== slug
+      const draftChanged = Boolean(page.draft) !== draft
       const enableLinkRefactor = useConfigStore.getState().enableLinkRefactor
       const frontmatterChanged =
+        draftChanged ||
         tagsChanged(tags, page.tags ?? []) ||
         propertiesChanged(frontmatterFields, page.properties ?? {})
 
@@ -200,6 +207,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
             content,
             tags,
             properties,
+            draft,
           )
         }
       } else {
@@ -211,6 +219,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
           content,
           tags,
           properties,
+          draft,
         )
       }
 
@@ -238,6 +247,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         state.page.version = updatedPage.version
         state.page.tags = nextTags
         state.page.properties = nextProperties
+        state.page.draft = updatedPage.draft ?? draft
 
         return {
           page: state.page,
@@ -256,7 +266,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       })
 
       // sync tree: full reload on structural changes, version-only patch otherwise
-      if (titleChanged || slugChanged) {
+      if (titleChanged || slugChanged || draftChanged) {
         await useTreeStore.getState().reloadTree()
       } else if (updatedPage?.id && updatedPage?.version) {
         useTreeStore
@@ -329,6 +339,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         title: page.title,
         slug: page.slug,
         content: page.content,
+        draft: Boolean(page.draft),
         tags: page.tags ?? [],
         frontmatterFields: fields,
         frontmatterUnsupported: '',
@@ -369,6 +380,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       title: '',
       slug: '',
       content: '',
+      draft: false,
       tags: [],
       frontmatterFields: [],
       frontmatterUnsupported: '',

@@ -3,6 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/links"
 )
@@ -34,6 +35,15 @@ func (e *LinkIndexSideEffect) Apply(event PageSaveEvent) {
 		e.updateAndHeal(event.After)
 
 	case PageOperationUpdate:
+		if event.DraftChanged {
+			if event.SlugChanged {
+				e.markBrokenForOldPath(event.OldPath)
+			}
+			for _, p := range event.AffectedPages {
+				e.updateAndHeal(p)
+			}
+			break
+		}
 		if event.SlugChanged {
 			e.markBrokenForOldPath(event.OldPath)
 			// When the title also changed, healed wikilink sentinels
@@ -53,10 +63,7 @@ func (e *LinkIndexSideEffect) Apply(event PageSaveEvent) {
 			}
 		} else {
 			if event.After != nil {
-				if err := e.svc.UpdateLinksForPage(event.After, event.After.Content); err != nil {
-					e.log.Warn("failed to update links for page", "pageID", event.After.ID, "error", err)
-				}
-				e.healExact(event.After)
+				e.updateAndHeal(event.After)
 			}
 		}
 
@@ -119,7 +126,7 @@ func (e *LinkIndexSideEffect) Apply(event PageSaveEvent) {
 }
 
 func (e *LinkIndexSideEffect) healExact(p *tree.Page) {
-	if p == nil {
+	if p == nil || pagevisibility.IsInDraftSubtree(p.PageNode) {
 		return
 	}
 	if err := e.svc.HealLinksForExactPath(p); err != nil {
@@ -132,6 +139,15 @@ func (e *LinkIndexSideEffect) healExact(p *tree.Page) {
 
 func (e *LinkIndexSideEffect) updateAndHeal(p *tree.Page) {
 	if p == nil {
+		return
+	}
+	if pagevisibility.IsInDraftSubtree(p.PageNode) {
+		if err := e.svc.DeleteOutgoingLinksForPage(p.ID); err != nil {
+			e.log.Warn("failed to delete draft page outgoing links", "pageID", p.ID, "error", err)
+		}
+		if err := e.svc.MarkIncomingLinksBrokenForPage(p.ID); err != nil {
+			e.log.Warn("failed to break draft page incoming links", "pageID", p.ID, "error", err)
+		}
 		return
 	}
 	if err := e.svc.UpdateLinksForPage(p, p.Content); err != nil {

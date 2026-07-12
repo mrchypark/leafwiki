@@ -210,6 +210,7 @@ type apiPage struct {
 	Path       string                 `json:"path"`
 	Version    string                 `json:"version"`
 	Kind       tree.NodeKind          `json:"kind"`
+	Draft      bool                   `json:"draft"`
 	Children   []*apiPage             `json:"children"`
 	Tags       []string               `json:"tags"`
 	Properties map[string]interface{} `json:"properties"`
@@ -1778,6 +1779,137 @@ func TestUpdatePageEndpoint(t *testing.T) {
 	}
 	if resp["content"] != "# Updated Content\nWith **Markdown** support." {
 		t.Errorf("Expected updated content, got %q", resp["content"])
+	}
+}
+
+func TestDraftPage_PublicReadHidesItFromAnonymousButOwnerCanRead(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	privateRouter := createRouterTestInstance(w, t)
+	page := createPageViaAPI(t, privateRouter, "Secret Draft", "secret-draft", nil, pageNodeKind())
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"version": page.Version,
+		"title":   page.Title,
+		"slug":    page.Slug,
+		"draft":   true,
+	})
+	updated := authenticatedRequest(t, privateRouter, http.MethodPut, "/api/pages/"+page.ID, strings.NewReader(string(payload)))
+	if updated.Code != http.StatusOK {
+		t.Fatalf("set draft: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	var updatedPage apiPage
+	if err := json.Unmarshal(updated.Body.Bytes(), &updatedPage); err != nil || !updatedPage.Draft {
+		t.Fatalf("draft missing from page API: draft=%v err=%v", updatedPage.Draft, err)
+	}
+
+	publicRouter := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	anonymous := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/pages/"+page.ID, nil))
+	if anonymous.Code != http.StatusNotFound {
+		t.Fatalf("anonymous draft read status=%d, want 404", anonymous.Code)
+	}
+	owner := authenticatedRequest(t, publicRouter, http.MethodGet, "/api/pages/"+page.ID, nil)
+	if owner.Code != http.StatusOK {
+		t.Fatalf("owner draft read status=%d body=%s", owner.Code, owner.Body.String())
+	}
+	if got := owner.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("owner draft cache control = %q", got)
+	}
+}
+
+func TestPageVisibilityCacheHeader_AuthDisabledPreservesOrdinaryBehavior(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		AuthDisabled:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth-disabled tree status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got == "private, no-store" {
+		t.Fatalf("auth-disabled response unexpectedly received private cache control")
+	}
+}
+
+func TestDraftSection_PublicReadHidesNonDraftDescendantFromDirectAccess(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	privateRouter := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, privateRouter, "Draft Section", "draft-section", nil, &sectionKind)
+	child := createPageViaAPI(t, privateRouter, "Child", "child", &section.ID, pageNodeKind())
+	payload, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version,
+		"title":   section.Title,
+		"slug":    section.Slug,
+		"draft":   true,
+	})
+	updated := authenticatedRequest(t, privateRouter, http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(payload)))
+	if updated.Code != http.StatusOK {
+		t.Fatalf("set section draft: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	publicRouter := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	anonymous := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/pages/"+child.ID, nil))
+	if anonymous.Code != http.StatusNotFound {
+		t.Fatalf("anonymous child read status=%d, want 404", anonymous.Code)
+	}
+}
+
+func TestDraftVisibility_BlocksAncestorMutationAndEnsureBelowHiddenPrefix(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, router, "Public Section", "public-section", nil, &sectionKind)
+	hidden := createPageViaAPI(t, router, "Hidden", "hidden", &section.ID, pageNodeKind())
+	draftPayload, _ := json.Marshal(map[string]interface{}{
+		"version": hidden.Version, "title": hidden.Title, "slug": hidden.Slug, "draft": true,
+	})
+	if rec := authenticatedRequest(t, router, http.MethodPut, "/api/pages/"+hidden.ID, strings.NewReader(string(draftPayload))); rec.Code != http.StatusOK {
+		t.Fatalf("set child draft: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	createUser := `{"username":"editor","email":"editor@example.com","password":"editorpass","role":"editor"}`
+	if rec := authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUser)); rec.Code != http.StatusCreated {
+		t.Fatalf("create editor: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	updateParent, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version, "title": "Changed", "slug": section.Slug,
+	})
+	parentRec := authenticatedRequestAs(t, router, "editor", "editorpass", http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(updateParent)))
+	if parentRec.Code != http.StatusNotFound {
+		t.Fatalf("ancestor mutation status=%d, want 404", parentRec.Code)
+	}
+
+	ensureBody := `{"path":"public-section/hidden/new-page","title":"New Page","kind":"page"}`
+	ensureRec := authenticatedRequestAs(t, router, "editor", "editorpass", http.MethodPost, "/api/pages/ensure", strings.NewReader(ensureBody))
+	if ensureRec.Code != http.StatusNotFound {
+		t.Fatalf("ensure below hidden prefix status=%d, want 404", ensureRec.Code)
+	}
+	missing := authenticatedRequest(t, router, http.MethodGet, "/api/pages/by-path?path=public-section/hidden/new-page", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("ensure created below hidden prefix; lookup status=%d", missing.Code)
 	}
 }
 

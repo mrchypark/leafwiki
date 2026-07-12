@@ -28,6 +28,7 @@ export type PageNode = {
   children: PageNode[] | null
   kind: 'page' | 'section'
   pinned?: boolean
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -41,6 +42,7 @@ export interface Page {
   properties?: Record<string, string>
   version: string
   kind: 'page' | 'section'
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -153,11 +155,20 @@ export async function updatePage(
   content: string,
   tags: string[],
   properties: Record<string, string>,
+  draft: boolean,
 ): Promise<Page | null> {
   return (await fetchWithAuth(`/api/pages/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version, title, slug, content, tags, properties }),
+    body: JSON.stringify({
+      version,
+      title,
+      slug,
+      content,
+      tags,
+      properties,
+      draft,
+    }),
   })) as Page | null
 }
 

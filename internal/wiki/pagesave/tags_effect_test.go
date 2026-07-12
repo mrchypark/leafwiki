@@ -134,3 +134,29 @@ func TestTagsSideEffect_Apply_Delete_RemovesTags(t *testing.T) {
 		t.Errorf("expected tag to be removed after delete, got %v", ids)
 	}
 }
+
+func TestTagsSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
+	treeSvc, tagsSvc, effect := setupTagsEffectTest(t)
+	page := createPageWithFrontmatter(t, treeSvc, "Draft Tags", "draft-tags", "---\ntags:\n  - secret\n---\n\nBody.")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+
+	page.Draft = true
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err := tagsSvc.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags draft: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("draft page remained in tag index: %v", ids)
+	}
+
+	page.Draft = false
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err = tagsSvc.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags published: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != page.ID {
+		t.Fatalf("published page was not reindexed: %v", ids)
+	}
+}

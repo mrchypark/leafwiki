@@ -46,6 +46,8 @@ function toSetRecord(ids: string[]): Record<string, true> {
   return rec
 }
 
+let treeLoadGeneration = 0
+
 type TreeStore = {
   tree: PageNode | null
   loading: boolean
@@ -55,6 +57,7 @@ type TreeStore = {
   expandAll: () => void
   collapseAll: () => void
   reloadTree: () => Promise<void>
+  clearVisibilityData: () => void
   patchNodeVersion: (id: string, version: string) => void
   setPinnedLocally: (id: string, pinned: boolean, version: string) => void
   toggleNode: (id: string) => void
@@ -95,6 +98,21 @@ export const useTreeStore = create<TreeStore>()(
 
       collapseAll: () => {
         set({ openNodeIds: [], openNodeIdSet: {} })
+      },
+      clearVisibilityData: () => {
+        treeLoadGeneration += 1
+        set({
+          tree: null,
+          loading: false,
+          error: null,
+          activeNodeId: null,
+          pinnedPages: [],
+          openNodeIds: [],
+          openNodeIdSet: {},
+          byPath: {},
+          byId: {},
+          flatPages: [],
+        })
       },
       toggleNode: (id: string) => {
         const current = new Set(get().openNodeIds)
@@ -210,10 +228,12 @@ export const useTreeStore = create<TreeStore>()(
       },
 
       reloadTree: async () => {
+        const generation = ++treeLoadGeneration
         set({ loading: true, error: null })
 
         try {
           const tree = await fetchTree()
+          if (generation !== treeLoadGeneration) return
           assignParentIds(tree)
           const { byPath, byId } = buildIndexes(tree)
           const flatPages = buildFlatPageSearchItems(tree)
@@ -231,13 +251,14 @@ export const useTreeStore = create<TreeStore>()(
           })
           // FIXME: a better error handling is required here
         } catch (err: unknown) {
+          if (generation !== treeLoadGeneration) return
           if (err instanceof Error) {
             set({ error: err.message })
           } else {
             set({ error: 'An unknown error occurred' })
           }
         } finally {
-          set({ loading: false })
+          if (generation === treeLoadGeneration) set({ loading: false })
         }
       },
     }),

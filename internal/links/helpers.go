@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -41,6 +42,17 @@ type TargetLink struct {
 	TargetPageID   string
 	TargetPagePath string
 	Broken         bool
+}
+
+func publishedPagesByTitle(treeService *tree.TreeService, title string) []*tree.PageNode {
+	pages := treeService.FindPagesByTitle(title)
+	published := make([]*tree.PageNode, 0, len(pages))
+	for _, page := range pages {
+		if page != nil && !pagevisibility.IsInDraftSubtree(page) {
+			published = append(published, page)
+		}
+	}
+	return published
 }
 
 var markdownParser = goldmark.New()
@@ -136,7 +148,7 @@ func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []T
 		if strings.Contains(target, "/") {
 			routePath := strings.TrimPrefix(target, "/")
 			page, err := treeService.FindPageByRoutePath(routePath)
-			if err == nil && page != nil {
+			if err == nil && page != nil && !pagevisibility.IsInDraftSubtree(page.PageNode) {
 				result = append(result, TargetLink{
 					TargetPageID:   page.ID,
 					TargetPagePath: normalizeWikiPath(page.CalculatePath()),
@@ -146,7 +158,7 @@ func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []T
 			}
 			// Path lookup failed — fall through to title lookup so that
 			// titles containing "/" (e.g. "C/C++") can still be resolved.
-			pages := treeService.FindPagesByTitle(target)
+			pages := publishedPagesByTitle(treeService, target)
 			if len(pages) == 1 {
 				result = append(result, TargetLink{
 					TargetPageID:   pages[0].ID,
@@ -165,7 +177,7 @@ func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []T
 		}
 
 		// Pure title-based lookup.
-		pages := treeService.FindPagesByTitle(target)
+		pages := publishedPagesByTitle(treeService, target)
 		if len(pages) == 1 {
 			result = append(result, TargetLink{
 				TargetPageID:   pages[0].ID,
@@ -281,7 +293,7 @@ func resolveTargetLinks(tree *tree.TreeService, currentPath string, links []stri
 
 		// find page by route path
 		page, err := tree.FindPageByRoutePath(normalizedForLookup)
-		if err == nil && page != nil {
+		if err == nil && page != nil && !pagevisibility.IsInDraftSubtree(page.PageNode) {
 			// found page
 			targetLinks = append(targetLinks, TargetLink{
 				TargetPageID:   page.ID,

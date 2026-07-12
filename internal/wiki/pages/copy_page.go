@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/perber/wiki/internal/core/assets"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -82,7 +83,8 @@ func (uc *CopyPageUseCase) Execute(_ context.Context, in CopyPageInput) (*CopyPa
 	}
 
 	updatedContent := strings.ReplaceAll(page.Content, "/assets/"+page.ID+"/", "/assets/"+copyPage.ID+"/")
-	if err := uc.tree.UpdateNode(in.UserID, copyPage.ID, copyPage.Title, copyPage.Slug, &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	draft := pagevisibility.IsInDraftSubtree(page.PageNode)
+	if err := uc.tree.UpdateNode(in.UserID, copyPage.ID, copyPage.Title, copyPage.Slug, &updatedContent, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
 		cleanup()
 		_ = uc.assets.DeleteAllAssetsForPage(copyPage.PageNode)
 		return nil, err

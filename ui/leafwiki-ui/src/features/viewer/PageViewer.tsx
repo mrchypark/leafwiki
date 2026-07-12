@@ -23,6 +23,7 @@ import { useDialogsStore } from '@/stores/dialogs'
 import { useHotKeysStore } from '@/stores/hotkeys'
 import { useTocPanelStore } from '@/stores/tocPanel'
 import { useTreeStore } from '@/stores/tree'
+import { useSessionStore } from '@/stores/session'
 import { useCallback, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -65,6 +66,8 @@ export default function PageViewer() {
   const isPinned = useTreeStore((s) =>
     page ? (s.byId[page.id]?.pinned ?? false) : false,
   )
+  const userId = useSessionStore((s) => s.user?.id ?? null)
+  const userRole = useSessionStore((s) => s.user?.role ?? null)
 
   const actions = {
     pageKind: page?.kind,
@@ -117,7 +120,7 @@ export default function PageViewer() {
   useEffect(() => {
     const path = toWikiLookupPath(pathname)
     loadPageData?.(path)
-  }, [pathname, loadPageData])
+  }, [pathname, loadPageData, userId, userRole])
 
   useEffect(() => {
     if (!page?.id) return

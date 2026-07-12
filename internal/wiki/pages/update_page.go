@@ -20,6 +20,7 @@ type UpdatePageInput struct {
 	Kind                *tree.NodeKind
 	Tags                []string
 	Properties          map[string]string
+	Draft               *bool
 	PreserveFrontmatter bool
 }
 
@@ -71,16 +72,17 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 	// Snapshot mutable fields before UpdateNode mutates the live tree node.
 	oldTitle := before.Title
 	oldContent := before.Content
+	oldDraft := before.Draft
 
 	var subtreeIDs []string
-	if slugChanged {
+	if slugChanged || in.Draft != nil {
 		subtreeIDs = collectSubtreeIDs(before.PageNode)
 		if len(subtreeIDs) == 0 {
 			subtreeIDs = []string{in.ID}
 		}
 	}
 
-	if err = uc.tree.UpdateNode(in.UserID, in.ID, in.Title, in.Slug, in.Content, in.Version, in.Tags, in.Properties, in.PreserveFrontmatter); err != nil {
+	if err = uc.tree.UpdateNode(in.UserID, in.ID, in.Title, in.Slug, in.Content, in.Version, in.Tags, in.Properties, in.PreserveFrontmatter, in.Draft); err != nil {
 		return nil, err
 	}
 
@@ -91,6 +93,7 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 
 	contentChanged := oldContent != after.Content
 	titleChanged := oldTitle != after.Title
+	draftChanged := oldDraft != after.Draft
 
 	event := pagesave.PageSaveEvent{
 		Operation:      pagesave.PageOperationUpdate,
@@ -101,9 +104,10 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 		ContentChanged: contentChanged,
 		SlugChanged:    slugChanged,
 		TitleChanged:   titleChanged,
+		DraftChanged:   draftChanged,
 	}
 
-	if slugChanged {
+	if slugChanged || draftChanged {
 		pages, errs := uc.tree.GetPages(subtreeIDs)
 		for i, p := range pages {
 			if errs[i] != nil {

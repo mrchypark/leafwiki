@@ -60,3 +60,30 @@ describe('useTreeStore — getPagesByTitle', () => {
     expect(getPagesByTitle('Anything')).toHaveLength(0)
   })
 })
+
+describe('useTreeStore — visibility scope', () => {
+  it('clears page data that may belong to another authenticated user', () => {
+    const page = makeNode('1', 'Private draft', 'private-draft')
+    useTreeStore.setState({
+      tree: page,
+      byId: { [page.id]: page },
+      byPath: { [page.path]: page },
+      pinnedPages: [page],
+      activeNodeId: page.id,
+      openNodeIds: [page.id],
+      openNodeIdSet: { [page.id]: true },
+    })
+
+    useTreeStore.getState().clearVisibilityData()
+
+    expect(useTreeStore.getState()).toMatchObject({
+      tree: null,
+      byId: {},
+      byPath: {},
+      pinnedPages: [],
+      activeNodeId: null,
+      openNodeIds: [],
+      openNodeIdSet: {},
+    })
+  })
+})

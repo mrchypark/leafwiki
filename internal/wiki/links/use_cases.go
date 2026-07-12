@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	corelinks "github.com/perber/wiki/internal/links"
@@ -51,11 +52,65 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 		}
 		return nil, err
 	}
+	if pagevisibility.IsInDraftSubtree(page.PageNode) {
+		return nil, linkPageNotFoundError(nil)
+	}
 	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
 	if err != nil {
 		return nil, err
 	}
+	filterLinkStatus(status, uc.tree)
 	return &GetLinkStatusOutput{Status: status}, nil
+}
+
+func linkPageNotFoundError(err error) error {
+	return sharederrors.NewLocalizedError(
+		ErrCodeLinkPageNotFound,
+		"Page not found",
+		"page not found",
+		err,
+	)
+}
+
+func filterLinkStatus(status *corelinks.LinkStatusResult, treeService *tree.TreeService) {
+	if status == nil {
+		return
+	}
+	status.Backlinks = filterPublicBacklinks(status.Backlinks, treeService)
+	status.BrokenIncoming = filterPublicBacklinks(status.BrokenIncoming, treeService)
+	status.Outgoings = filterPublicOutgoings(status.Outgoings, treeService)
+	status.BrokenOutgoings = filterPublicOutgoings(status.BrokenOutgoings, treeService)
+	status.Counts = corelinks.LinkStatusCounts{
+		Backlinks:       len(status.Backlinks),
+		BrokenIncoming:  len(status.BrokenIncoming),
+		Outgoings:       len(status.Outgoings),
+		BrokenOutgoings: len(status.BrokenOutgoings),
+	}
+}
+
+func filterPublicBacklinks(items []corelinks.BacklinkResultItem, treeService *tree.TreeService) []corelinks.BacklinkResultItem {
+	visible := make([]corelinks.BacklinkResultItem, 0, len(items))
+	for _, item := range items {
+		node, err := treeService.FindPageByID(item.FromPageID)
+		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
+			visible = append(visible, item)
+		}
+	}
+	return visible
+}
+
+func filterPublicOutgoings(items []corelinks.OutgoingResultItem, treeService *tree.TreeService) []corelinks.OutgoingResultItem {
+	visible := make([]corelinks.OutgoingResultItem, 0, len(items))
+	for _, item := range items {
+		if item.ToPageID != "" {
+			node, err := treeService.FindPageByID(item.ToPageID)
+			if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
+				continue
+			}
+		}
+		visible = append(visible, item)
+	}
+	return visible
 }
 
 // ─── GetBacklinksUseCase ─────────────────────────────────────────────────────

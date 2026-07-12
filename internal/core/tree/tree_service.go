@@ -31,11 +31,11 @@ type TreeService struct {
 }
 
 const (
-	legacyTreeFilename                     = "tree.json"
-	errNilTreeReconstructed                = "internal error: tree reconstruction returned nil tree"
-	errPersistChildOrderFailed             = "could not persist child order: %w"
-	errGetPageContentFailed                = "could not get page content: %w"
-	errRollbackMovedNodeFailed             = "rollback moved node: %w"
+	legacyTreeFilename         = "tree.json"
+	errNilTreeReconstructed    = "internal error: tree reconstruction returned nil tree"
+	errPersistChildOrderFailed = "could not persist child order: %w"
+	errGetPageContentFailed    = "could not get page content: %w"
+	errRollbackMovedNodeFailed = "rollback moved node: %w"
 )
 
 func NewTreeService(storageDir string) *TreeService {
@@ -663,7 +663,7 @@ func (t *TreeService) DeleteNode(userID string, id string, recursive bool, expec
 // When preserveFrontmatter is true the content is treated as raw markdown with
 // embedded frontmatter (UpsertContentPreservingFrontmatter).
 // When both are absent, content is a plain body update (UpsertContent).
-func (t *TreeService) UpdateNode(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool) error {
+func (t *TreeService) UpdateNode(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool, draft ...*bool) error {
 	return t.withLockedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
@@ -721,14 +721,23 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 		t.removeTitleIndexForNodeLocked(node)
 		node.Title = title
 		t.addTitleIndexForNodeLocked(node)
+		if len(draft) > 0 && draft[0] != nil {
+			node.Draft = *draft[0]
+		}
 
 		// Update metadata
 		node.Metadata.UpdatedAt = time.Now().UTC()
 		node.Metadata.LastAuthorID = userID
 
 		// Keep frontmatter in sync *if file exists* (important when title changed but content == nil)
-		if err := t.store.SyncFrontmatterIfExists(node); err != nil {
-			return fmt.Errorf("could not sync frontmatter: %w", err)
+		var syncErr error
+		if len(draft) > 0 && draft[0] != nil {
+			syncErr = t.store.SyncFrontmatterWithDraftIfExists(node)
+		} else {
+			syncErr = t.store.SyncFrontmatterIfExists(node)
+		}
+		if syncErr != nil {
+			return fmt.Errorf("could not sync frontmatter: %w", syncErr)
 		}
 
 		// Save tree

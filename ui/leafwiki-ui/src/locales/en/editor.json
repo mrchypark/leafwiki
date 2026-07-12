@@ -60,5 +60,10 @@
     "savedToast": "Saved",
     "versionConflictToast": "Auto-save paused — page was changed by another user. Save manually to continue.",
     "errorFallback": "Auto-save failed"
+  },
+  "frontmatter": {
+    "visibility": "Visibility",
+    "draft": "Draft",
+    "published": "Published"
   }
 }

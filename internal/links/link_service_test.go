@@ -315,6 +315,55 @@ func TestLinkService_IndexAllPages_BuildsLinks(t *testing.T) {
 	}
 }
 
+func TestLinkService_IndexAllPages_SkipsDraftSources(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, _ := createSimpleLinkedPages(t, ts)
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	pageA.Draft = true
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+	out, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if out.Count != 0 {
+		t.Fatalf("draft source was indexed: %#v", out.Outgoings)
+	}
+}
+
+func TestLinkService_IndexAllPages_DoesNotResolveDraftTargets(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, pageBID := createSimpleLinkedPages(t, ts)
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage b failed: %v", err)
+	}
+	pageB.Draft = true
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+	out, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if out.Count != 1 || !out.Outgoings[0].Broken || out.Outgoings[0].ToPageID != "" {
+		t.Fatalf("draft target was resolved: %#v", out.Outgoings)
+	}
+	backlinks, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if backlinks.Count != 0 {
+		t.Fatalf("draft target received backlinks: %#v", backlinks.Backlinks)
+	}
+}
+
 func TestLinkService_IndexAllPages_ReplacesExistingLinks(t *testing.T) {
 	svc, ts, _ := setupLinkService(t)
 	pageAID, pageBID := createSimpleLinkedPages(t, ts)

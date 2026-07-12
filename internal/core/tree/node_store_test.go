@@ -610,6 +610,30 @@ func TestNodeStore_UpsertContentAndMetadata_UpdatesProperties(t *testing.T) {
 	}
 }
 
+func TestNodeStore_UpsertContentAndMetadata_IgnoresSystemProperties(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+	root := &PageNode{ID: "root", Slug: "root", Title: "root", Kind: NodeKindSection}
+	page := &PageNode{ID: "p1", Slug: "p", Title: "My Page", Kind: NodeKindPage, Parent: root}
+	path := filepath.Join(tmp, "root", "p.md")
+	mustWriteFile(t, path, "---\nleafwiki_id: p1\nleafwiki_title: My Page\n---\n# old\n", 0o644)
+
+	props := map[string]string{"draft": "true", "tags": "forged", "leafwiki_creator_id": "attacker", "status": "ok"}
+	if err := store.UpsertContentAndMetadata(page, "# updated", nil, props); err != nil {
+		t.Fatalf("UpsertContentAndMetadata: %v", err)
+	}
+	fm, _, _, err := markdown.ParseFrontmatter(string(mustRead(t, path)))
+	if err != nil {
+		t.Fatalf("ParseFrontmatter: %v", err)
+	}
+	if fm.Draft || fm.LeafWikiCreatorID == "attacker" || fm.ExtraFields["tags"] != nil || fm.ExtraFields["draft"] != nil {
+		t.Fatalf("system properties escaped lower-layer filtering: %#v", fm)
+	}
+	if fm.ExtraFields["status"] != "ok" {
+		t.Fatalf("ordinary property missing: %#v", fm.ExtraFields)
+	}
+}
+
 func TestNodeStore_UpsertContentAndMetadata_TitleAsCustomPropertyRoundtrips(t *testing.T) {
 	// Regression test: after Phase 1, "title" alongside "leafwiki_title" is
 	// surfaced to the editor and included in incoming properties. It must be

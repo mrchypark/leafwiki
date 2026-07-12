@@ -27,6 +27,7 @@ type Frontmatter struct {
 	LeafWikiCreatorID    string                 `yaml:"leafwiki_creator_id,omitempty" json:"creatorId,omitempty"`
 	LeafWikiLastAuthorID string                 `yaml:"leafwiki_last_author_id,omitempty" json:"lastAuthorId,omitempty"`
 	LeafWikiPinned       bool                   `yaml:"leafwiki_pinned,omitempty" json:"pinned,omitempty"`
+	Draft                bool                   `yaml:"draft,omitempty" json:"draft,omitempty"`
 	ExtraFields          map[string]interface{} `yaml:"-" json:"-"`
 }
 
@@ -75,11 +76,21 @@ func parseFrontmatterYAML(yamlPart string) (Frontmatter, error) {
 			fm.LeafWikiPinned = b
 		}
 	}
+	if value, ok := raw["draft"]; ok {
+		if b, ok := value.(bool); ok {
+			fm.Draft = b
+		}
+	}
 
 	for key, value := range raw {
 		switch key {
 		case "leafwiki_id", "leafwiki_title", "leafwiki_created_at", "leafwiki_updated_at", "leafwiki_creator_id", "leafwiki_last_author_id", "leafwiki_pinned":
 			continue
+		case "draft":
+			if _, isBoolean := value.(bool); isBoolean {
+				continue
+			}
+			fm.ExtraFields[key] = value
 		default:
 			fm.ExtraFields[key] = value
 		}
@@ -295,6 +306,15 @@ func BuildMarkdownWithExtraFrontmatter(extraFields map[string]interface{}, body 
 // and a markdown body. It preserves additional frontmatter keys and emits them
 // in deterministic order to keep rewrites stable.
 func BuildMarkdownWithFrontmatter(fm Frontmatter, body string) (string, error) {
+	if fm.Draft && fm.ExtraFields != nil {
+		extra := make(map[string]interface{}, len(fm.ExtraFields))
+		for key, value := range fm.ExtraFields {
+			if key != "draft" {
+				extra[key] = value
+			}
+		}
+		fm.ExtraFields = extra
+	}
 	if strings.TrimSpace(fm.LeafWikiID) == "" {
 		return BuildMarkdownWithExtraFrontmatter(fm.ExtraFields, body)
 	}
@@ -341,6 +361,12 @@ func BuildMarkdownWithFrontmatter(fm Frontmatter, body string) (string, error) {
 	if fm.LeafWikiPinned {
 		mapping.Content = append(mapping.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "leafwiki_pinned"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+		)
+	}
+	if fm.Draft {
+		mapping.Content = append(mapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "draft"},
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 		)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
@@ -261,6 +262,9 @@ func (w *Wiki) bootstrapTagsAndProperties() {
 			w.log.Warn("skipping page during bootstrap", "pageID", ids[i], "error", errs[i])
 			continue
 		}
+		if pagevisibility.IsInDraftSubtree(page.PageNode) {
+			continue
+		}
 		if err := w.tags.IndexPageContent(page.ID, page.RawContent); err != nil {
 			w.log.Warn("failed to index tags", "pageID", page.ID, "error", err)
 		}
@@ -387,6 +391,7 @@ func (w *Wiki) buildAssetsRoutes() *wikiassets.Routes {
 		Rename:      wikiassets.NewRenameAssetUseCase(w.tree, w.asset, w.revision, w.log),
 		Delete:      wikiassets.NewDeleteAssetUseCase(w.tree, w.asset, w.revision, w.log),
 		AuthService: w.auth,
+		Tree:        w.tree,
 		AssetsDir:   w.asset.GetAssetsDir(),
 		Log:         w.log,
 	})
@@ -403,6 +408,7 @@ func (w *Wiki) buildRevisionsRoutes() *wikirevisions.Routes {
 		CheckIntegrity:   wikirevisions.NewCheckIntegrityUseCase(w.revision),
 		UserResolver:     w.userResolver,
 		AuthService:      w.auth,
+		Tree:             w.tree,
 	})
 }
 
@@ -423,7 +429,7 @@ func (w *Wiki) buildLinksRoutes() *wikilinks.Routes {
 
 func (w *Wiki) buildTagsRoutes() *wikitags.Routes {
 	return wikitags.NewRoutes(wikitags.RoutesConfig{
-		GetTags:        wikitags.NewGetTagsUseCase(w.tags),
+		GetTags:        wikitags.NewGetTagsUseCase(w.tags, w.tree),
 		GetPagesByTags: wikitags.NewGetPagesByTagsUseCase(w.tags, w.tree, w.userResolver),
 		AuthService:    w.auth,
 	})
@@ -431,7 +437,7 @@ func (w *Wiki) buildTagsRoutes() *wikitags.Routes {
 
 func (w *Wiki) buildPropertiesRoutes() *wikiproperties.Routes {
 	return wikiproperties.NewRoutes(wikiproperties.RoutesConfig{
-		GetPropertyKeys:    wikiproperties.NewGetPropertyKeysUseCase(w.props),
+		GetPropertyKeys:    wikiproperties.NewGetPropertyKeysUseCase(w.props, w.tree),
 		GetPagesByProperty: wikiproperties.NewGetPagesByPropertyUseCase(w.props, w.tree, w.userResolver),
 		AuthService:        w.auth,
 	})
@@ -732,8 +738,8 @@ func (w *Wiki) UserService() *auth.UserService {
 }
 
 func (w *Wiki) Close() error {
-	w.shutdownCancel()  // signal in-flight reloads to abort
-	w.reloadWG.Wait()   // drain goroutines before closing stores
+	w.shutdownCancel() // signal in-flight reloads to abort
+	w.reloadWG.Wait()  // drain goroutines before closing stores
 	w.status.Finish()
 	if w.auth != nil {
 		// When auth is enabled, AuthService owns both the session store and user store.

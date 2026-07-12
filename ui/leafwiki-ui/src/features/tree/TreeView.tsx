@@ -13,6 +13,7 @@ import { useIsReadOnly } from '@/lib/useIsReadOnly'
 import { toWikiLookupPath } from '@/lib/wikiPath'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
+import { useSessionStore } from '@/stores/session'
 import {
   ChevronsDown,
   ChevronsUp,
@@ -51,6 +52,8 @@ export default function TreeView() {
   const hasPinned = pinnedPages.length > 0
   const openDialog = useDialogsStore((state) => state.openDialog)
   const readOnlyMode = useIsReadOnly()
+  const userId = useSessionStore((s) => s.user?.id ?? null)
+  const userRole = useSessionStore((s) => s.user?.role ?? null)
 
   useEffect(() => {
     if (!tree || !currentPath) return
@@ -85,7 +88,7 @@ export default function TreeView() {
     if (tree === null) {
       reloadTree()
     }
-  }, [tree, reloadTree])
+  }, [tree, reloadTree, userId, userRole])
 
   if (loading)
     return (

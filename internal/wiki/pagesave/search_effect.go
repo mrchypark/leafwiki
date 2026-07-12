@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/search"
 )
@@ -29,8 +30,16 @@ func (e *SearchIndexSideEffect) Apply(event PageSaveEvent) {
 	}
 
 	switch event.Operation {
-	case PageOperationCreate, PageOperationUpdate, PageOperationRestore:
+	case PageOperationCreate, PageOperationRestore:
 		if event.After != nil {
+			e.indexPage(event.After)
+		}
+	case PageOperationUpdate:
+		if event.DraftChanged {
+			for _, page := range event.AffectedPages {
+				e.indexPage(page)
+			}
+		} else if event.After != nil {
 			e.indexPage(event.After)
 		}
 
@@ -85,6 +94,9 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 			e.log.Warn("skipping page during search bootstrap", "pageID", ids[i], "error", errs[i])
 			continue
 		}
+		if pagevisibility.IsInDraftSubtree(page.PageNode) {
+			continue
+		}
 		e.writeToIndex(page, page.RawContent)
 	}
 	return nil
@@ -92,6 +104,12 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 
 func (e *SearchIndexSideEffect) indexPage(page *tree.Page) {
 	if page == nil {
+		return
+	}
+	if pagevisibility.IsInDraftSubtree(page.PageNode) {
+		if err := e.index.RemovePage(page.ID); err != nil {
+			e.log.Warn("failed to remove draft page from search index", "pageID", page.ID, "error", err)
+		}
 		return
 	}
 	e.writeToIndex(page, page.RawContent)

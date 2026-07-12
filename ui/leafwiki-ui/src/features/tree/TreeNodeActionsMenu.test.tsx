@@ -125,6 +125,7 @@ describe('TreeNodeActionsMenu', () => {
       properties: {},
       version: node.version,
       kind: node.kind,
+      draft: false,
     }
     vi.mocked(getPageByPath).mockResolvedValue(fetchedPage)
     vi.mocked(updatePage).mockResolvedValue({
@@ -156,6 +157,7 @@ describe('TreeNodeActionsMenu', () => {
         'some content',
         [],
         {},
+        false,
       )
     })
     expect(previewPageRefactor).not.toHaveBeenCalled()

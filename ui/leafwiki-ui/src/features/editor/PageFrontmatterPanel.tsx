@@ -6,19 +6,25 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { useConfigStore } from '@/stores/config'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { EditorFrontmatterField } from './frontmatter'
 
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
+  draft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
   errors: Record<string, string>
   hasUnsupportedFields: boolean
   onTagsChange: (tags: string[]) => void
+  onDraftChange: (draft: boolean) => void
   onFieldsChange: (fields: EditorFrontmatterField[]) => void
 }
 
@@ -43,13 +49,17 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
+  draft,
   tags,
   fields,
   errors,
   hasUnsupportedFields,
   onTagsChange,
+  onDraftChange,
   onFieldsChange,
 }: PageFrontmatterPanelProps) {
+  const { t } = useTranslation('editor')
+  const draftEnabled = !useConfigStore((state) => state.authDisabled)
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {
@@ -122,6 +132,9 @@ export function PageFrontmatterPanel({
   const hasErrors = Object.keys(errors).length > 0
 
   const summaryParts = [
+    ...(draftEnabled
+      ? [t(draft ? 'frontmatter.draft' : 'frontmatter.published')]
+      : []),
     normalizedTags.length === 1 ? '1 tag' : `${normalizedTags.length} tags`,
     editableFields.length === 1
       ? '1 property'
@@ -161,6 +174,27 @@ export function PageFrontmatterPanel({
           </AccordionTrigger>
           <AccordionContent className="page-frontmatter-panel__content">
             <div className="page-frontmatter-panel__stack">
+              {draftEnabled && (
+                <div className="page-frontmatter-panel__row">
+                  <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
+                    {t('frontmatter.visibility')}
+                  </div>
+                  <div className="page-frontmatter-panel__draft-field">
+                    <Checkbox
+                      id="page-frontmatter-draft"
+                      checked={draft}
+                      onCheckedChange={(checked) =>
+                        onDraftChange(checked === true)
+                      }
+                      data-testid="page-frontmatter-draft"
+                    />
+                    <Label htmlFor="page-frontmatter-draft">
+                      {t('frontmatter.draft')}
+                    </Label>
+                  </div>
+                </div>
+              )}
+
               <div className="page-frontmatter-panel__row page-frontmatter-panel__row--tags">
                 <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
                   Tags

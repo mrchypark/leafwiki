@@ -197,3 +197,32 @@ leafwiki_id: [broken
 		t.Fatalf("expected parse error")
 	}
 }
+
+func TestSetRawContentPreservingManagedFrontmatter_PreservesExistingSemanticDraft(t *testing.T) {
+	mdFile := NewMarkdownFile("/tmp/test.md", "", Frontmatter{Draft: true})
+	if err := mdFile.SetRawContentPreservingManagedFrontmatter("---\ndraft: false\n---\nBody"); err != nil {
+		t.Fatalf("SetRawContentPreservingManagedFrontmatter: %v", err)
+	}
+	if !mdFile.GetFrontmatter().Draft {
+		t.Fatal("incoming raw frontmatter changed existing semantic draft")
+	}
+
+	mdFile = NewMarkdownFile("/tmp/test.md", "", Frontmatter{})
+	if err := mdFile.SetRawContentPreservingManagedFrontmatter("---\ndraft: true\n---\nBody"); err != nil {
+		t.Fatalf("SetRawContentPreservingManagedFrontmatter: %v", err)
+	}
+	if mdFile.GetFrontmatter().Draft {
+		t.Fatal("incoming raw frontmatter enabled semantic draft")
+	}
+}
+
+func TestSetRawContentPreservingManagedFrontmatter_PreservesQuotedDraftAsProperty(t *testing.T) {
+	mdFile := NewMarkdownFile("/tmp/test.md", "", Frontmatter{})
+	if err := mdFile.SetRawContentPreservingManagedFrontmatter("---\ndraft: \"true\"\n---\nBody"); err != nil {
+		t.Fatalf("SetRawContentPreservingManagedFrontmatter: %v", err)
+	}
+	fm := mdFile.GetFrontmatter()
+	if fm.Draft || fm.ExtraFields["draft"] != "true" {
+		t.Fatalf("quoted draft changed semantics: %#v", fm)
+	}
+}

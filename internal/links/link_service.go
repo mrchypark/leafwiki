@@ -3,6 +3,7 @@ package links
 import (
 	"context"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 )
 
@@ -55,6 +56,9 @@ func (b *LinkService) IndexAllPagesContext(ctx context.Context) error {
 		}
 		if errs[i] != nil {
 			return errs[i]
+		}
+		if pagevisibility.IsInDraftSubtree(page.PageNode) {
+			continue
 		}
 		targets := collectTargetsFromContent(b.treeService, page.CalculatePath(), page.Content)
 		if err := b.store.AddLinks(page.ID, page.Title, targets); err != nil {
@@ -197,7 +201,7 @@ func (b *LinkService) mergeAmbiguousWikiLinksIntoBacklinks(pageID string, pageTi
 		return backlinks, nil
 	}
 
-	matches := b.treeService.FindPagesByTitle(pageTitle)
+	matches := publishedPagesByTitle(b.treeService, pageTitle)
 	if len(matches) <= 1 {
 		return backlinks, nil
 	}
@@ -248,10 +252,13 @@ func (b *LinkService) isAmbiguousWikilinkOutgoing(outgoing Outgoing) bool {
 		return false
 	}
 
-	return len(b.treeService.FindPagesByTitle(WikilinkTitleFromSentinel(outgoing.ToPath))) > 1
+	return len(publishedPagesByTitle(b.treeService, WikilinkTitleFromSentinel(outgoing.ToPath))) > 1
 }
 
 func (b *LinkService) UpdateLinksForPage(page *tree.Page, content string) error {
+	if pagevisibility.IsInDraftSubtree(page.PageNode) {
+		return b.store.DeleteOutgoingLinks(page.ID)
+	}
 	targets := collectTargetsFromContent(b.treeService, page.CalculatePath(), content)
 	return b.store.AddLinks(page.ID, page.Title, targets)
 }
@@ -260,6 +267,12 @@ func (b *LinkService) UpdateLinksAndHealForPages(pages []*tree.Page) error {
 	updates := make([]PageLinkUpdate, 0, len(pages))
 	for _, page := range pages {
 		if page == nil {
+			continue
+		}
+		if pagevisibility.IsInDraftSubtree(page.PageNode) {
+			if err := b.store.DeleteOutgoingLinks(page.ID); err != nil {
+				return err
+			}
 			continue
 		}
 		pagePath := normalizeWikiPath(page.CalculatePath())
@@ -302,6 +315,9 @@ func (b *LinkService) MarkLinksBrokenForPrefix(prefix string) error {
 }
 
 func (b *LinkService) HealLinksForExactPath(page *tree.Page) error {
+	if page == nil || pagevisibility.IsInDraftSubtree(page.PageNode) {
+		return nil
+	}
 	toPath := normalizeWikiPath(page.CalculatePath())
 	return b.store.HealLinksForPath(toPath, page.ID)
 }
@@ -311,7 +327,7 @@ func (b *LinkService) HealLinksForExactPath(page *tree.Page) error {
 // If the title is shared by multiple pages the link is ambiguous and must
 // remain as a broken sentinel.
 func (b *LinkService) HealWikiLinksForPage(page *tree.Page) error {
-	if len(b.treeService.FindPagesByTitle(page.Title)) != 1 {
+	if page == nil || pagevisibility.IsInDraftSubtree(page.PageNode) || len(publishedPagesByTitle(b.treeService, page.Title)) != 1 {
 		return nil
 	}
 	return b.store.HealWikiLinksForTitle(page.Title, page.ID)
@@ -325,7 +341,7 @@ func (b *LinkService) HealWikiLinksForTitleIfUnambiguous(title string) error {
 	if title == "" {
 		return nil
 	}
-	matches := b.treeService.FindPagesByTitle(title)
+	matches := publishedPagesByTitle(b.treeService, title)
 	if len(matches) != 1 {
 		return nil
 	}

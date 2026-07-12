@@ -11,6 +11,7 @@ import { ChevronUp, FilePlus } from 'lucide-react'
 import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTreeNodeActionsMenusStore } from './treeNodeActionsMenus'
+import { DraftBadge } from './DraftBadge'
 import TreeNodeActionsMenu from './TreeNodeActionsMenu'
 
 type Props = {
@@ -50,6 +51,7 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
         >
           {node.title || 'Untitled Page'}
         </span>
+        {node.draft && <DraftBadge />}
       </Link>
     </div>
   )

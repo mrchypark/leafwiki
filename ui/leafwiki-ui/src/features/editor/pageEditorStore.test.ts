@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Page } from '@/lib/api/pages'
-import { usePageEditorStore } from './pageEditorStore'
+import { isDirtyState, usePageEditorStore } from './pageEditorStore'
 
 const fakePage: Page = {
   id: 'page-1',
@@ -12,6 +12,7 @@ const fakePage: Page = {
   version: 'v1',
   tags: ['guide'],
   properties: { owner: 'alice' },
+  draft: false,
 } as Page
 
 describe('pageEditorStore.resetEditorState', () => {
@@ -26,6 +27,7 @@ describe('pageEditorStore.resetEditorState', () => {
       title: fakePage.title,
       slug: fakePage.slug,
       content: fakePage.content,
+      draft: true,
       tags: fakePage.tags,
       frontmatterFields: [{ key: 'owner', value: 'alice', type: 'text' }],
       notFound: true,
@@ -40,6 +42,7 @@ describe('pageEditorStore.resetEditorState', () => {
     expect(state.title).toBe('')
     expect(state.slug).toBe('')
     expect(state.content).toBe('')
+    expect(state.draft).toBe(false)
     expect(state.tags).toEqual([])
     expect(state.frontmatterFields).toEqual([])
     expect(state.notFound).toBe(false)
@@ -50,5 +53,20 @@ describe('pageEditorStore.resetEditorState', () => {
     usePageEditorStore.getState().resetEditorState()
 
     expect(usePageEditorStore.getState().page).toBeNull()
+  })
+
+  it('treats changing draft status as an unsaved edit', () => {
+    usePageEditorStore.setState({
+      page: fakePage,
+      initialPage: fakePage,
+      title: fakePage.title,
+      slug: fakePage.slug,
+      content: fakePage.content,
+      tags: fakePage.tags,
+      frontmatterFields: [{ key: 'owner', value: 'alice', type: 'text' }],
+      draft: true,
+    })
+
+    expect(isDirtyState(usePageEditorStore.getState())).toBe(true)
   })
 })

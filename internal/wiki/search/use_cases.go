@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/shared/htmlutil"
 	"github.com/perber/wiki/internal/core/tree"
@@ -64,12 +65,12 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 		return uc.searchByTags(pageIDs, in.Offset, in.Limit)
 	}
 
-	result, err := uc.index.Search(in.Query, pageIDs, in.Offset, in.Limit)
+	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
 	if err != nil {
 		return nil, err
 	}
-
-	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
+	fullMatchPageIDs = uc.publicPageIDs(fullMatchPageIDs)
+	result, err := uc.index.Search(in.Query, fullMatchPageIDs, in.Offset, in.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +92,7 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			},
 		}, nil
 	}
+	pageIDs = uc.publicPageIDs(pageIDs)
 
 	excerpts, err := uc.tags.GetExcerptsForPages(pageIDs)
 	if err != nil {
@@ -148,6 +150,20 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			TagFacets: uc.buildTagFacets(pageIDs),
 		},
 	}, nil
+}
+
+func (uc *SearchUseCase) publicPageIDs(pageIDs []string) []string {
+	visible := make([]string, 0, len(pageIDs))
+	if uc.tree == nil {
+		return visible
+	}
+	for _, pageID := range pageIDs {
+		node, err := uc.tree.FindPageByID(pageID)
+		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
+			visible = append(visible, pageID)
+		}
+	}
+	return visible
 }
 
 func (uc *SearchUseCase) attachTags(items []coresearch.SearchResultItem) {

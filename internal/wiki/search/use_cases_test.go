@@ -92,3 +92,42 @@ func TestSearchUseCase_Execute_TagOnlySearchEscapesTitle(t *testing.T) {
 		t.Fatalf("escaped title = %q", got)
 	}
 }
+
+func TestSearchUseCase_Execute_FiltersStaleDraftRowsBeforePaginationAndFacets(t *testing.T) {
+	uc, tagsSvc, treeSvc := setupSearchUseCaseForTags(t)
+	publicID := createTaggedPage(t, treeSvc, "Public", "public", []string{"shared"})
+	draftID := createTaggedPage(t, treeSvc, "Draft", "draft", []string{"shared", "secret"})
+	for _, tc := range []struct {
+		id, content string
+	}{
+		{id: publicID, content: "sharedsearchterm public"},
+		{id: draftID, content: "sharedsearchterm private"},
+	} {
+		page, err := treeSvc.GetPage(tc.id)
+		if err != nil {
+			t.Fatalf("GetPage: %v", err)
+		}
+		if err := uc.index.IndexPage(page.CalculatePath(), page.CalculatePath()+".md", page.ID, page.Title, page.Kind, tc.content); err != nil {
+			t.Fatalf("IndexPage: %v", err)
+		}
+		if err := tagsSvc.IndexPageContent(page.ID, page.RawContent); err != nil {
+			t.Fatalf("IndexPageContent: %v", err)
+		}
+	}
+	draft, err := treeSvc.FindPageByID(draftID)
+	if err != nil {
+		t.Fatalf("FindPageByID: %v", err)
+	}
+	draft.Draft = true
+
+	out, err := uc.Execute(context.Background(), SearchInput{Query: "sharedsearchterm", Limit: 10})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.Result.Count != 1 || len(out.Result.Items) != 1 || out.Result.Items[0].PageID != publicID {
+		t.Fatalf("stale draft affected results: %#v", out.Result)
+	}
+	if len(out.Result.TagFacets) != 1 || out.Result.TagFacets[0].Tag != "shared" || out.Result.TagFacets[0].Count != 1 {
+		t.Fatalf("stale draft affected facets: %#v", out.Result.TagFacets)
+	}
+}

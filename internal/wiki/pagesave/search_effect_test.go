@@ -76,6 +76,25 @@ func TestSearchIndexSideEffect_IndexAllPages_IndexesExistingPages(t *testing.T) 
 	}
 }
 
+func TestSearchIndexSideEffect_IndexAllPages_SkipsDraftPages(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	page := createPageWithContent(t, treeSvc, "Draft Page", "draft-page", "private uniquedraftbootstrap content")
+	page.Draft = true
+
+	if err := effect.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+
+	result, err := index.Search("uniquedraftbootstrap", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatalf("draft page was indexed: %#v", result.Items)
+	}
+}
+
 func TestSearchIndexSideEffect_IndexAllPages_ClearsStaleEntries(t *testing.T) {
 	_, index, effect := setupSearchTest(t)
 
@@ -134,6 +153,81 @@ func TestSearchIndexSideEffect_Apply_Create_IndexesPage(t *testing.T) {
 	}
 	if result.Items[0].PageID != page.ID {
 		t.Errorf("expected pageID %q, got %q", page.ID, result.Items[0].PageID)
+	}
+}
+
+func TestSearchIndexSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	page := createPageWithContent(t, treeSvc, "Transition Page", "transition", "uniquedrafttransition content")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+
+	page.Draft = true
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	result, err := index.Search("uniquedrafttransition", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search draft: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatal("draft page remained in search index")
+	}
+
+	page.Draft = false
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	result, err = index.Search("uniquedrafttransition", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search published: %v", err)
+	}
+	if result.Count != 1 || result.Items[0].PageID != page.ID {
+		t.Fatalf("published page was not reindexed: %#v", result.Items)
+	}
+}
+
+func TestSearchIndexSideEffect_Apply_DraftToggleReindexesSubtree(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+	parent := createPageWithContent(t, treeSvc, "Parent", "parent-draft", "parentvisibilityterm")
+	kind := tree.NodeKindPage
+	childID, err := treeSvc.CreateNode("system", &parent.ID, "Child", "child", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	child, err := treeSvc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	content := "childvisibilityterm"
+	if err := treeSvc.UpdateNode("system", child.ID, child.Title, child.Slug, &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode child: %v", err)
+	}
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage updated child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: parent})
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: child})
+
+	parent.Draft = true
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
+	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
+		result, err := index.Search(term, nil, 0, 10)
+		if err != nil {
+			t.Fatalf("Search draft %q: %v", term, err)
+		}
+		if result.Count != 0 {
+			t.Fatalf("draft subtree term %q remained indexed", term)
+		}
+	}
+
+	parent.Draft = false
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
+	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
+		result, err := index.Search(term, nil, 0, 10)
+		if err != nil {
+			t.Fatalf("Search published %q: %v", term, err)
+		}
+		if result.Count != 1 {
+			t.Fatalf("published subtree term %q was not reindexed", term)
+		}
 	}
 }
 

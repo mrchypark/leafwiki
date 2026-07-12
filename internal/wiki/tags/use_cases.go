@@ -2,9 +2,11 @@ package tags
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/http/dto"
 	coretags "github.com/perber/wiki/internal/tags"
@@ -23,11 +25,12 @@ type GetTagsOutput struct {
 }
 
 type GetTagsUseCase struct {
-	svc *coretags.TagsService
+	svc  *coretags.TagsService
+	tree *tree.TreeService
 }
 
-func NewGetTagsUseCase(svc *coretags.TagsService) *GetTagsUseCase {
-	return &GetTagsUseCase{svc: svc}
+func NewGetTagsUseCase(svc *coretags.TagsService, treeService *tree.TreeService) *GetTagsUseCase {
+	return &GetTagsUseCase{svc: svc, tree: treeService}
 }
 
 func (uc *GetTagsUseCase) Execute(_ context.Context, in GetTagsInput) (*GetTagsOutput, error) {
@@ -42,20 +45,40 @@ func (uc *GetTagsUseCase) Execute(_ context.Context, in GetTagsInput) (*GetTagsO
 	filter := strings.ToLower(strings.TrimSpace(in.Filter))
 	selected := normalizeTags(in.Selected)
 
-	var (
-		tags []coretags.TagCount
-		err  error
-	)
-	if len(selected) == 0 {
-		tags, err = uc.svc.GetAllTags(filter, limit)
-	} else {
-		tags, err = uc.svc.GetAllTagsForSelection(filter, selected, limit)
-	}
+	pageIDs := publicPageIDs(uc.tree)
+	tagsByPage, err := uc.svc.GetTagsForPages(pageIDs)
 	if err != nil {
 		return nil, err
 	}
-	if tags == nil {
-		tags = []coretags.TagCount{}
+	counts := make(map[string]int)
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, tag := range selected {
+		selectedSet[tag] = struct{}{}
+	}
+	for _, pageID := range pageIDs {
+		pageTags := tagsByPage[pageID]
+		if !containsAllTags(pageTags, selectedSet) {
+			continue
+		}
+		for _, tag := range pageTags {
+			if _, isSelected := selectedSet[tag]; isSelected || !strings.HasPrefix(tag, filter) {
+				continue
+			}
+			counts[tag]++
+		}
+	}
+	tags := make([]coretags.TagCount, 0, len(counts))
+	for tag, count := range counts {
+		tags = append(tags, coretags.TagCount{Tag: tag, Count: count})
+	}
+	sort.Slice(tags, func(i, j int) bool {
+		if tags[i].Count == tags[j].Count {
+			return tags[i].Tag < tags[j].Tag
+		}
+		return tags[i].Count > tags[j].Count
+	})
+	if len(tags) > limit {
+		tags = tags[:limit]
 	}
 	return &GetTagsOutput{Tags: tags}, nil
 }
@@ -107,13 +130,48 @@ func (uc *GetPagesByTagsUseCase) Execute(_ context.Context, in GetPagesByTagsInp
 	pages := make([]*dto.TaggedPage, 0, len(pageIDs))
 	for _, id := range pageIDs {
 		node, err := uc.treeService.FindPageByID(id)
-		if err != nil || node == nil {
+		if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
 			continue
 		}
 		pages = append(pages, dto.ToTaggedPage(node, tagsPerPage[id], excerptsPerPage[id], uc.userResolver))
 	}
 
 	return &GetPagesByTagsOutput{Pages: pages}, nil
+}
+
+func publicPageIDs(treeService *tree.TreeService) []string {
+	if treeService == nil {
+		return nil
+	}
+	allIDs := make([]string, 0)
+	_ = treeService.WalkNodes(func(id string) error {
+		allIDs = append(allIDs, id)
+		return nil
+	})
+	ids := make([]string, 0, len(allIDs))
+	for _, id := range allIDs {
+		node, err := treeService.FindPageByID(id)
+		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func containsAllTags(tags []string, selected map[string]struct{}) bool {
+	if len(selected) == 0 {
+		return true
+	}
+	found := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		found[tag] = struct{}{}
+	}
+	for tag := range selected {
+		if _, ok := found[tag]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeTags(tags []string) []string {

@@ -166,3 +166,11 @@ func (mf *MarkdownFile) SetLeafWikiMetadata(createdAt string, updatedAt string, 
 func (mf *MarkdownFile) SetLeafWikiPinned(pinned bool) {
 	mf.fm.LeafWikiPinned = pinned
 }
+
+func (mf *MarkdownFile) SetDraft(draft bool) {
+	mf.fm.Draft = draft
+}
+
+func (mf *MarkdownFile) DeleteExtraField(key string) {
+	delete(mf.fm.ExtraFields, key)
+}
