@@ -109,10 +109,16 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 	}
 
 	if slugChanged || draftChanged {
+		// After is the authoritative updated snapshot and must always be included,
+		// even if the bulk subtree read partially fails.
+		event.AffectedPages = append(event.AffectedPages, after)
 		pages, errs := uc.tree.GetPages(subtreeIDs)
 		for i, p := range pages {
 			if errs[i] != nil {
 				uc.log.Warn("failed to get page for affected list", "pageID", subtreeIDs[i], "error", errs[i])
+				continue
+			}
+			if p == nil || p.ID == after.ID {
 				continue
 			}
 			event.AffectedPages = append(event.AffectedPages, p)

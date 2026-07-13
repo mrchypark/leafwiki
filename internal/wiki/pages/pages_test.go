@@ -301,6 +301,15 @@ func TestUpdatePageUseCase_DraftTransitionListsEntireSubtree(t *testing.T) {
 	if len(effect.events) != 1 || !effect.events[0].DraftChanged || len(effect.events[0].AffectedPages) != 2 {
 		t.Fatalf("draft event = %#v", effect.events)
 	}
+	afterCount := 0
+	for _, affected := range effect.events[0].AffectedPages {
+		if affected != nil && effect.events[0].After != nil && affected.ID == effect.events[0].After.ID {
+			afterCount++
+		}
+	}
+	if afterCount != 1 {
+		t.Fatalf("updated page appears %d times in affected pages, want exactly once: %#v", afterCount, effect.events[0])
+	}
 }
 
 func TestUpdatePageUseCase_PreserveFrontmatterCannotChangeSemanticDraft(t *testing.T) {
