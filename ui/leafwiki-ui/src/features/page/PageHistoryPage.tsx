@@ -11,6 +11,7 @@ import {
 import { useScrollRestoration } from '@/lib/useScrollRestoration'
 import { type HotKeyDefinition, useHotKeysStore } from '@/stores/hotkeys'
 import { useTreeStore } from '@/stores/tree'
+import { useSessionStore } from '@/stores/session'
 import { useCallback, useEffect } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useToolbarStore } from '../toolbar/toolbarStore'
@@ -35,6 +36,8 @@ export default function PageHistoryPage() {
   const notFound = useViewerStore((s) => s.notFound)
   const page = useViewerStore((s) => s.page)
   const loadPageData = useViewerStore((s) => s.loadPageData)
+  const userId = useSessionStore((s) => s.user?.id ?? null)
+  const userRole = useSessionStore((s) => s.user?.role ?? null)
   const isMacOS =
     typeof navigator !== 'undefined' &&
     /Mac|iPhone|iPad|iPod/.test(navigator.platform)
@@ -53,7 +56,7 @@ export default function PageHistoryPage() {
   useEffect(() => {
     const path = toWikiLookupPath(buildViewUrl(pathname))
     void loadPageData?.(path)
-  }, [pathname, loadPageData])
+  }, [pathname, loadPageData, userId, userRole])
 
   useEffect(() => {
     if (!page?.id) return

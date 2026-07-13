@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/http/dto"
@@ -39,11 +40,12 @@ type GetPropertyKeysOutput struct {
 }
 
 type GetPropertyKeysUseCase struct {
-	svc *coreprop.PropertiesService
+	svc  *coreprop.PropertiesService
+	tree *tree.TreeService
 }
 
-func NewGetPropertyKeysUseCase(svc *coreprop.PropertiesService) *GetPropertyKeysUseCase {
-	return &GetPropertyKeysUseCase{svc: svc}
+func NewGetPropertyKeysUseCase(svc *coreprop.PropertiesService, treeService *tree.TreeService) *GetPropertyKeysUseCase {
+	return &GetPropertyKeysUseCase{svc: svc, tree: treeService}
 }
 
 func (uc *GetPropertyKeysUseCase) Execute(_ context.Context, in GetPropertyKeysInput) (*GetPropertyKeysOutput, error) {
@@ -55,7 +57,8 @@ func (uc *GetPropertyKeysUseCase) Execute(_ context.Context, in GetPropertyKeysI
 		limit = 200
 	}
 
-	keys, err := uc.svc.GetAllPropertyKeys(strings.ToLower(strings.TrimSpace(in.Filter)), limit)
+	filter := strings.ToLower(strings.TrimSpace(in.Filter))
+	keys, err := uc.svc.GetAllPropertyKeysForPageIDs(filter, limit, pagevisibility.AllPublishedPageIDs(uc.tree))
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +104,7 @@ func (uc *GetPagesByPropertyUseCase) Execute(_ context.Context, in GetPagesByPro
 	if len(pageIDs) == 0 {
 		return &GetPagesByPropertyOutput{Pages: []*dto.PropertyPage{}}, nil
 	}
+	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.treeService, pageIDs)
 
 	propsPerPage, err := uc.svc.GetPropertiesForPages(pageIDs)
 	if err != nil {
@@ -109,8 +113,8 @@ func (uc *GetPagesByPropertyUseCase) Execute(_ context.Context, in GetPagesByPro
 
 	pages := make([]*dto.PropertyPage, 0, len(pageIDs))
 	for _, id := range pageIDs {
-		node, err := uc.treeService.FindPageByID(id)
-		if err != nil || node == nil {
+		node, err := uc.treeService.SnapshotPageNode(id)
+		if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
 			continue
 		}
 		pages = append(pages, dto.ToPropertyPage(node, propsPerPage[id], uc.userResolver))

@@ -112,3 +112,29 @@ func TestPropertiesSideEffect_Apply_Delete_RemovesProperties(t *testing.T) {
 		t.Errorf("expected properties removed after delete, got %v", ids)
 	}
 }
+
+func TestPropertiesSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
+	treeSvc, propsSvc, effect := setupPropertiesEffectTest(t)
+	page := createPageWithFrontmatter(t, treeSvc, "Draft Props", "draft-props", "---\nstatus: secret\n---\n\nBody.")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+
+	page = setDraftForTest(t, treeSvc, page, true)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err := propsSvc.GetPageIDsByProperty("status", "secret")
+	if err != nil {
+		t.Fatalf("GetPageIDsByProperty draft: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("draft page remained in property index: %v", ids)
+	}
+
+	page = setDraftForTest(t, treeSvc, page, false)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err = propsSvc.GetPageIDsByProperty("status", "secret")
+	if err != nil {
+		t.Fatalf("GetPageIDsByProperty published: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != page.ID {
+		t.Fatalf("published page was not reindexed: %v", ids)
+	}
+}

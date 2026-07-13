@@ -1,13 +1,15 @@
 import BaseDialog from '@/components/BaseDialog'
 import { FormInput } from '@/components/FormInput'
+import { Checkbox } from '@/components/ui/checkbox'
 import { ensurePage, lookupPath, PathLookupResult } from '@/lib/api/pages'
 import { handleFieldErrors } from '@/lib/handleFieldErrors'
 import { DIALOG_CREATE_PAGE_BY_PATH } from '@/lib/registries'
 import { buildEditUrl } from '@/lib/routePath'
 import { useDebounce } from '@/lib/useDebounce'
 import { useTreeStore } from '@/stores/tree'
+import { useConfigStore } from '@/stores/config'
 import { Check, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -36,24 +38,34 @@ export function CreatePageByPathDialog({
   const [title, setTitle] = useState(defaultTitle)
   const [path, setPath] = useState(initialPath || '')
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
-  const [lookup, setLookup] = useState<PathLookupResult | null>(null)
+  const [completedLookup, setCompletedLookup] = useState<{
+    requestedPath: string
+    result: PathLookupResult
+  } | null>(null)
+  const lookupRequest = useRef(0)
   const [loading, setLoading] = useState(false)
+  const [draft, setDraft] = useState(false)
   const reloadTree = useTreeStore((s) => s.reloadTree)
+  const authDisabled = useConfigStore((s) => s.authDisabled)
 
   const debouncedPath = useDebounce(path, 300)
 
-  const runLookup = async (path: string) => {
+  const runLookup = async (requestedPath: string) => {
+    const request = ++lookupRequest.current
     try {
-      const result = await lookupPath(path)
-      if (result) {
-        setLookup(result)
+      const result = await lookupPath(requestedPath)
+      if (request === lookupRequest.current && result) {
+        setCompletedLookup({ requestedPath, result })
       }
     } catch (error) {
       console.error('Error looking up path:', error)
     }
   }
 
-  const isCreateButtonDisabled = !title || !path || loading
+  const lookup =
+    completedLookup?.requestedPath === path ? completedLookup.result : null
+
+  const isCreateButtonDisabled = !title || !path || loading || lookup === null
 
   const handleCreate = async (): Promise<boolean> => {
     setLoading(true)
@@ -61,7 +73,7 @@ export function CreatePageByPathDialog({
 
     try {
       // Here you would call your API to create the page
-      await ensurePage(path, title)
+      await ensurePage(path, title, draft && lookup?.exists === false)
       await reloadTree()
       // On success, close the dialog
       if (forwardToEditMode) {
@@ -80,6 +92,11 @@ export function CreatePageByPathDialog({
   }
 
   // Run lookup for initial path if it exists
+  useEffect(() => {
+    lookupRequest.current += 1
+    setCompletedLookup(null)
+  }, [path])
+
   useEffect(() => {
     if (readOnlyPath && path) {
       // run lookup if the path exists!
@@ -194,6 +211,16 @@ export function CreatePageByPathDialog({
           error={fieldErrors.path}
           allowedHotkeys={DIALOG_INPUT_ALLOWED_HOTKEYS}
         />
+        {!authDisabled && lookup?.exists === false && (
+          <label className="page-dialog__draft">
+            <Checkbox
+              checked={draft}
+              onCheckedChange={(checked) => setDraft(checked === true)}
+              data-testid="create-page-by-path-draft-checkbox"
+            />
+            Draft
+          </label>
+        )}
       </div>
     </BaseDialog>
   )

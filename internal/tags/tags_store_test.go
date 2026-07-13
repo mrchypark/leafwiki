@@ -1,6 +1,7 @@
 package tags
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -8,6 +9,45 @@ import (
 
 	"github.com/perber/wiki/internal/test_utils"
 )
+
+func TestTagsStore_GetAllTagsForPageIDs_AggregatesOnlyAllowedPages(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.SetTagsForPage("public-1", []string{"shared", "alpha"})
+	_ = store.SetTagsForPage("public-2", []string{"shared", "beta"})
+	_ = store.SetTagsForPage("draft", []string{"shared", "secret"})
+
+	tags, err := store.GetAllTagsForPageIDs("", []string{"shared"}, 50, []string{"public-1", "public-2"})
+	if err != nil {
+		t.Fatalf("GetAllTagsForPageIDs: %v", err)
+	}
+	want := []TagCount{{Tag: "alpha", Count: 1}, {Tag: "beta", Count: 1}}
+	if len(tags) != len(want) {
+		t.Fatalf("tags = %#v, want %#v", tags, want)
+	}
+	for i := range want {
+		if tags[i] != want[i] {
+			t.Fatalf("tags[%d] = %#v, want %#v", i, tags[i], want[i])
+		}
+	}
+}
+
+func TestTagsStore_GetAllTagsForPageIDs_UsesSingleBindForLargeAllowlist(t *testing.T) {
+	store := newTestStore(t)
+	pageIDs := make([]string, 1200)
+	for i := range pageIDs {
+		pageIDs[i] = fmt.Sprintf("page-%04d", i)
+	}
+	_ = store.SetTagsForPage(pageIDs[len(pageIDs)-1], []string{"included"})
+	_ = store.SetTagsForPage("draft", []string{"excluded"})
+
+	tags, err := store.GetAllTagsForPageIDs("", nil, 50, pageIDs)
+	if err != nil {
+		t.Fatalf("GetAllTagsForPageIDs: %v", err)
+	}
+	if len(tags) != 1 || tags[0] != (TagCount{Tag: "included", Count: 1}) {
+		t.Fatalf("tags = %#v", tags)
+	}
+}
 
 func newTestStore(t *testing.T) *TagsStore {
 	t.Helper()

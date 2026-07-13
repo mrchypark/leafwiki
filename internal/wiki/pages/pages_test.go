@@ -115,6 +115,30 @@ func TestCreatePageUseCase_HappyPath_Root(t *testing.T) {
 	}
 }
 
+func TestCreatePageUseCase_PersistsDraftBeforePostSaveEffects(t *testing.T) {
+	deps := newTestDeps(t)
+	effect := &captureEffect{}
+	uc := pages.NewCreatePageUseCase(
+		deps.tree,
+		deps.slug,
+		pagesave.NewPageSaveOrchestrator(effect),
+		slog.Default(),
+	)
+
+	out, err := uc.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Private Draft", Slug: "private-draft", Kind: pageKind(), Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("Create draft: %v", err)
+	}
+	if !out.Page.Draft || !strings.Contains(out.Page.RawContent, "\ndraft: true\n") {
+		t.Fatalf("draft was not persisted on initial create: draft=%v raw=%q", out.Page.Draft, out.Page.RawContent)
+	}
+	if len(effect.events) != 1 || effect.events[0].After == nil || !effect.events[0].After.Draft {
+		t.Fatalf("post-save effect observed a published page: %#v", effect.events)
+	}
+}
+
 func TestCreatePageUseCase_HappyPath_WithParent(t *testing.T) {
 	deps := newTestDeps(t)
 	uc := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
@@ -249,6 +273,66 @@ func TestUpdatePageUseCase_HappyPath(t *testing.T) {
 	}
 	if out.Page.Slug != "new-title" {
 		t.Errorf("expected slug 'new-title', got %q", out.Page.Slug)
+	}
+}
+
+func TestUpdatePageUseCase_DraftTransitionListsEntireSubtree(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	section, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Section", Slug: "section", Kind: sectionKind(),
+	})
+	if err != nil {
+		t.Fatalf("create section: %v", err)
+	}
+	if _, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", ParentID: &section.Page.ID, Title: "Child", Slug: "child", Kind: pageKind(),
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	effect := &captureEffect{}
+	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, pagesave.NewPageSaveOrchestrator(effect), slog.Default())
+	draft := true
+	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "owner", ID: section.Page.ID, Version: section.Page.Version(), Title: section.Page.Title, Slug: section.Page.Slug, Draft: &draft,
+	}); err != nil {
+		t.Fatalf("mark section draft: %v", err)
+	}
+	if len(effect.events) != 1 || !effect.events[0].DraftChanged || len(effect.events[0].AffectedPages) != 2 {
+		t.Fatalf("draft event = %#v", effect.events)
+	}
+	afterCount := 0
+	for _, affected := range effect.events[0].AffectedPages {
+		if affected != nil && effect.events[0].After != nil && affected.ID == effect.events[0].After.ID {
+			afterCount++
+		}
+	}
+	if afterCount != 1 {
+		t.Fatalf("updated page appears %d times in affected pages, want exactly once: %#v", afterCount, effect.events[0])
+	}
+}
+
+func TestUpdatePageUseCase_PreserveFrontmatterCannotChangeSemanticDraft(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	created, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+	if err != nil {
+		t.Fatalf("create page: %v", err)
+	}
+	effect := &captureEffect{}
+	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, pagesave.NewPageSaveOrchestrator(effect), slog.Default())
+	raw := "---\ndraft: true\ncustom: value\n---\nBody"
+	out, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "owner", ID: created.Page.ID, Version: created.Page.Version(), Title: created.Page.Title, Slug: created.Page.Slug,
+		Content: &raw, PreserveFrontmatter: true,
+	})
+	if err != nil {
+		t.Fatalf("preserve-frontmatter update: %v", err)
+	}
+	if out.Page.Draft || len(effect.events) != 1 || effect.events[0].DraftChanged {
+		t.Fatalf("incoming raw draft changed semantics: page=%v events=%#v", out.Page.Draft, effect.events)
 	}
 }
 
@@ -527,6 +611,35 @@ func TestEnsurePathUseCase_CreatesNewPath(t *testing.T) {
 	}
 }
 
+func TestEnsurePathUseCase_PersistsFinalPageAsDraftOnCreate(t *testing.T) {
+	deps := newTestDeps(t)
+	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+
+	out, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "notes/private", TargetTitle: "Private", Kind: pageKind(), Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("Ensure draft path: %v", err)
+	}
+	if !out.Page.Draft || !strings.Contains(out.Page.RawContent, "\ndraft: true\n") {
+		t.Fatalf("final page was not created as draft: draft=%v raw=%q", out.Page.Draft, out.Page.RawContent)
+	}
+	lookup, err := deps.tree.LookupPagePath("notes")
+	if err != nil {
+		t.Fatalf("Lookup intermediate section: %v", err)
+	}
+	if !lookup.Exists || len(lookup.Segments) != 1 || lookup.Segments[0].ID == nil {
+		t.Fatalf("intermediate section was not created: %#v", lookup)
+	}
+	parent, err := deps.tree.FindPageByID(*lookup.Segments[0].ID)
+	if err != nil {
+		t.Fatalf("Find intermediate section: %v", err)
+	}
+	if parent.Draft {
+		t.Fatal("intermediate section unexpectedly inherited the final page draft state")
+	}
+}
+
 func TestEnsurePathUseCase_ExistingPath_ReturnsExistingPage(t *testing.T) {
 	deps := newTestDeps(t)
 	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
@@ -546,6 +659,24 @@ func TestEnsurePathUseCase_ExistingPath_ReturnsExistingPage(t *testing.T) {
 	}
 	if out1.Page.ID != out2.Page.ID {
 		t.Errorf("expected same page ID, got %q vs %q", out1.Page.ID, out2.Page.ID)
+	}
+}
+
+func TestEnsurePathUseCase_RejectsDraftForExistingPublishedPage(t *testing.T) {
+	deps := newTestDeps(t)
+	uc := pages.NewEnsurePathUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+
+	if _, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "published", TargetTitle: "Published", Kind: pageKind(),
+	}); err != nil {
+		t.Fatalf("create published page: %v", err)
+	}
+	_, err := uc.Execute(context.Background(), pages.EnsurePathInput{
+		UserID: "editor", TargetPath: "published", TargetTitle: "Published", Kind: pageKind(), Draft: true,
+	})
+	var validationErr *sharederrors.ValidationErrors
+	if !errors.As(err, &validationErr) || len(validationErr.Errors) != 1 || validationErr.Errors[0].Field != "draft" {
+		t.Fatalf("error = %#v, want draft validation error", err)
 	}
 }
 
@@ -900,6 +1031,38 @@ func TestCopyPageUseCase_HappyPath(t *testing.T) {
 	}
 	if out.Page.ID == original.Page.ID {
 		t.Error("expected copied page to have a different ID")
+	}
+}
+
+func TestCopyPageUseCase_PreservesDraftVisibility(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	effect := &captureEffect{}
+	copyUC := pages.NewCopyPageUseCase(
+		deps.tree,
+		deps.slug,
+		pagesave.NewPageSaveOrchestrator(effect),
+		deps.assets,
+		slog.Default(),
+	)
+	original, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "owner", Title: "Draft", Slug: "draft", Kind: pageKind(), Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("create draft source: %v", err)
+	}
+
+	out, err := copyUC.Execute(context.Background(), pages.CopyPageInput{
+		UserID: "copier", SourcePageID: original.Page.ID, Title: "Draft Copy", Slug: "draft-copy",
+	})
+	if err != nil {
+		t.Fatalf("copy draft: %v", err)
+	}
+	if !out.Page.Draft || out.Page.Metadata.CreatorID != "copier" {
+		t.Fatalf("copy visibility/owner = draft:%v creator:%q", out.Page.Draft, out.Page.Metadata.CreatorID)
+	}
+	if len(effect.events) != 1 || effect.events[0].After == nil || !effect.events[0].After.Draft {
+		t.Fatalf("copy create event observed a published page: %#v", effect.events)
 	}
 }
 
@@ -1507,10 +1670,14 @@ func TestApplyPageRefactorUseCase_Move_RewritesRelativeOutgoingLinksInMovedPage(
 	if err != nil {
 		t.Fatalf("GetLatestRevision(pageA before refactor) failed: %v", err)
 	}
+	currentPageA, err := deps.tree.GetPage(pageA.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage(pageA before refactor) failed: %v", err)
+	}
 
 	updated, err := applyUC.Execute(context.Background(), pages.RefactorApplyInput{
 		UserID:  "system",
-		Version: pageA.Page.Version(),
+		Version: currentPageA.Version(),
 		RefactorPreviewInput: pages.RefactorPreviewInput{
 			PageID:      pageA.Page.ID,
 			Kind:        pages.RefactorKindMove,
@@ -1823,8 +1990,12 @@ func TestDeletePageUseCase_NonRecursive_MarksIncomingBroken(t *testing.T) {
 	if err := deps.links.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
 	}
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before delete failed: %v", err)
+	}
 	if err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), Recursive: false,
+		UserID: "system", ID: b.Page.ID, Version: currentB.Version(), Recursive: false,
 	}); err != nil {
 		t.Fatalf("DeletePage failed: %v", err)
 	}
@@ -2183,9 +2354,13 @@ func TestUpdatePageUseCase_RenamePage_MarksOldBroken_HealsNewExactPath(t *testin
 		t.Fatalf("unexpected outgoing before rename err=%v out=%#v", err, out1)
 	}
 
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before rename: %v", err)
+	}
 	contentB2 := "# B (renamed)"
 	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), Title: b.Page.Title, Slug: "b2", Content: &contentB2, Kind: pageKind(),
+		UserID: "system", ID: currentB.ID, Version: currentB.Version(), Title: currentB.Title, Slug: "b2", Content: &contentB2, Kind: pageKind(),
 	}); err != nil {
 		t.Fatalf("Rename B failed: %v", err)
 	}
@@ -2306,9 +2481,13 @@ func TestMovePageUseCase_MarksOldBroken_HealsNewExactPath(t *testing.T) {
 	if err := deps.links.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
 	}
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before move: %v", err)
+	}
 
 	if err := moveUC.Execute(context.Background(), pages.MovePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), ParentID: projects.Page.ID,
+		UserID: "system", ID: currentB.ID, Version: currentB.Version(), ParentID: projects.Page.ID,
 	}); err != nil {
 		t.Fatalf("MovePage failed: %v", err)
 	}
@@ -2451,9 +2630,13 @@ func TestMovePageUseCase_ReindexesRelativeLinks(t *testing.T) {
 	if out1.Outgoings[0].ToPath != "/docs/shared" || out1.Outgoings[0].Broken || out1.Outgoings[0].ToPageID != docsShared.Page.ID {
 		t.Fatalf("unexpected outgoing before move: %#v", out1.Outgoings[0])
 	}
+	currentA, err := deps.tree.GetPage(a.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage A before move: %v", err)
+	}
 
 	if err := moveUC.Execute(context.Background(), pages.MovePageInput{
-		UserID: "system", ID: a.Page.ID, Version: a.Page.Version(), ParentID: guide.Page.ID,
+		UserID: "system", ID: currentA.ID, Version: currentA.Version(), ParentID: guide.Page.ID,
 	}); err != nil {
 		t.Fatalf("MovePage(a -> guide) failed: %v", err)
 	}
@@ -2731,9 +2914,13 @@ func TestUpdatePageUseCase_TitleOnlyCreatesStructureRevision(t *testing.T) {
 	if beforeLatest == nil {
 		t.Fatal("expected initial content revision")
 	}
+	currentPage, err := deps.tree.GetPage(page.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage before title update: %v", err)
+	}
 
 	updatedPage, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Renamed Title", Slug: page.Page.Slug, Content: nil, Kind: pageKind(),
+		UserID: "system", ID: currentPage.ID, Version: currentPage.Version(), Title: "Renamed Title", Slug: currentPage.Slug, Content: nil, Kind: pageKind(),
 	})
 	if err != nil {
 		t.Fatalf("UpdatePage(title only) failed: %v", err)
@@ -2788,9 +2975,13 @@ func TestUpdatePageUseCase_TitleOnlyWithUnchangedContentCreatesStructureRevision
 	if beforeLatest == nil {
 		t.Fatal("expected initial content revision")
 	}
+	currentPage, err := deps.tree.GetPage(page.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage before title update: %v", err)
+	}
 
 	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Renamed Title", Slug: page.Page.Slug, Content: &content, Kind: pageKind(),
+		UserID: "system", ID: currentPage.ID, Version: currentPage.Version(), Title: "Renamed Title", Slug: currentPage.Slug, Content: &content, Kind: pageKind(),
 	}); err != nil {
 		t.Fatalf("UpdatePage(title only with unchanged content) failed: %v", err)
 	}

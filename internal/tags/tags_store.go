@@ -2,6 +2,7 @@ package tags
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -192,16 +193,16 @@ func (s *TagsStore) GetExcerptsForPages(pageIDs []string) (map[string]string, er
 		return map[string]string{}, nil
 	}
 
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(pageIDs)), ",")
-	args := make([]any, len(pageIDs))
-	for i, id := range pageIDs {
-		args[i] = id
+	pageIDsJSON, err := json.Marshal(pageIDs)
+	if err != nil {
+		return nil, err
 	}
 
-	rows, err := s.db.Query(fmt.Sprintf(
-		`SELECT page_id, excerpt FROM page_meta WHERE page_id IN (%s)`,
-		placeholders,
-	), args...)
+	rows, err := s.db.Query(`
+		SELECT pm.page_id, pm.excerpt
+		FROM page_meta pm
+		JOIN (SELECT DISTINCT value FROM json_each(?)) ids ON ids.value = pm.page_id
+	`, string(pageIDsJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -329,6 +330,63 @@ func (s *TagsStore) GetAllTagsForSelection(filter string, selected []string, lim
 	return result, rows.Err()
 }
 
+// GetAllTagsForPageIDs returns suggestions aggregated only from allowed pages.
+// Page IDs and selected tags are JSON arrays so each list uses one SQLite bind.
+func (s *TagsStore) GetAllTagsForPageIDs(filter string, selected []string, limit int, pageIDs []string) ([]TagCount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pageIDsJSON, err := json.Marshal(pageIDs)
+	if err != nil {
+		return nil, err
+	}
+	selectedJSON, err := json.Marshal(append([]string{}, selected...))
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		WITH allowed_pages(page_id) AS (SELECT DISTINCT value FROM json_each(?)),
+		     selected_tags(tag) AS (SELECT DISTINCT value FROM json_each(?)),
+		     matching_pages AS (
+			SELECT pt.page_id
+			FROM page_tags pt
+			JOIN allowed_pages ap ON ap.page_id = pt.page_id
+			WHERE NOT EXISTS (SELECT 1 FROM selected_tags)
+			   OR pt.tag IN (SELECT tag FROM selected_tags)
+			GROUP BY pt.page_id
+			HAVING NOT EXISTS (SELECT 1 FROM selected_tags)
+			    OR COUNT(DISTINCT pt.tag) = (SELECT COUNT(*) FROM selected_tags)
+		)
+		SELECT pt.tag, COUNT(DISTINCT pt.page_id) AS count
+		FROM page_tags pt
+		JOIN matching_pages mp ON mp.page_id = pt.page_id
+		WHERE pt.tag LIKE ? || '%' ESCAPE '\'
+		  AND pt.tag NOT IN (SELECT tag FROM selected_tags)
+		GROUP BY pt.tag
+		ORDER BY count DESC, pt.tag ASC
+	`
+	if limit > 0 {
+		query += fmt.Sprintf(sqlLimitFmt, limit)
+	}
+
+	rows, err := s.db.Query(query, string(pageIDsJSON), string(selectedJSON), escapeLikePrefix(filter))
+	if err != nil {
+		return nil, err
+	}
+	defer shared.LogClose(rows.Close, logCloseRowsFailed)
+
+	var result []TagCount
+	for rows.Next() {
+		var tc TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, err
+		}
+		result = append(result, tc)
+	}
+	return result, rows.Err()
+}
+
 // GetPageIDsByTags returns page IDs that have ALL of the given tags (AND logic).
 func (s *TagsStore) GetPageIDsByTags(tags []string) ([]string, error) {
 	s.mu.Lock()
@@ -406,17 +464,17 @@ func (s *TagsStore) GetTagsForPages(pageIDs []string) (map[string][]string, erro
 		return map[string][]string{}, nil
 	}
 
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(pageIDs)), ",")
-	args := make([]any, len(pageIDs))
-	for i, id := range pageIDs {
-		args[i] = id
+	pageIDsJSON, err := json.Marshal(pageIDs)
+	if err != nil {
+		return nil, err
 	}
 
-	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT page_id, tag FROM page_tags
-		WHERE page_id IN (%s)
-		ORDER BY page_id, tag ASC
-	`, placeholders), args...)
+	rows, err := s.db.Query(`
+		SELECT pt.page_id, pt.tag
+		FROM page_tags pt
+		JOIN (SELECT DISTINCT value FROM json_each(?)) ids ON ids.value = pt.page_id
+		ORDER BY pt.page_id, pt.tag ASC
+	`, string(pageIDsJSON))
 	if err != nil {
 		return nil, err
 	}

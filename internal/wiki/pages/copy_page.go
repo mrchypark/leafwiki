@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/perber/wiki/internal/core/assets"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -64,7 +65,8 @@ func (uc *CopyPageUseCase) Execute(_ context.Context, in CopyPageInput) (*CopyPa
 	}
 
 	kind := tree.NodeKindPage
-	copyID, err := uc.tree.CreateNode(in.UserID, in.TargetParentID, in.Title, in.Slug, &kind)
+	draft := pagevisibility.IsInDraftSubtree(page.PageNode)
+	copyID, err := uc.tree.CreateNodeWithDraft(in.UserID, in.TargetParentID, in.Title, in.Slug, &kind, draft)
 	if err != nil {
 		return nil, err
 	}

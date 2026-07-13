@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
 	"github.com/perber/wiki/internal/http/middleware/security"
@@ -12,8 +13,9 @@ import (
 
 // Routes is the RouteRegistrar for the links domain.
 type Routes struct {
-	getLinkStatus  *GetLinkStatusUseCase
-	authService    *coreauth.AuthService
+	getLinkStatus *GetLinkStatusUseCase
+	authService   *coreauth.AuthService
+	authDisabled  bool
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -36,8 +38,10 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 	if opts.PublicAccess {
 		pub := ctx.Base.Group("/api")
+		pub.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
 		pub.GET("/pages/:id/links", r.handleGetLinkStatus)
 	}
+	r.authDisabled = opts.AuthDisabled
 
 	authGroup := ctx.Base.Group("/api")
 	authGroup.Use(
@@ -55,10 +59,18 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 func (r *Routes) handleGetLinkStatus(c *gin.Context) {
 	pageID := c.Param("id")
-	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{PageID: pageID})
+	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{
+		PageID: pageID, User: authmw.TryGetUser(c), AuthDisabled: r.authDisabled,
+	})
 	if err != nil {
 		respondWithLinkError(c, err)
 		return
+	}
+	if r.getLinkStatus != nil && r.getLinkStatus.tree != nil {
+		if node, findErr := r.getLinkStatus.tree.SnapshotPageNode(pageID); findErr == nil && pagevisibility.IsInDraftSubtree(node) {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
+		}
 	}
 	c.JSON(http.StatusOK, out.Status)
 }

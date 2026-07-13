@@ -3,6 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/properties"
 )
@@ -25,8 +26,16 @@ func (e *PropertiesSideEffect) Apply(event PageSaveEvent) {
 		return
 	}
 	switch event.Operation {
-	case PageOperationCreate, PageOperationUpdate, PageOperationRestore:
+	case PageOperationCreate, PageOperationRestore:
 		if event.After != nil {
+			e.setProperties(event.After)
+		}
+	case PageOperationUpdate:
+		if event.DraftChanged {
+			for _, page := range event.AffectedPages {
+				e.setProperties(page)
+			}
+		} else if event.After != nil {
 			e.setProperties(event.After)
 		}
 
@@ -41,6 +50,10 @@ func (e *PropertiesSideEffect) Apply(event PageSaveEvent) {
 }
 
 func (e *PropertiesSideEffect) setProperties(p *tree.Page) {
+	if pagevisibility.IsInDraftSubtree(p.PageNode) {
+		e.deleteProperties(p)
+		return
+	}
 	props := properties.ExtractPropertiesFromContent(p.RawContent)
 	if err := e.svc.SetPropertiesForPage(p.ID, props); err != nil {
 		e.log.Warn("failed to set properties for page", "pageID", p.ID, "error", err)

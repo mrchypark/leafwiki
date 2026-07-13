@@ -26,6 +26,7 @@ type PageSaveEvent struct {
 	ContentChanged bool
 	SlugChanged    bool
 	TitleChanged   bool
+	DraftChanged   bool
 
 	// OldPath is the path of the page before the mutation (CalculatePath on a live node
 	// returns the new path after UpdateNode/MoveNode mutates the tree in place).

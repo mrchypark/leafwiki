@@ -3,6 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/tags"
 )
@@ -25,8 +26,16 @@ func (e *TagsSideEffect) Apply(event PageSaveEvent) {
 		return
 	}
 	switch event.Operation {
-	case PageOperationCreate, PageOperationUpdate, PageOperationRestore:
+	case PageOperationCreate, PageOperationRestore:
 		if event.After != nil {
+			e.setTags(event.After)
+		}
+	case PageOperationUpdate:
+		if event.DraftChanged {
+			for _, page := range event.AffectedPages {
+				e.setTags(page)
+			}
+		} else if event.After != nil {
 			e.setTags(event.After)
 		}
 
@@ -41,6 +50,10 @@ func (e *TagsSideEffect) Apply(event PageSaveEvent) {
 }
 
 func (e *TagsSideEffect) setTags(p *tree.Page) {
+	if pagevisibility.IsInDraftSubtree(p.PageNode) {
+		e.deleteTags(p)
+		return
+	}
 	if err := e.svc.IndexPageContent(p.ID, p.RawContent); err != nil {
 		e.log.Warn("failed to index page content", "pageID", p.ID, "error", err)
 	}

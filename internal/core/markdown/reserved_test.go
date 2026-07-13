@@ -10,6 +10,8 @@ func TestIsSystemKey(t *testing.T) {
 		{"tags", true},
 		{"Tags", true},
 		{"TAGS", true},
+		{"draft", true},
+		{"Draft", true},
 		{"leafwiki_id", true},
 		{"leafwiki_title", true},
 		{"leafwiki_created_at", true},

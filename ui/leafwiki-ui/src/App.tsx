@@ -3,7 +3,11 @@ import { createLeafWikiRouter } from '@/features/router/router'
 import { useBootstrapAuth } from '@/lib/bootstrapAuth'
 import { BASE_PATH } from '@/lib/config'
 import { useIsReadOnly } from '@/lib/useIsReadOnly'
+import { getVisibilityScope } from '@/lib/visibilityScope'
 import { useSessionStore } from '@/stores/session'
+import { useTreeStore } from '@/stores/tree'
+import { usePageEditorStore } from '@/features/editor/pageEditorStore'
+import { useViewerStore } from '@/features/viewer/viewer'
 import useApplyDesignMode from '@/useApplyDesignMode'
 import { Loader2 } from 'lucide-react'
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
@@ -27,9 +31,24 @@ function App() {
   useBootstrapAuth(configHasLoaded && !authDisabled)
 
   const isLoggedIn = useSessionStore((s) => !!s.user)
+  const userId = useSessionStore((s) => s.user?.id ?? null)
+  const userRole = useSessionStore((s) => s.user?.role ?? null)
   const isRefreshing = useSessionStore((s) => s.isRefreshing)
   const isReadOnly = useIsReadOnly()
   const isReadOnlyViewer = isReadOnly && !isLoggedIn
+  const visibilityScopeRef = useRef<string | undefined>(undefined)
+  const visibilityScope = getVisibilityScope(authDisabled, userId, userRole)
+
+  useLayoutEffect(() => {
+    if (!configHasLoaded || visibilityScopeRef.current === visibilityScope) {
+      return
+    }
+
+    visibilityScopeRef.current = visibilityScope
+    usePageEditorStore.getState().resetEditorState()
+    useViewerStore.getState().clear()
+    useTreeStore.getState().clearVisibilityData()
+  }, [configHasLoaded, visibilityScope])
 
   useApplyDesignMode()
   useEffect(() => {

@@ -36,6 +36,7 @@ type PageNode struct {
 	Position int         `json:"position"` // Position is the position of the entry
 	Parent   *PageNode   `json:"-"`
 	Pinned   bool        `json:"pinned,omitempty"` // Pinned marks this node as pinned in the sidebar
+	Draft    bool        `json:"draft,omitempty"`  // Draft limits visibility to editors and admins
 
 	Kind     NodeKind     `json:"kind"`     // Kind is the kind of the node (page or folder)
 	Metadata PageMetadata `json:"metadata"` // Metadata holds metadata about the page
@@ -123,6 +124,12 @@ func (p *PageNode) writeHashPayload(w io.Writer, includeMetadata bool) {
 
 	writeString(w, "pinned")
 	if p.Pinned {
+		writeString(w, "true")
+	} else {
+		writeString(w, "false")
+	}
+	writeString(w, "draft")
+	if p.Draft {
 		writeString(w, "true")
 	} else {
 		writeString(w, "false")

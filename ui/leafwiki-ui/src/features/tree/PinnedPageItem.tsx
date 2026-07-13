@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import { File, Folder, PinOff } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { DraftBadge } from './DraftBadge'
 
 type Props = {
   node: PageNode
@@ -32,6 +33,7 @@ export function PinnedPageItem({ node, onUnpin }: Props) {
       >
         <Icon size={13} className="tree-view__pinned-item-icon" />
         <span className="tree-view__pinned-item-title">{node.title}</span>
+        {node.draft && <DraftBadge />}
       </Link>
       {hovered && (
         <button

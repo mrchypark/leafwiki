@@ -21,6 +21,7 @@ import (
 	httpinternal "github.com/perber/wiki/internal/http"
 	"github.com/perber/wiki/internal/test_utils"
 	"github.com/perber/wiki/internal/wiki"
+	wikipages "github.com/perber/wiki/internal/wiki/pages"
 )
 
 func pageNodeKind() *tree.NodeKind {
@@ -210,6 +211,7 @@ type apiPage struct {
 	Path       string                 `json:"path"`
 	Version    string                 `json:"version"`
 	Kind       tree.NodeKind          `json:"kind"`
+	Draft      bool                   `json:"draft"`
 	Children   []*apiPage             `json:"children"`
 	Tags       []string               `json:"tags"`
 	Properties map[string]interface{} `json:"properties"`
@@ -1778,6 +1780,370 @@ func TestUpdatePageEndpoint(t *testing.T) {
 	}
 	if resp["content"] != "# Updated Content\nWith **Markdown** support." {
 		t.Errorf("Expected updated content, got %q", resp["content"])
+	}
+}
+
+func TestDraftPage_PublicAccessUsesEditorRoleInsteadOfCreatorOwnership(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	privateRouter := createRouterTestInstance(w, t)
+
+	createUser := func(username, email, password, role string) map[string]interface{} {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{
+			"username": username,
+			"email":    email,
+			"password": password,
+			"role":     role,
+		})
+		rec := authenticatedRequest(t, privateRouter, http.MethodPost, "/api/users", strings.NewReader(string(body)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: status=%d body=%s", username, rec.Code, rec.Body.String())
+		}
+		var user map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &user); err != nil {
+			t.Fatalf("decode %s: %v", username, err)
+		}
+		return user
+	}
+
+	creator := createUser("draft-creator", "creator@example.com", "creatorpass", "editor")
+	createUser("draft-editor", "editor@example.com", "editorpass", "editor")
+
+	createBody := `{"title":"Secret Draft","slug":"secret-draft","kind":"page","draft":true}`
+	created := authenticatedRequestAs(t, privateRouter, "draft-creator", "creatorpass", http.MethodPost, "/api/pages", strings.NewReader(createBody))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create draft: status=%d body=%s", created.Code, created.Body.String())
+	}
+	var page apiPage
+	if err := json.Unmarshal(created.Body.Bytes(), &page); err != nil || !page.Draft {
+		t.Fatalf("created page draft=%v err=%v body=%s", page.Draft, err, created.Body.String())
+	}
+
+	publicRouter := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	anonymous := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/pages/"+page.ID, nil))
+	if anonymous.Code != http.StatusNotFound {
+		t.Fatalf("anonymous draft read status=%d, want 404", anonymous.Code)
+	}
+
+	editor := authenticatedRequestAs(t, publicRouter, "draft-editor", "editorpass", http.MethodGet, "/api/pages/"+page.ID, nil)
+	if editor.Code != http.StatusOK {
+		t.Fatalf("non-owner editor draft read status=%d body=%s", editor.Code, editor.Body.String())
+	}
+	if got := editor.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("editor draft cache control = %q", got)
+	}
+
+	admin := authenticatedRequest(t, publicRouter, http.MethodGet, "/api/pages/"+page.ID, nil)
+	if admin.Code != http.StatusOK {
+		t.Fatalf("admin draft read status=%d body=%s", admin.Code, admin.Body.String())
+	}
+	if got := admin.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("admin draft cache control = %q", got)
+	}
+
+	downgrade, _ := json.Marshal(map[string]string{
+		"username": "draft-creator",
+		"email":    "creator@example.com",
+		"password": "creatorpass",
+		"role":     "viewer",
+	})
+	downgraded := authenticatedRequest(t, privateRouter, http.MethodPut, "/api/users/"+creator["id"].(string), strings.NewReader(string(downgrade)))
+	if downgraded.Code != http.StatusOK {
+		t.Fatalf("downgrade creator: status=%d body=%s", downgraded.Code, downgraded.Body.String())
+	}
+	creatorViewer := authenticatedRequestAs(t, publicRouter, "draft-creator", "creatorpass", http.MethodGet, "/api/pages/"+page.ID, nil)
+	if creatorViewer.Code != http.StatusNotFound {
+		t.Fatalf("creator viewer draft read status=%d, want 404", creatorViewer.Code)
+	}
+
+	anonymousLinks := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymousLinks, httptest.NewRequest(http.MethodGet, "/api/pages/"+page.ID+"/links", nil))
+	if anonymousLinks.Code != http.StatusNotFound {
+		t.Fatalf("anonymous draft links status=%d, want 404", anonymousLinks.Code)
+	}
+	editorLinks := authenticatedRequestAs(t, publicRouter, "draft-editor", "editorpass", http.MethodGet, "/api/pages/"+page.ID+"/links", nil)
+	if editorLinks.Code != http.StatusOK || !strings.Contains(editorLinks.Body.String(), `"backlinks":0`) {
+		t.Fatalf("editor draft links were not safely empty: status=%d body=%s", editorLinks.Code, editorLinks.Body.String())
+	}
+}
+
+func TestPageVisibilityCacheHeader_AuthDisabledPreservesOrdinaryBehavior(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		AuthDisabled:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth-disabled tree status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got == "private, no-store" {
+		t.Fatalf("auth-disabled response unexpectedly received private cache control")
+	}
+}
+
+func TestDraftVisibility_AuthDisabledReloadFailsClosed(t *testing.T) {
+	storageDir := t.TempDir()
+	newWiki := func(authDisabled bool) *wiki.Wiki {
+		t.Helper()
+		w, err := wiki.NewWiki(&wiki.WikiOptions{
+			StorageDir:          storageDir,
+			AdminPassword:       "admin",
+			JWTSecret:           "secretkey",
+			AccessTokenTimeout:  15 * time.Minute,
+			RefreshTokenTimeout: 7 * 24 * time.Hour,
+			AuthDisabled:        authDisabled,
+		})
+		if err != nil {
+			t.Fatalf("NewWiki(authDisabled=%v): %v", authDisabled, err)
+		}
+		return w
+	}
+
+	w := newWiki(false)
+	privateRouter := createRouterTestInstance(w, t)
+	sectionBody := `{"title":"Git Draft","slug":"git-draft","kind":"section","draft":true}`
+	sectionRec := authenticatedRequest(t, privateRouter, http.MethodPost, "/api/pages", strings.NewReader(sectionBody))
+	if sectionRec.Code != http.StatusCreated {
+		t.Fatalf("create draft section: status=%d body=%s", sectionRec.Code, sectionRec.Body.String())
+	}
+	var section apiPage
+	if err := json.Unmarshal(sectionRec.Body.Bytes(), &section); err != nil {
+		t.Fatalf("decode draft section: %v", err)
+	}
+	child := createPageViaAPI(t, privateRouter, "Draft Child", "child", &section.ID, pageNodeKind())
+	published := createPageViaAPI(t, privateRouter, "Published", "published", nil, pageNodeKind())
+	if err := w.Close(); err != nil {
+		t.Fatalf("close authenticated wiki: %v", err)
+	}
+
+	w = newWiki(true)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		AuthDisabled:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+
+	treeRec := httptest.NewRecorder()
+	router.ServeHTTP(treeRec, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+	if treeRec.Code != http.StatusOK {
+		t.Fatalf("auth-disabled tree status=%d body=%s", treeRec.Code, treeRec.Body.String())
+	}
+	if strings.Contains(treeRec.Body.String(), section.ID) || strings.Contains(treeRec.Body.String(), child.ID) {
+		t.Fatalf("auth-disabled tree exposed persisted draft subtree: %s", treeRec.Body.String())
+	}
+
+	for _, target := range []string{
+		"/api/pages/" + section.ID,
+		"/api/pages/" + child.ID,
+		"/api/pages/by-path?path=git-draft/child",
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("auth-disabled GET %s status=%d, want 404", target, rec.Code)
+		}
+	}
+
+	configRec := httptest.NewRecorder()
+	router.ServeHTTP(configRec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	csrfToken := configRec.Header().Get("X-CSRF-Token")
+	if csrfToken == "" {
+		for _, cookie := range configRec.Result().Cookies() {
+			if cookie.Name == "leafwiki_csrf" || cookie.Name == "__Host-leafwiki_csrf" {
+				csrfToken = cookie.Value
+				break
+			}
+		}
+	}
+	if csrfToken == "" {
+		t.Fatal("auth-disabled config did not issue a CSRF token")
+	}
+	authDisabledJSONRequest := func(method, target string, body *strings.Reader) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, target, body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrfToken)
+		for _, cookie := range configRec.Result().Cookies() {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	assertDraftUnavailable := func(name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s status=%d, want 403; body=%s", name, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Error struct {
+				Code     string `json:"code"`
+				Message  string `json:"message"`
+				Template string `json:"template"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s error response: %v; body=%s", name, err, rec.Body.String())
+		}
+		if body.Error.Code != wikipages.ErrCodePageDraftUnavailable || body.Error.Message == "" || body.Error.Template == "" {
+			t.Fatalf("%s error=%#v", name, body.Error)
+		}
+	}
+
+	createDraftRec := authDisabledJSONRequest(
+		http.MethodPost,
+		"/api/pages",
+		strings.NewReader(`{"title":"Rejected Draft","slug":"rejected-draft","kind":"page","draft":true}`),
+	)
+	assertDraftUnavailable("auth-disabled draft create", createDraftRec)
+	ensureDraftRec := authDisabledJSONRequest(
+		http.MethodPost,
+		"/api/pages/ensure",
+		strings.NewReader(`{"path":"rejected/ensured-draft","title":"Ensured Draft","kind":"page","draft":true}`),
+	)
+	assertDraftUnavailable("auth-disabled draft ensure", ensureDraftRec)
+	for _, path := range []string{"rejected-draft", "rejected/ensured-draft"} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/pages/by-path?path="+path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("rejected auth-disabled draft %q exists: status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+	treeAfterRejectedCreates := httptest.NewRecorder()
+	router.ServeHTTP(treeAfterRejectedCreates, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+	if strings.Contains(treeAfterRejectedCreates.Body.String(), "rejected-draft") || strings.Contains(treeAfterRejectedCreates.Body.String(), "ensured-draft") {
+		t.Fatalf("auth-disabled rejected draft create mutated tree: %s", treeAfterRejectedCreates.Body.String())
+	}
+
+	updateBody, _ := json.Marshal(map[string]interface{}{
+		"version": published.Version,
+		"title":   published.Title,
+		"slug":    published.Slug,
+		"draft":   true,
+	})
+	updateRec := authDisabledJSONRequest(http.MethodPut, "/api/pages/"+published.ID, strings.NewReader(string(updateBody)))
+	assertDraftUnavailable("auth-disabled published-to-draft", updateRec)
+
+	publishedRec := httptest.NewRecorder()
+	router.ServeHTTP(publishedRec, httptest.NewRequest(http.MethodGet, "/api/pages/"+published.ID, nil))
+	if publishedRec.Code != http.StatusOK {
+		t.Fatalf("published page changed after rejected draft transition: status=%d body=%s", publishedRec.Code, publishedRec.Body.String())
+	}
+	var unchanged apiPage
+	if err := json.Unmarshal(publishedRec.Body.Bytes(), &unchanged); err != nil || unchanged.Draft {
+		t.Fatalf("rejected transition mutated published page: draft=%v err=%v", unchanged.Draft, err)
+	}
+}
+
+func TestDraftSection_PublicReadHidesNonDraftDescendantFromDirectAccess(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	privateRouter := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, privateRouter, "Draft Section", "draft-section", nil, &sectionKind)
+	child := createPageViaAPI(t, privateRouter, "Child", "child", &section.ID, pageNodeKind())
+	payload, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version,
+		"title":   section.Title,
+		"slug":    section.Slug,
+		"draft":   true,
+	})
+	updated := authenticatedRequest(t, privateRouter, http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(payload)))
+	if updated.Code != http.StatusOK {
+		t.Fatalf("set section draft: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	publicRouter := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+	anonymous := httptest.NewRecorder()
+	publicRouter.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/pages/"+child.ID, nil))
+	if anonymous.Code != http.StatusNotFound {
+		t.Fatalf("anonymous child read status=%d, want 404", anonymous.Code)
+	}
+}
+
+func TestDraftVisibility_AllowsEditorsToMutateDraftSubtrees(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, router, "Public Section", "public-section", nil, &sectionKind)
+	hidden := createPageViaAPI(t, router, "Hidden", "hidden", &section.ID, pageNodeKind())
+	draftPayload, _ := json.Marshal(map[string]interface{}{
+		"version": hidden.Version, "title": hidden.Title, "slug": hidden.Slug, "draft": true,
+	})
+	if rec := authenticatedRequest(t, router, http.MethodPut, "/api/pages/"+hidden.ID, strings.NewReader(string(draftPayload))); rec.Code != http.StatusOK {
+		t.Fatalf("set child draft: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	createUser := `{"username":"editor","email":"editor@example.com","password":"editorpass","role":"editor"}`
+	if rec := authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUser)); rec.Code != http.StatusCreated {
+		t.Fatalf("create editor: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	updateParent, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version, "title": "Changed", "slug": section.Slug,
+	})
+	parentRec := authenticatedRequestAs(t, router, "editor", "editorpass", http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(updateParent)))
+	if parentRec.Code != http.StatusOK {
+		t.Fatalf("editor ancestor mutation status=%d body=%s", parentRec.Code, parentRec.Body.String())
+	}
+
+	ensureBody := `{"path":"public-section/hidden/new-page","title":"New Page","kind":"page"}`
+	ensureRec := authenticatedRequestAs(t, router, "editor", "editorpass", http.MethodPost, "/api/pages/ensure", strings.NewReader(ensureBody))
+	if ensureRec.Code != http.StatusOK {
+		t.Fatalf("editor ensure below draft prefix status=%d body=%s", ensureRec.Code, ensureRec.Body.String())
+	}
+	created := authenticatedRequestAs(t, router, "editor", "editorpass", http.MethodGet, "/api/pages/by-path?path=public-section/hidden/new-page", nil)
+	if created.Code != http.StatusOK {
+		t.Fatalf("editor cannot read page created below draft prefix: status=%d body=%s", created.Code, created.Body.String())
+	}
+}
+
+func TestDraftVisibility_AllowsEditorSlugSuggestionsForDraftNodes(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+	sectionKind := tree.NodeKindSection
+	section := createPageViaAPI(t, router, "Draft Section", "draft-section", nil, &sectionKind)
+	child := createPageViaAPI(t, router, "Child", "child", &section.ID, pageNodeKind())
+	payload, _ := json.Marshal(map[string]interface{}{
+		"version": section.Version, "title": section.Title, "slug": section.Slug, "draft": true,
+	})
+	if rec := authenticatedRequest(t, router, http.MethodPut, "/api/pages/"+section.ID, strings.NewReader(string(payload))); rec.Code != http.StatusOK {
+		t.Fatalf("set draft: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	createUser := `{"username":"slug-editor","email":"slug@example.com","password":"editorpass","role":"editor"}`
+	if rec := authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUser)); rec.Code != http.StatusCreated {
+		t.Fatalf("create editor: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	for _, query := range []string{"parentId=" + section.ID, "currentId=" + child.ID} {
+		rec := authenticatedRequestAs(t, router, "slug-editor", "editorpass", http.MethodGet, "/api/pages/slug-suggestion?title=Hidden&"+query, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("editor slug suggestion for %s status=%d body=%s", query, rec.Code, rec.Body.String())
+		}
 	}
 }
 

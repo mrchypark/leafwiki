@@ -10,6 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
+	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
 	"github.com/perber/wiki/internal/http/dto"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
@@ -33,6 +35,7 @@ type Routes struct {
 	checkIntegrity   *CheckIntegrityUseCase
 	userResolver     *coreauth.UserResolver
 	authService      *coreauth.AuthService
+	tree             *tree.TreeService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -46,6 +49,7 @@ type RoutesConfig struct {
 	CheckIntegrity   *CheckIntegrityUseCase
 	UserResolver     *coreauth.UserResolver
 	AuthService      *coreauth.AuthService
+	Tree             *tree.TreeService
 }
 
 // NewRoutes constructs the revisions RouteRegistrar.
@@ -60,6 +64,7 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 		checkIntegrity:   cfg.CheckIntegrity,
 		userResolver:     cfg.UserResolver,
 		authService:      cfg.AuthService,
+		tree:             cfg.Tree,
 	}
 }
 
@@ -72,6 +77,7 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 		authmw.InjectPublicEditor(opts.AuthDisabled),
 		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
 		security.CSRFMiddleware(ctx.CSRFCookie),
+		r.requirePageVisibility(opts.AuthDisabled),
 	)
 
 	// Revision routes are behind the EnableRevision feature flag.
@@ -84,6 +90,25 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 		authGroup.POST("/pages/:id/revisions/:revisionId/restore", authmw.RequireEditorOrAdmin(), r.handleRestoreRevision)
 	}
 
+}
+
+func (r *Routes) requirePageVisibility(authDisabled bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if r.tree == nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		node, err := r.tree.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
+		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if pagevisibility.IsInDraftSubtree(node) {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
+		}
+		c.Next()
+	}
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -279,4 +304,3 @@ func (r *Routes) handleRestoreRevision(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, dto.ToAPIPage(out.Page, r.userResolver))
 }
-

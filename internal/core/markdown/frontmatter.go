@@ -27,6 +27,7 @@ type Frontmatter struct {
 	LeafWikiCreatorID    string                 `yaml:"leafwiki_creator_id,omitempty" json:"creatorId,omitempty"`
 	LeafWikiLastAuthorID string                 `yaml:"leafwiki_last_author_id,omitempty" json:"lastAuthorId,omitempty"`
 	LeafWikiPinned       bool                   `yaml:"leafwiki_pinned,omitempty" json:"pinned,omitempty"`
+	Draft                bool                   `yaml:"draft,omitempty" json:"draft,omitempty"`
 	ExtraFields          map[string]interface{} `yaml:"-" json:"-"`
 }
 
@@ -74,6 +75,10 @@ func parseFrontmatterYAML(yamlPart string) (Frontmatter, error) {
 		if b, ok := value.(bool); ok {
 			fm.LeafWikiPinned = b
 		}
+	}
+	if draft, ok := raw["draft"].(bool); ok {
+		fm.Draft = draft
+		delete(raw, "draft")
 	}
 
 	for key, value := range raw {
@@ -295,6 +300,15 @@ func BuildMarkdownWithExtraFrontmatter(extraFields map[string]interface{}, body 
 // and a markdown body. It preserves additional frontmatter keys and emits them
 // in deterministic order to keep rewrites stable.
 func BuildMarkdownWithFrontmatter(fm Frontmatter, body string) (string, error) {
+	if fm.Draft && fm.ExtraFields != nil {
+		extra := make(map[string]interface{}, len(fm.ExtraFields))
+		for key, value := range fm.ExtraFields {
+			if key != "draft" {
+				extra[key] = value
+			}
+		}
+		fm.ExtraFields = extra
+	}
 	if strings.TrimSpace(fm.LeafWikiID) == "" {
 		return BuildMarkdownWithExtraFrontmatter(fm.ExtraFields, body)
 	}
@@ -341,6 +355,12 @@ func BuildMarkdownWithFrontmatter(fm Frontmatter, body string) (string, error) {
 	if fm.LeafWikiPinned {
 		mapping.Content = append(mapping.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "leafwiki_pinned"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+		)
+	}
+	if fm.Draft {
+		mapping.Content = append(mapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "draft"},
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 		)
 	}

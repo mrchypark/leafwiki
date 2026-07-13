@@ -27,6 +27,52 @@ func setupLinkEffect(t *testing.T) (*LinkIndexSideEffect, *links.LinkService, *t
 	return NewLinkIndexSideEffect(svc, nil), svc, ts
 }
 
+func TestLinkIndexSideEffect_Update_RemovesDraftSourceAndReindexesWhenPublished(t *testing.T) {
+	effect, svc, ts := setupLinkEffect(t)
+	target := createPageWithContent(t, ts, "Target", "target", "target")
+	source := createPageWithContent(t, ts, "Source", "source", "[target](/target)")
+
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: target})
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: source})
+	source = setDraftForTest(t, ts, source, true)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: source})
+	out, err := svc.GetOutgoingLinksForPage(source.ID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage draft: %v", err)
+	}
+	if out.Count != 0 {
+		t.Fatalf("draft source remained in link index: %#v", out.Outgoings)
+	}
+
+	source = setDraftForTest(t, ts, source, false)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: source})
+	out, err = svc.GetOutgoingLinksForPage(source.ID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage published: %v", err)
+	}
+	if out.Count != 1 {
+		t.Fatalf("published source was not reindexed: %#v", out.Outgoings)
+	}
+}
+
+func TestLinkIndexSideEffect_Update_BreaksIncomingLinksWhenTargetBecomesDraft(t *testing.T) {
+	effect, svc, ts := setupLinkEffect(t)
+	target := createPageWithContent(t, ts, "Target", "target", "target")
+	source := createPageWithContent(t, ts, "Source", "source", "[target](/target)")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: target})
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: source})
+
+	target = setDraftForTest(t, ts, target, true)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: target})
+	backlinks, err := svc.GetBacklinksForPage(target.ID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage: %v", err)
+	}
+	if backlinks.Count != 0 {
+		t.Fatalf("draft target retained incoming links: %#v", backlinks.Backlinks)
+	}
+}
+
 // TestLinkIndexSideEffect_Rename_HealsPreexistingBrokenWikilinks verifies that
 // renaming page "Alpha" → "Beta" heals broken [[Alpha]] sentinels that already
 // existed in the store (e.g. from when the title was ambiguous) by re-routing

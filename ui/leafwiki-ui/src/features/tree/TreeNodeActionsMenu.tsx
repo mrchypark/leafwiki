@@ -176,6 +176,7 @@ export default function TreeNodeActionsMenu({
             page.content,
             page.tags ?? [],
             page.properties ?? {},
+            Boolean(page.draft),
           )
         }
 

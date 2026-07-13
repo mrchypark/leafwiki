@@ -262,6 +262,25 @@ func TestTreeService_TreeHash_ChangesWhenTreeChanges(t *testing.T) {
 	}
 }
 
+func TestTreeService_UpdateNode_PersistsDraftBoolean(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	id, err := svc.CreateNode("alice", nil, "Draft", "draft", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+	draft := true
+	if err := svc.UpdateNodeWithDraft("alice", *id, "Draft", "draft", nil, VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNode failed: %v", err)
+	}
+	page, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage failed: %v", err)
+	}
+	if !page.Draft || !strings.Contains(page.RawContent, "\ndraft: true\n") {
+		t.Fatalf("draft was not persisted as boolean: node=%v raw=%q", page.Draft, page.RawContent)
+	}
+}
+
 func TestTreeService_TreeHash_ChangesWhenOrderChanges(t *testing.T) {
 	svc, _ := newLoadedService(t)
 

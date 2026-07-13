@@ -3,6 +3,7 @@ package markdown
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -596,5 +597,77 @@ func TestFrontmatter_MetadataRoundtripRFC3339(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fm, input) {
 		t.Fatalf("frontmatter changed: got %+v want %+v", fm, input)
+	}
+}
+
+func TestFrontmatter_DraftRequiresYAMLBooleanTrue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "boolean true", raw: "---\ndraft: true\n---\nBody", want: true},
+		{name: "quoted true", raw: "---\ndraft: \"true\"\n---\nBody", want: false},
+		{name: "string draft", raw: "---\ndraft: draft\n---\nBody", want: false},
+		{name: "boolean false", raw: "---\ndraft: false\n---\nBody", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fm, _, _, err := ParseFrontmatter(tc.raw)
+			if err != nil {
+				t.Fatalf("ParseFrontmatter() error = %v", err)
+			}
+			if fm.Draft != tc.want {
+				t.Fatalf("Draft = %v, want %v", fm.Draft, tc.want)
+			}
+			if tc.name == "quoted true" && fm.ExtraFields["draft"] != "true" {
+				t.Fatalf("quoted draft property was not preserved: %#v", fm.ExtraFields)
+			}
+		})
+	}
+}
+
+func TestFrontmatter_DraftRoundTripsAsBoolean(t *testing.T) {
+	raw, err := BuildMarkdownWithFrontmatter(Frontmatter{LeafWikiID: "page-1", Draft: true}, "Body")
+	if err != nil {
+		t.Fatalf("BuildMarkdownWithFrontmatter() error = %v", err)
+	}
+	if !strings.Contains(raw, "\ndraft: true\n") {
+		t.Fatalf("draft was not serialized as a YAML boolean:\n%s", raw)
+	}
+	fm, _, _, err := ParseFrontmatter(raw)
+	if err != nil || !fm.Draft {
+		t.Fatalf("round-trip draft = %v, err = %v", fm.Draft, err)
+	}
+}
+
+func TestFrontmatter_ExplicitDraftDoesNotSerializeDuplicateStringProperty(t *testing.T) {
+	raw, err := BuildMarkdownWithFrontmatter(Frontmatter{
+		LeafWikiID: "page-1",
+		Draft:      true,
+		ExtraFields: map[string]interface{}{
+			"draft": "true",
+		},
+	}, "Body")
+	if err != nil {
+		t.Fatalf("BuildMarkdownWithFrontmatter() error = %v", err)
+	}
+	if strings.Count(raw, "\ndraft:") != 1 || !strings.Contains(raw, "\ndraft: true\n") {
+		t.Fatalf("draft serialized ambiguously:\n%s", raw)
+	}
+}
+
+func TestFrontmatter_QuotedDraftPropertyRoundTripsWithoutBecomingDraft(t *testing.T) {
+	raw, err := BuildMarkdownWithFrontmatter(Frontmatter{
+		LeafWikiID: "page-1",
+		ExtraFields: map[string]interface{}{
+			"draft": "true",
+		},
+	}, "Body")
+	if err != nil {
+		t.Fatalf("BuildMarkdownWithFrontmatter() error = %v", err)
+	}
+	fm, _, _, err := ParseFrontmatter(raw)
+	if err != nil || fm.Draft || fm.ExtraFields["draft"] != "true" {
+		t.Fatalf("quoted draft property changed semantics: fm=%#v err=%v", fm, err)
 	}
 }

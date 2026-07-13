@@ -28,6 +28,7 @@ export type PageNode = {
   children: PageNode[] | null
   kind: 'page' | 'section'
   pinned?: boolean
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -41,6 +42,7 @@ export interface Page {
   properties?: Record<string, string>
   version: string
   kind: 'page' | 'section'
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -112,18 +114,20 @@ export async function createPage({
   slug,
   parentId,
   kind,
+  draft = false,
 }: {
   title: string
   slug: string
   parentId: string | null
   kind: 'page' | 'section'
+  draft?: boolean
 }) {
   if (parentId === '') parentId = null
 
   return await fetchWithAuth(`/api/pages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, slug, parentId, kind }),
+    body: JSON.stringify({ title, slug, parentId, kind, draft }),
   })
 }
 
@@ -153,11 +157,20 @@ export async function updatePage(
   content: string,
   tags: string[],
   properties: Record<string, string>,
+  draft: boolean,
 ): Promise<Page | null> {
   return (await fetchWithAuth(`/api/pages/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version, title, slug, content, tags, properties }),
+    body: JSON.stringify({
+      version,
+      title,
+      slug,
+      content,
+      tags,
+      properties,
+      draft,
+    }),
   })) as Page | null
 }
 
@@ -289,10 +302,14 @@ export async function lookupPath(path: string): Promise<PathLookupResult> {
   }
 }
 
-export async function ensurePage(path: string, targetTitle: string) {
+export async function ensurePage(
+  path: string,
+  targetTitle: string,
+  draft = false,
+) {
   return await fetchWithAuth(`/api/pages/ensure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, title: targetTitle }),
+    body: JSON.stringify({ path, title: targetTitle, draft }),
   })
 }

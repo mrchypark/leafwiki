@@ -65,20 +65,20 @@ type NodeStore struct {
 }
 
 const (
-	reconstructSystemUserID      = "system"
-	orderFilename                = ".order.json"
-	indexFilename                = "index.md"
-	errEntryRequired             = "an entry is required"
-	errParentEntryRequired       = "a parent entry is required"
-	errExpectedPageMissing       = "expected page file missing"
-	errExpectedFolderMissing     = "expected folder missing"
-	errExpectedFolderFoundFile   = "expected folder but found file"
-	errExpectedFileMissing       = "expected file missing"
-	errExpectedFileFoundFolder   = "expected file but found folder"
-	errUnknownNodeKind           = "unknown node kind: %q"
-	errLoadMarkdownFailed        = "could not load markdown file: %w"
-	errWriteMarkdownFailed       = "could not write markdown file: %w"
-	errEnsureParentFailed        = "could not ensure parent directory exists: %w"
+	reconstructSystemUserID    = "system"
+	orderFilename              = ".order.json"
+	indexFilename              = "index.md"
+	errEntryRequired           = "an entry is required"
+	errParentEntryRequired     = "a parent entry is required"
+	errExpectedPageMissing     = "expected page file missing"
+	errExpectedFolderMissing   = "expected folder missing"
+	errExpectedFolderFoundFile = "expected folder but found file"
+	errExpectedFileMissing     = "expected file missing"
+	errExpectedFileFoundFolder = "expected file but found folder"
+	errUnknownNodeKind         = "unknown node kind: %q"
+	errLoadMarkdownFailed      = "could not load markdown file: %w"
+	errWriteMarkdownFailed     = "could not write markdown file: %w"
+	errEnsureParentFailed      = "could not ensure parent directory exists: %w"
 )
 
 type childOrderFile struct {
@@ -130,6 +130,7 @@ func (f *NodeStore) syncManagedFrontmatter(mdFile *markdown.MarkdownFile, entry 
 		strings.TrimSpace(entry.Metadata.CreatorID),
 		strings.TrimSpace(entry.Metadata.LastAuthorID),
 	)
+	mdFile.SetDraft(entry.Draft)
 }
 
 func (f *NodeStore) ensureSectionIndex(entry *PageNode) (string, error) {
@@ -344,6 +345,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			var sectionMdFile *markdown.MarkdownFile
 			needsWriteback := false
 			sectionPinned := false
+			sectionDraft := false
 			if fileExists(indexPath) {
 				mdFile, err := markdown.LoadMarkdownFile(indexPath)
 				if err != nil {
@@ -365,6 +367,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 						needsWriteback = true
 					}
 					sectionPinned = fm.LeafWikiPinned
+					sectionDraft = fm.Draft
 				}
 			}
 
@@ -378,6 +381,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 				Kind:     NodeKindSection,
 				Metadata: metadata,
 				Pinned:   sectionPinned,
+				Draft:    sectionDraft,
 			}
 			if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filepath.Join(currentPath, name)); err != nil {
 				return err
@@ -448,6 +452,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			Kind:     NodeKindPage,
 			Metadata: metadata,
 			Pinned:   fm.LeafWikiPinned,
+			Draft:    fm.Draft,
 		}
 		if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filePath); err != nil {
 			return err
@@ -785,6 +790,10 @@ func (f *NodeStore) UpsertContentAndMetadata(
 		if k == "tags" {
 			continue // handled separately below
 		}
+		if k == "draft" {
+			extra[k] = v
+			continue
+		}
 		switch v.(type) {
 		case string, map[string]interface{}:
 			// string: editor-owned, replaced by incoming properties
@@ -796,6 +805,9 @@ func (f *NodeStore) UpsertContentAndMetadata(
 
 	// String properties from the editor replace every editor-owned string key.
 	for k, v := range properties {
+		if markdown.IsSystemKey(k) {
+			continue
+		}
 		extra[k] = v
 	}
 
@@ -1136,6 +1148,14 @@ func (f *NodeStore) ReadPageContent(entry *PageNode) (string, error) {
 
 // SyncFrontmatterIfExists updates the frontmatter of a page file on disk if it exists
 func (f *NodeStore) SyncFrontmatterIfExists(entry *PageNode) error {
+	return f.syncFrontmatterIfExists(entry, false)
+}
+
+func (f *NodeStore) SyncFrontmatterWithDraftIfExists(entry *PageNode) error {
+	return f.syncFrontmatterIfExists(entry, true)
+}
+
+func (f *NodeStore) syncFrontmatterIfExists(entry *PageNode, clearDraftProperty bool) error {
 	if entry == nil {
 		return &InvalidOpError{Op: "SyncFrontmatterIfExists", Reason: errEntryRequired}
 	}
@@ -1160,6 +1180,9 @@ func (f *NodeStore) SyncFrontmatterIfExists(entry *PageNode) error {
 	mdFile, err := markdown.LoadMarkdownFile(filePath)
 	if err != nil {
 		return fmt.Errorf("load markdown file: %w", err)
+	}
+	if clearDraftProperty {
+		mdFile.DeleteExtraField("draft")
 	}
 
 	f.syncManagedFrontmatter(mdFile, entry)

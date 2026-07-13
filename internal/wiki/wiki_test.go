@@ -89,6 +89,51 @@ func TestWiki_DeletePage_Simple(t *testing.T) {
 	}
 }
 
+func TestWiki_BootstrapTagsAndProperties_SkipsDraftPages(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	page := createPageForTest(t, w, "owner", nil, "Draft", "draft", pageNodeKind())
+	raw := "---\ntags:\n  - secret\nstatus: private\n---\n\nBody."
+	if err := w.tree.UpdateNode("owner", page.ID, page.Title, page.Slug, &raw, tree.VersionUnchecked, nil, nil, true); err != nil {
+		t.Fatalf("UpdateNode: %v", err)
+	}
+	page, err := w.tree.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	draft := true
+	if err := w.tree.UpdateNodeWithDraft("owner", page.ID, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft: %v", err)
+	}
+	page, err = w.tree.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage draft: %v", err)
+	}
+	if err := w.tags.IndexPageContent(page.ID, page.RawContent); err != nil {
+		t.Fatalf("IndexPageContent tags: %v", err)
+	}
+	if err := w.props.IndexPageContent(page.ID, page.RawContent); err != nil {
+		t.Fatalf("IndexPageContent properties: %v", err)
+	}
+
+	w.bootstrapTagsAndProperties()
+
+	tagIDs, err := w.tags.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags: %v", err)
+	}
+	if len(tagIDs) != 0 {
+		t.Fatalf("draft remained in tag index: %v", tagIDs)
+	}
+	propertyIDs, err := w.props.GetPageIDsByProperty("status", "private")
+	if err != nil {
+		t.Fatalf("GetPageIDsByProperty: %v", err)
+	}
+	if len(propertyIDs) != 0 {
+		t.Fatalf("draft remained in property index: %v", propertyIDs)
+	}
+}
+
 func TestWiki_DeletePage_WithChildren(t *testing.T) {
 	w := createWikiTestInstance(t)
 	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
