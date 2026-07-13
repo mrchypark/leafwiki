@@ -133,7 +133,8 @@ func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateNode public: %v", err)
 	}
-	draftID, err := treeService.CreateNode("owner", nil, "Draft", "draft", &kind)
+	draftKind := tree.NodeKindSection
+	draftID, err := treeService.CreateNode("owner", nil, "Draft", "draft", &draftKind)
 	if err != nil {
 		t.Fatalf("CreateNode draft: %v", err)
 	}
@@ -142,8 +143,12 @@ func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) 
 		t.Fatalf("FindPageByID: %v", err)
 	}
 	draft.Draft = true
+	draftChildID, err := treeService.CreateNode("owner", draftID, "Nested Published Bit", "nested-published-bit", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode draft child: %v", err)
+	}
 
-	got := FilterPublishedPageIDs(treeService, []string{*draftID, "missing", *publicID})
+	got := FilterPublishedPageIDs(treeService, []string{*draftID, *draftChildID, "missing", *publicID})
 	if len(got) != 1 || got[0] != *publicID {
 		t.Fatalf("published IDs = %v", got)
 	}

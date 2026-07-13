@@ -75,7 +75,8 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 	oldDraft := before.Draft
 
 	var subtreeIDs []string
-	if slugChanged || in.Draft != nil {
+	draftWillChange := in.Draft != nil && *in.Draft != oldDraft
+	if slugChanged || draftWillChange {
 		subtreeIDs = collectSubtreeIDs(before.PageNode)
 		if len(subtreeIDs) == 0 {
 			subtreeIDs = []string{in.ID}

@@ -56,15 +56,29 @@ func FilterPublishedPageIDs(treeService *tree.TreeService, pageIDs []string) []s
 
 // AllPublishedPageIDs returns every current non-root ID outside draft subtrees.
 func AllPublishedPageIDs(treeService *tree.TreeService) []string {
+	pageIDs := []string{}
 	if treeService == nil {
-		return []string{}
+		return pageIDs
 	}
-	var pageIDs []string
-	_ = treeService.WalkNodes(func(id string) error {
-		pageIDs = append(pageIDs, id)
-		return nil
-	})
-	return FilterPublishedPageIDs(treeService, pageIDs)
+	root := treeService.GetTree()
+	if root == nil {
+		return pageIDs
+	}
+
+	var collect func(*tree.PageNode)
+	collect = func(node *tree.PageNode) {
+		if node == nil || node.Draft {
+			return
+		}
+		pageIDs = append(pageIDs, node.ID)
+		for _, child := range node.Children {
+			collect(child)
+		}
+	}
+	for _, child := range root.Children {
+		collect(child)
+	}
+	return pageIDs
 }
 
 // Prune returns a detached visible copy. A hidden draft also hides its subtree.
