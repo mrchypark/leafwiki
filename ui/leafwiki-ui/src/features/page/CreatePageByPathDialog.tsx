@@ -65,7 +65,7 @@ export function CreatePageByPathDialog({
   const lookup =
     completedLookup?.requestedPath === path ? completedLookup.result : null
 
-  const isCreateButtonDisabled = !title || !path || loading
+  const isCreateButtonDisabled = !title || !path || loading || lookup === null
 
   const handleCreate = async (): Promise<boolean> => {
     setLoading(true)

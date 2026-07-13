@@ -114,6 +114,9 @@ describe('draft creation dialogs', () => {
         screen.getByTestId('create-page-by-path-draft-checkbox'),
       ).toBeInTheDocument(),
     )
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeEnabled()
     await user.click(screen.getByTestId('create-page-by-path-draft-checkbox'))
     await user.click(
       screen.getByTestId('create-page-by-path-dialog-button-confirm'),
@@ -174,6 +177,9 @@ describe('draft creation dialogs', () => {
     expect(
       screen.queryByTestId('create-page-by-path-draft-checkbox'),
     ).not.toBeInTheDocument()
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeDisabled()
   })
 
   it('does not offer or submit draft mode for an existing path', async () => {
@@ -267,6 +273,9 @@ describe('draft creation dialogs', () => {
       })
       await secondLookup.promise
     })
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeEnabled()
     await user.click(screen.getByTestId('create-page-by-path-draft-checkbox'))
 
     await act(async () => {
@@ -281,6 +290,9 @@ describe('draft creation dialogs', () => {
     expect(
       screen.getByTestId('create-page-by-path-draft-checkbox'),
     ).toBeChecked()
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeEnabled()
 
     await user.click(
       screen.getByTestId('create-page-by-path-dialog-button-confirm'),

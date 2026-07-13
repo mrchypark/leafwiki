@@ -157,3 +157,29 @@ func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) 
 		t.Fatalf("all published IDs = %v", all)
 	}
 }
+
+func TestAllPublishedPageIDs_DraftRootHidesDescendants(t *testing.T) {
+	treeService := tree.NewTreeService(t.TempDir())
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	pageID, err := treeService.CreateNode("owner", nil, "Child", "child", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	root := treeService.GetTree()
+	root.Draft = true
+	child, err := treeService.FindPageByID(*pageID)
+	if err != nil {
+		t.Fatalf("FindPageByID: %v", err)
+	}
+	if !IsInDraftSubtree(child) {
+		t.Fatal("child does not inherit draft visibility from root")
+	}
+
+	pageIDs := AllPublishedPageIDs(treeService)
+	if pageIDs == nil || len(pageIDs) != 0 {
+		t.Fatalf("published IDs under draft root = %#v, want non-nil empty slice", pageIDs)
+	}
+}

@@ -61,7 +61,7 @@ func AllPublishedPageIDs(treeService *tree.TreeService) []string {
 		return pageIDs
 	}
 	root := treeService.GetTree()
-	if root == nil {
+	if root == nil || root.Draft {
 		return pageIDs
 	}
 
