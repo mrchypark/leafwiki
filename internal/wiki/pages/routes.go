@@ -168,7 +168,7 @@ func (r *Routes) handleGetPage(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	if !r.canView(c, out.Page.PageNode) {
+	if !r.canView(c, out.Page.ID) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -187,7 +187,7 @@ func (r *Routes) handleGetByPath(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	if !r.canView(c, out.Page.PageNode) {
+	if !r.canView(c, out.Page.ID) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -208,8 +208,7 @@ func (r *Routes) handleFindByTitle(c *gin.Context) {
 	out := r.findByTitle.Execute(c.Request.Context(), title)
 	visible := out.Matches[:0]
 	for _, match := range out.Matches {
-		node, err := r.treeService.FindPageByID(match.ID)
-		if err == nil && r.canView(c, node) {
+		if r.canView(c, match.ID) {
 			visible = append(visible, match)
 		}
 	}
@@ -230,8 +229,7 @@ func (r *Routes) handleLookupPath(c *gin.Context) {
 		if segment.ID == nil {
 			continue
 		}
-		node, findErr := r.treeService.FindPageByID(*segment.ID)
-		if findErr == nil && !r.canView(c, node) {
+		if !r.canView(c, *segment.ID) {
 			respondWithPageError(c, tree.ErrPageNotFound)
 			return
 		}
@@ -251,8 +249,7 @@ func (r *Routes) handleResolvePermalink(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	node, err := r.treeService.FindPageByID(out.Target.ID)
-	if err != nil || !r.canView(c, node) {
+	if !r.canView(c, out.Target.ID) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -339,7 +336,7 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	node, err := r.treeService.FindPageByID(id)
+	node, err := r.treeService.SnapshotPageSubtree(id)
 	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
@@ -371,8 +368,9 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	r.respondPage(c, http.StatusOK, out.Page)
 }
 
-func (r *Routes) canView(c *gin.Context, node *tree.PageNode) bool {
-	return pagevisibility.CanView(node, authmw.TryGetUser(c), r.authDisabled)
+func (r *Routes) canView(c *gin.Context, id string) bool {
+	node, err := r.treeService.SnapshotPageNode(id)
+	return err == nil && pagevisibility.CanView(node, authmw.TryGetUser(c), r.authDisabled)
 }
 
 func (r *Routes) setVisibilityCacheHeader(c *gin.Context) {
@@ -382,7 +380,7 @@ func (r *Routes) setVisibilityCacheHeader(c *gin.Context) {
 }
 
 func (r *Routes) requireVisibleSubtree(c *gin.Context, id string) bool {
-	node, err := r.treeService.FindPageByID(id)
+	node, err := r.treeService.SnapshotPageSubtree(id)
 	if err != nil || !pagevisibility.CanViewSubtree(node, authmw.TryGetUser(c), r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return false
@@ -391,8 +389,7 @@ func (r *Routes) requireVisibleSubtree(c *gin.Context, id string) bool {
 }
 
 func (r *Routes) requireVisibleNode(c *gin.Context, id string) bool {
-	node, err := r.treeService.FindPageByID(id)
-	if err != nil || !r.canView(c, node) {
+	if !r.canView(c, id) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return false
 	}
@@ -524,8 +521,7 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 		if segment.ID == nil {
 			continue
 		}
-		node, findErr := r.treeService.FindPageByID(*segment.ID)
-		if findErr != nil || !r.canView(c, node) {
+		if !r.canView(c, *segment.ID) {
 			respondWithPageError(c, tree.ErrPageNotFound)
 			return
 		}
@@ -538,7 +534,8 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	if !pagevisibility.CanViewSubtree(out.Page.PageNode, user, r.authDisabled) {
+	node, err := r.treeService.SnapshotPageSubtree(out.Page.ID)
+	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -674,7 +671,7 @@ func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
 }
 
 func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
-	node, err := r.treeService.SnapshotPageNode(page.ID)
+	node, err := r.treeService.SnapshotPageSubtree(page.ID)
 	if err != nil {
 		respondWithPageError(c, err)
 		return

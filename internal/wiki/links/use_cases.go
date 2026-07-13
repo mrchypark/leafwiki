@@ -43,15 +43,15 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 	if uc.links == nil {
 		return nil, ErrLinkServiceUnavailable
 	}
-	page, err := uc.tree.GetPage(in.PageID)
+	node, err := uc.tree.SnapshotPageNode(in.PageID)
 	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
 			return nil, linkPageNotFoundError(err)
 		}
 		return nil, err
 	}
-	if pagevisibility.IsInDraftSubtree(page.PageNode) {
-		if !pagevisibility.CanView(page.PageNode, in.User, in.AuthDisabled) {
+	if pagevisibility.IsInDraftSubtree(node) {
+		if !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
 			return nil, linkPageNotFoundError(nil)
 		}
 		return &GetLinkStatusOutput{Status: &corelinks.LinkStatusResult{
@@ -61,7 +61,7 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 			BrokenOutgoings: []corelinks.OutgoingResultItem{},
 		}}, nil
 	}
-	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
+	status, err := uc.links.GetLinkStatusForPage(in.PageID, node.CalculatePath())
 	if err != nil {
 		return nil, err
 	}
@@ -82,10 +82,14 @@ func filterLinkStatus(status *corelinks.LinkStatusResult, treeService *tree.Tree
 	if status == nil {
 		return
 	}
-	status.Backlinks = filterPublicBacklinks(status.Backlinks, treeService)
-	status.BrokenIncoming = filterPublicBacklinks(status.BrokenIncoming, treeService)
-	status.Outgoings = filterPublicOutgoings(status.Outgoings, treeService)
-	status.BrokenOutgoings = filterPublicOutgoings(status.BrokenOutgoings, treeService)
+	published := make(map[string]struct{})
+	for _, pageID := range pagevisibility.AllPublishedPageIDs(treeService) {
+		published[pageID] = struct{}{}
+	}
+	status.Backlinks = filterPublicBacklinks(status.Backlinks, published)
+	status.BrokenIncoming = filterPublicBacklinks(status.BrokenIncoming, published)
+	status.Outgoings = filterPublicOutgoings(status.Outgoings, published)
+	status.BrokenOutgoings = filterPublicOutgoings(status.BrokenOutgoings, published)
 	status.Counts = corelinks.LinkStatusCounts{
 		Backlinks:       len(status.Backlinks),
 		BrokenIncoming:  len(status.BrokenIncoming),
@@ -94,23 +98,21 @@ func filterLinkStatus(status *corelinks.LinkStatusResult, treeService *tree.Tree
 	}
 }
 
-func filterPublicBacklinks(items []corelinks.BacklinkResultItem, treeService *tree.TreeService) []corelinks.BacklinkResultItem {
+func filterPublicBacklinks(items []corelinks.BacklinkResultItem, published map[string]struct{}) []corelinks.BacklinkResultItem {
 	visible := make([]corelinks.BacklinkResultItem, 0, len(items))
 	for _, item := range items {
-		node, err := treeService.FindPageByID(item.FromPageID)
-		if err == nil && node != nil && !pagevisibility.IsInDraftSubtree(node) {
+		if _, ok := published[item.FromPageID]; ok {
 			visible = append(visible, item)
 		}
 	}
 	return visible
 }
 
-func filterPublicOutgoings(items []corelinks.OutgoingResultItem, treeService *tree.TreeService) []corelinks.OutgoingResultItem {
+func filterPublicOutgoings(items []corelinks.OutgoingResultItem, published map[string]struct{}) []corelinks.OutgoingResultItem {
 	visible := make([]corelinks.OutgoingResultItem, 0, len(items))
 	for _, item := range items {
 		if item.ToPageID != "" {
-			node, err := treeService.FindPageByID(item.ToPageID)
-			if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
+			if _, ok := published[item.ToPageID]; !ok {
 				continue
 			}
 		}

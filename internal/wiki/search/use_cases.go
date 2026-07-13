@@ -101,7 +101,7 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 
 	items := make([]coresearch.SearchResultItem, 0, len(pageIDs))
 	for _, pageID := range pageIDs {
-		node, err := uc.tree.FindPageByID(pageID)
+		node, err := uc.tree.SnapshotPageNode(pageID)
 		if err != nil || node == nil {
 			continue
 		}

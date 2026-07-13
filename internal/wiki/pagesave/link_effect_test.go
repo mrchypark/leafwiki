@@ -34,7 +34,7 @@ func TestLinkIndexSideEffect_Update_RemovesDraftSourceAndReindexesWhenPublished(
 
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: target})
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: source})
-	source.Draft = true
+	source = setDraftForTest(t, ts, source, true)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: source})
 	out, err := svc.GetOutgoingLinksForPage(source.ID)
 	if err != nil {
@@ -44,7 +44,7 @@ func TestLinkIndexSideEffect_Update_RemovesDraftSourceAndReindexesWhenPublished(
 		t.Fatalf("draft source remained in link index: %#v", out.Outgoings)
 	}
 
-	source.Draft = false
+	source = setDraftForTest(t, ts, source, false)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: source})
 	out, err = svc.GetOutgoingLinksForPage(source.ID)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestLinkIndexSideEffect_Update_BreaksIncomingLinksWhenTargetBecomesDraft(t 
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: target})
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: source})
 
-	target.Draft = true
+	target = setDraftForTest(t, ts, target, true)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: target})
 	backlinks, err := svc.GetBacklinksForPage(target.ID)
 	if err != nil {

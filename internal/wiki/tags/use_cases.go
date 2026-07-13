@@ -101,7 +101,7 @@ func (uc *GetPagesByTagsUseCase) Execute(_ context.Context, in GetPagesByTagsInp
 
 	pages := make([]*dto.TaggedPage, 0, len(pageIDs))
 	for _, id := range pageIDs {
-		node, err := uc.treeService.FindPageByID(id)
+		node, err := uc.treeService.SnapshotPageNode(id)
 		if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
 			continue
 		}

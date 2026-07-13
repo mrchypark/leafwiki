@@ -94,9 +94,15 @@ func (uc *EnsurePathUseCase) Execute(_ context.Context, in EnsurePathInput) (*En
 	if err != nil {
 		return nil, err
 	}
-	if in.Draft && !pagevisibility.IsInDraftSubtree(result.Page) {
-		ve.Add("draft", "Draft cannot be applied to an existing published page")
-		return nil, ve
+	if in.Draft {
+		node, err := uc.tree.SnapshotPageNode(result.Page.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !pagevisibility.IsInDraftSubtree(node) {
+			ve.Add("draft", "Draft cannot be applied to an existing published page")
+			return nil, ve
+		}
 	}
 
 	ids := make([]string, 0, len(result.Created)+1)

@@ -824,8 +824,8 @@ func (t *TreeService) SnapshotTree() *PageNode {
 	return clonePageNodeSubtree(t.tree, nil)
 }
 
-// SnapshotPageNode returns a detached copy of the node's subtree. Its ancestor
-// chain is retained for path and inherited-state checks, without sibling trees.
+// SnapshotPageNode returns a detached copy of the node and its ancestor chain.
+// Children are omitted for cheap path and inherited-state checks.
 func (t *TreeService) SnapshotPageNode(id string) (*PageNode, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -837,7 +837,47 @@ func (t *TreeService) SnapshotPageNode(id string) (*PageNode, error) {
 	if node == nil {
 		return nil, ErrPageNotFound
 	}
+	return clonePageNodeAncestors(node), nil
+}
+
+// SnapshotPageSubtree returns a detached copy of the node's subtree and ancestor
+// chain. Use this only when the caller needs to traverse Children.
+func (t *TreeService) SnapshotPageSubtree(id string) (*PageNode, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if t.tree == nil {
+		return nil, ErrTreeNotLoaded
+	}
+	node := t.getNodeByIDLocked(id)
+	if node == nil {
+		return nil, ErrPageNotFound
+	}
 	return clonePageNodeSubtree(node, clonePageNodeAncestors(node.Parent)), nil
+}
+
+// SnapshotPagesByTitle returns detached title-index matches with their ancestor
+// chains retained for path and inherited-state checks. Child subtrees are omitted.
+func (t *TreeService) SnapshotPagesByTitle(title string) []*PageNode {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	title = strings.TrimSpace(title)
+	if t.tree == nil || title == "" {
+		return nil
+	}
+	nodes := t.nodesByTitle[strings.ToLower(title)]
+	snapshots := make([]*PageNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		clone := *node
+		clone.Parent = clonePageNodeAncestors(node.Parent)
+		clone.Children = nil
+		snapshots = append(snapshots, &clone)
+	}
+	return snapshots
 }
 
 func clonePageNodeAncestors(node *PageNode) *PageNode {
@@ -1040,7 +1080,7 @@ func (t *TreeService) GetPages(ids []string) ([]*Page, []error) {
 			if err != nil {
 				errs[tk.index] = fmt.Errorf(errGetPageContentFailed, err)
 			} else {
-				pages[tk.index] = &Page{PageNode: tk.node, Content: content, RawContent: raw}
+				pages[tk.index] = &Page{PageNode: clonePageNodeAncestors(tk.node), Content: content, RawContent: raw}
 			}
 			mu.Unlock()
 		}(tk)
@@ -1071,7 +1111,7 @@ func (t *TreeService) GetPage(id string) (*Page, error) {
 	}
 
 	return &Page{
-		PageNode:   page,
+		PageNode:   clonePageNodeSubtree(page, clonePageNodeAncestors(page.Parent)),
 		Content:    content,
 		RawContent: raw,
 	}, nil

@@ -45,14 +45,25 @@ type TargetLink struct {
 }
 
 func publishedPagesByTitle(treeService *tree.TreeService, title string) []*tree.PageNode {
-	pages := treeService.FindPagesByTitle(title)
+	if treeService == nil {
+		return nil
+	}
+	pages := treeService.SnapshotPagesByTitle(title)
 	published := make([]*tree.PageNode, 0, len(pages))
 	for _, page := range pages {
-		if page != nil && !pagevisibility.IsInDraftSubtree(page) {
+		if !pagevisibility.IsInDraftSubtree(page) {
 			published = append(published, page)
 		}
 	}
 	return published
+}
+
+func publishedPageByID(treeService *tree.TreeService, pageID string) *tree.PageNode {
+	node, err := treeService.SnapshotPageNode(pageID)
+	if err != nil || pagevisibility.IsInDraftSubtree(node) {
+		return nil
+	}
+	return node
 }
 
 var markdownParser = goldmark.New()
@@ -148,10 +159,14 @@ func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []T
 		if strings.Contains(target, "/") {
 			routePath := strings.TrimPrefix(target, "/")
 			page, err := treeService.FindPageByRoutePath(routePath)
-			if err == nil && page != nil && !pagevisibility.IsInDraftSubtree(page.PageNode) {
+			var pageNode *tree.PageNode
+			if err == nil && page != nil {
+				pageNode = publishedPageByID(treeService, page.ID)
+			}
+			if pageNode != nil {
 				result = append(result, TargetLink{
-					TargetPageID:   page.ID,
-					TargetPagePath: normalizeWikiPath(page.CalculatePath()),
+					TargetPageID:   pageNode.ID,
+					TargetPagePath: normalizeWikiPath(pageNode.CalculatePath()),
 					Broken:         false,
 				})
 				continue
@@ -267,8 +282,8 @@ func resolveURLPath(currentPath, href string) (string, error) {
 	return normalizeWikiPath(resolved.Path), nil
 }
 
-func resolveTargetLinks(tree *tree.TreeService, currentPath string, links []string) []TargetLink {
-	if !tree.IsLoaded() {
+func resolveTargetLinks(treeService *tree.TreeService, currentPath string, links []string) []TargetLink {
+	if !treeService.IsLoaded() {
 		return nil
 	}
 
@@ -292,11 +307,14 @@ func resolveTargetLinks(tree *tree.TreeService, currentPath string, links []stri
 		}
 
 		// find page by route path
-		page, err := tree.FindPageByRoutePath(normalizedForLookup)
-		if err == nil && page != nil && !pagevisibility.IsInDraftSubtree(page.PageNode) {
-			// found page
+		page, err := treeService.FindPageByRoutePath(normalizedForLookup)
+		var pageNode *tree.PageNode
+		if err == nil && page != nil {
+			pageNode = publishedPageByID(treeService, page.ID)
+		}
+		if pageNode != nil {
 			targetLinks = append(targetLinks, TargetLink{
-				TargetPageID:   page.ID,
+				TargetPageID:   pageNode.ID,
 				TargetPagePath: resolvedPath,
 				Broken:         false,
 			})
@@ -330,7 +348,7 @@ func toBacklinkResultItem(tree *tree.TreeService, backlink Backlink) BacklinkRes
 		return BacklinkResultItem{}
 	}
 
-	page, err := tree.FindPageByID(backlink.FromPageID)
+	page, err := tree.SnapshotPageNode(backlink.FromPageID)
 	if err != nil {
 		return BacklinkResultItem{}
 	}
@@ -376,7 +394,7 @@ func toOutgoingResultItem(tree *tree.TreeService, outgoing Outgoing) OutgoingRes
 		return item
 	}
 
-	toPage, err := tree.FindPageByID(outgoing.ToPageID)
+	toPage, err := tree.SnapshotPageNode(outgoing.ToPageID)
 	if err != nil || toPage == nil {
 		return item
 	}

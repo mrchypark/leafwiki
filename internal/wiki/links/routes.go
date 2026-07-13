@@ -67,7 +67,7 @@ func (r *Routes) handleGetLinkStatus(c *gin.Context) {
 		return
 	}
 	if r.getLinkStatus != nil && r.getLinkStatus.tree != nil {
-		if node, findErr := r.getLinkStatus.tree.FindPageByID(pageID); findErr == nil && pagevisibility.IsInDraftSubtree(node) {
+		if node, findErr := r.getLinkStatus.tree.SnapshotPageNode(pageID); findErr == nil && pagevisibility.IsInDraftSubtree(node) {
 			c.Header("Cache-Control", "private, no-store")
 			c.Header("Pragma", "no-cache")
 		}

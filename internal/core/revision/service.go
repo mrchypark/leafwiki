@@ -759,11 +759,11 @@ func (s *Service) pageWriteLock(pageID string) *sync.Mutex {
 }
 
 func (s *Service) shouldSkipRevision(pageID string) (bool, error) {
-	page, err := s.pages.GetPage(pageID)
+	node, err := s.pages.SnapshotPageNode(pageID)
 	if err != nil {
 		return false, err
 	}
-	return pagevisibility.IsInDraftSubtree(page.PageNode), nil
+	return pagevisibility.IsInDraftSubtree(node), nil
 }
 
 func (s *Service) shouldCoalesce(prev *Revision, authorID string) bool {

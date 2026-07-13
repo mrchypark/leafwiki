@@ -118,7 +118,7 @@ func TestPropertiesSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished
 	page := createPageWithFrontmatter(t, treeSvc, "Draft Props", "draft-props", "---\nstatus: secret\n---\n\nBody.")
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
 
-	page.Draft = true
+	page = setDraftForTest(t, treeSvc, page, true)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	ids, err := propsSvc.GetPageIDsByProperty("status", "secret")
 	if err != nil {
@@ -128,7 +128,7 @@ func TestPropertiesSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished
 		t.Fatalf("draft page remained in property index: %v", ids)
 	}
 
-	page.Draft = false
+	page = setDraftForTest(t, treeSvc, page, false)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	ids, err = propsSvc.GetPageIDsByProperty("status", "secret")
 	if err != nil {

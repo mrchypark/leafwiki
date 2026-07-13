@@ -140,7 +140,7 @@ func TestTagsSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *te
 	page := createPageWithFrontmatter(t, treeSvc, "Draft Tags", "draft-tags", "---\ntags:\n  - secret\n---\n\nBody.")
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
 
-	page.Draft = true
+	page = setDraftForTest(t, treeSvc, page, true)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	ids, err := tagsSvc.GetPageIDsByTags([]string{"secret"})
 	if err != nil {
@@ -150,7 +150,7 @@ func TestTagsSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *te
 		t.Fatalf("draft page remained in tag index: %v", ids)
 	}
 
-	page.Draft = false
+	page = setDraftForTest(t, treeSvc, page, false)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	ids, err = tagsSvc.GetPageIDsByTags([]string{"secret"})
 	if err != nil {

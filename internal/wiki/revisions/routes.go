@@ -98,7 +98,7 @@ func (r *Routes) requirePageVisibility(authDisabled bool) gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		node, err := r.tree.FindPageByID(strings.TrimSpace(c.Param("id")))
+		node, err := r.tree.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
 		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return

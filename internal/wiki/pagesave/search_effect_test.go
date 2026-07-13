@@ -80,7 +80,7 @@ func TestSearchIndexSideEffect_IndexAllPages_SkipsDraftPages(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 
 	page := createPageWithContent(t, treeSvc, "Draft Page", "draft-page", "private uniquedraftbootstrap content")
-	page.Draft = true
+	page = setDraftForTest(t, treeSvc, page, true)
 
 	if err := effect.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages: %v", err)
@@ -162,7 +162,7 @@ func TestSearchIndexSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublishe
 	page := createPageWithContent(t, treeSvc, "Transition Page", "transition", "uniquedrafttransition content")
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
 
-	page.Draft = true
+	page = setDraftForTest(t, treeSvc, page, true)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	result, err := index.Search("uniquedrafttransition", nil, 0, 10)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestSearchIndexSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublishe
 		t.Fatal("draft page remained in search index")
 	}
 
-	page.Draft = false
+	page = setDraftForTest(t, treeSvc, page, false)
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
 	result, err = index.Search("uniquedrafttransition", nil, 0, 10)
 	if err != nil {
@@ -206,7 +206,11 @@ func TestSearchIndexSideEffect_Apply_DraftToggleReindexesSubtree(t *testing.T) {
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: parent})
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: child})
 
-	parent.Draft = true
+	parent = setDraftForTest(t, treeSvc, parent, true)
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage draft child: %v", err)
+	}
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
 	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
 		result, err := index.Search(term, nil, 0, 10)
@@ -218,7 +222,11 @@ func TestSearchIndexSideEffect_Apply_DraftToggleReindexesSubtree(t *testing.T) {
 		}
 	}
 
-	parent.Draft = false
+	parent = setDraftForTest(t, treeSvc, parent, false)
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage published child: %v", err)
+	}
 	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
 	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
 		result, err := index.Search(term, nil, 0, 10)

@@ -322,7 +322,10 @@ func TestLinkService_IndexAllPages_SkipsDraftSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPage a failed: %v", err)
 	}
-	pageA.Draft = true
+	draft := true
+	if err := ts.UpdateNodeWithDraft("tester", pageA.ID, pageA.Title, pageA.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft a: %v", err)
+	}
 
 	if err := svc.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
@@ -343,7 +346,10 @@ func TestLinkService_IndexAllPages_DoesNotResolveDraftTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPage b failed: %v", err)
 	}
-	pageB.Draft = true
+	draft := true
+	if err := ts.UpdateNodeWithDraft("tester", pageB.ID, pageB.Title, pageB.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft b: %v", err)
+	}
 
 	if err := svc.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
@@ -1419,6 +1425,39 @@ func TestResolveWikiLinkTargets_SingleTitleMatch(t *testing.T) {
 	}
 	if targets[0].Broken {
 		t.Errorf("expected resolved link, got broken")
+	}
+}
+
+func TestPublishedPagesByTitle_ConcurrentDraftUpdatesUseSnapshot(t *testing.T) {
+	ts := tree.NewTreeService(t.TempDir())
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	pageID, err := ts.CreateNode("editor", nil, "Target", "target", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 25; i++ {
+			draft := i%2 == 0
+			if err := ts.UpdateNodeWithDraft("editor", *pageID, "Target", "target", nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	for i := 0; i < 25; i++ {
+		pages := publishedPagesByTitle(ts, "Target")
+		if len(pages) > 1 || len(pages) == 1 && pages[0].ID != *pageID {
+			t.Fatalf("published pages = %#v", pages)
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("UpdateNodeWithDraft: %v", err)
 	}
 }
 

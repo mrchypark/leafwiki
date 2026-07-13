@@ -42,12 +42,12 @@ func IsInDraftSubtree(node *tree.PageNode) bool {
 // FilterPublishedPageIDs keeps IDs that currently resolve outside a draft subtree.
 func FilterPublishedPageIDs(treeService *tree.TreeService, pageIDs []string) []string {
 	visible := make([]string, 0, len(pageIDs))
-	if treeService == nil {
-		return visible
+	published := make(map[string]struct{})
+	for _, pageID := range AllPublishedPageIDs(treeService) {
+		published[pageID] = struct{}{}
 	}
 	for _, pageID := range pageIDs {
-		node, err := treeService.FindPageByID(pageID)
-		if err == nil && node != nil && !IsInDraftSubtree(node) {
+		if _, ok := published[pageID]; ok {
 			visible = append(visible, pageID)
 		}
 	}
@@ -60,7 +60,7 @@ func AllPublishedPageIDs(treeService *tree.TreeService) []string {
 	if treeService == nil {
 		return pageIDs
 	}
-	root := treeService.GetTree()
+	root := treeService.SnapshotTree()
 	if root == nil || root.Draft {
 		return pageIDs
 	}

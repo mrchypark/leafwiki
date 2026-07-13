@@ -134,15 +134,10 @@ func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) 
 		t.Fatalf("CreateNode public: %v", err)
 	}
 	draftKind := tree.NodeKindSection
-	draftID, err := treeService.CreateNode("owner", nil, "Draft", "draft", &draftKind)
+	draftID, err := treeService.CreateNodeWithDraft("owner", nil, "Draft", "draft", &draftKind, true)
 	if err != nil {
 		t.Fatalf("CreateNode draft: %v", err)
 	}
-	draft, err := treeService.FindPageByID(*draftID)
-	if err != nil {
-		t.Fatalf("FindPageByID: %v", err)
-	}
-	draft.Draft = true
 	draftChildID, err := treeService.CreateNode("owner", draftID, "Nested Published Bit", "nested-published-bit", &kind)
 	if err != nil {
 		t.Fatalf("CreateNode draft child: %v", err)
@@ -155,6 +150,44 @@ func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) 
 	all := AllPublishedPageIDs(treeService)
 	if len(all) != 1 || all[0] != *publicID {
 		t.Fatalf("all published IDs = %v", all)
+	}
+}
+
+func TestPublishedPageIDs_ConcurrentDraftUpdatesUseConsistentSnapshots(t *testing.T) {
+	treeService := tree.NewTreeService(t.TempDir())
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	pageID, err := treeService.CreateNode("editor", nil, "Page", "page", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 25; i++ {
+			draft := i%2 == 0
+			if err := treeService.UpdateNodeWithDraft("editor", *pageID, "Page", "page", nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	for i := 0; i < 25; i++ {
+		for _, ids := range [][]string{
+			FilterPublishedPageIDs(treeService, []string{*pageID}),
+			AllPublishedPageIDs(treeService),
+		} {
+			if len(ids) > 1 || len(ids) == 1 && ids[0] != *pageID {
+				t.Fatalf("published IDs = %v", ids)
+			}
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("UpdateNodeWithDraft: %v", err)
 	}
 }
 

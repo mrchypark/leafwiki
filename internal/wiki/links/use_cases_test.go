@@ -41,11 +41,14 @@ func TestGetLinkStatusUseCase_FiltersStaleDraftRowsAndDirectAccess(t *testing.T)
 		t.Fatalf("IndexAllPages: %v", err)
 	}
 	for _, id := range []string{draftTargetID, draftSourceID} {
-		node, err := treeService.FindPageByID(id)
+		page, err := treeService.GetPage(id)
 		if err != nil {
-			t.Fatalf("FindPageByID: %v", err)
+			t.Fatalf("GetPage: %v", err)
 		}
-		node.Draft = true
+		draft := true
+		if err := treeService.UpdateNodeWithDraft("owner", id, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+			t.Fatalf("UpdateNodeWithDraft: %v", err)
+		}
 	}
 	useCase := NewGetLinkStatusUseCase(service, treeService)
 

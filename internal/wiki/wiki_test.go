@@ -101,7 +101,14 @@ func TestWiki_BootstrapTagsAndProperties_SkipsDraftPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPage: %v", err)
 	}
-	page.Draft = true
+	draft := true
+	if err := w.tree.UpdateNodeWithDraft("owner", page.ID, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft: %v", err)
+	}
+	page, err = w.tree.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage draft: %v", err)
+	}
 	if err := w.tags.IndexPageContent(page.ID, page.RawContent); err != nil {
 		t.Fatalf("IndexPageContent tags: %v", err)
 	}

@@ -1670,10 +1670,14 @@ func TestApplyPageRefactorUseCase_Move_RewritesRelativeOutgoingLinksInMovedPage(
 	if err != nil {
 		t.Fatalf("GetLatestRevision(pageA before refactor) failed: %v", err)
 	}
+	currentPageA, err := deps.tree.GetPage(pageA.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage(pageA before refactor) failed: %v", err)
+	}
 
 	updated, err := applyUC.Execute(context.Background(), pages.RefactorApplyInput{
 		UserID:  "system",
-		Version: pageA.Page.Version(),
+		Version: currentPageA.Version(),
 		RefactorPreviewInput: pages.RefactorPreviewInput{
 			PageID:      pageA.Page.ID,
 			Kind:        pages.RefactorKindMove,
@@ -1986,8 +1990,12 @@ func TestDeletePageUseCase_NonRecursive_MarksIncomingBroken(t *testing.T) {
 	if err := deps.links.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
 	}
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before delete failed: %v", err)
+	}
 	if err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), Recursive: false,
+		UserID: "system", ID: b.Page.ID, Version: currentB.Version(), Recursive: false,
 	}); err != nil {
 		t.Fatalf("DeletePage failed: %v", err)
 	}
@@ -2346,9 +2354,13 @@ func TestUpdatePageUseCase_RenamePage_MarksOldBroken_HealsNewExactPath(t *testin
 		t.Fatalf("unexpected outgoing before rename err=%v out=%#v", err, out1)
 	}
 
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before rename: %v", err)
+	}
 	contentB2 := "# B (renamed)"
 	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), Title: b.Page.Title, Slug: "b2", Content: &contentB2, Kind: pageKind(),
+		UserID: "system", ID: currentB.ID, Version: currentB.Version(), Title: currentB.Title, Slug: "b2", Content: &contentB2, Kind: pageKind(),
 	}); err != nil {
 		t.Fatalf("Rename B failed: %v", err)
 	}
@@ -2469,9 +2481,13 @@ func TestMovePageUseCase_MarksOldBroken_HealsNewExactPath(t *testing.T) {
 	if err := deps.links.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages failed: %v", err)
 	}
+	currentB, err := deps.tree.GetPage(b.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage B before move: %v", err)
+	}
 
 	if err := moveUC.Execute(context.Background(), pages.MovePageInput{
-		UserID: "system", ID: b.Page.ID, Version: b.Page.Version(), ParentID: projects.Page.ID,
+		UserID: "system", ID: currentB.ID, Version: currentB.Version(), ParentID: projects.Page.ID,
 	}); err != nil {
 		t.Fatalf("MovePage failed: %v", err)
 	}
@@ -2614,9 +2630,13 @@ func TestMovePageUseCase_ReindexesRelativeLinks(t *testing.T) {
 	if out1.Outgoings[0].ToPath != "/docs/shared" || out1.Outgoings[0].Broken || out1.Outgoings[0].ToPageID != docsShared.Page.ID {
 		t.Fatalf("unexpected outgoing before move: %#v", out1.Outgoings[0])
 	}
+	currentA, err := deps.tree.GetPage(a.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage A before move: %v", err)
+	}
 
 	if err := moveUC.Execute(context.Background(), pages.MovePageInput{
-		UserID: "system", ID: a.Page.ID, Version: a.Page.Version(), ParentID: guide.Page.ID,
+		UserID: "system", ID: currentA.ID, Version: currentA.Version(), ParentID: guide.Page.ID,
 	}); err != nil {
 		t.Fatalf("MovePage(a -> guide) failed: %v", err)
 	}
@@ -2894,9 +2914,13 @@ func TestUpdatePageUseCase_TitleOnlyCreatesStructureRevision(t *testing.T) {
 	if beforeLatest == nil {
 		t.Fatal("expected initial content revision")
 	}
+	currentPage, err := deps.tree.GetPage(page.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage before title update: %v", err)
+	}
 
 	updatedPage, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Renamed Title", Slug: page.Page.Slug, Content: nil, Kind: pageKind(),
+		UserID: "system", ID: currentPage.ID, Version: currentPage.Version(), Title: "Renamed Title", Slug: currentPage.Slug, Content: nil, Kind: pageKind(),
 	})
 	if err != nil {
 		t.Fatalf("UpdatePage(title only) failed: %v", err)
@@ -2951,9 +2975,13 @@ func TestUpdatePageUseCase_TitleOnlyWithUnchangedContentCreatesStructureRevision
 	if beforeLatest == nil {
 		t.Fatal("expected initial content revision")
 	}
+	currentPage, err := deps.tree.GetPage(page.Page.ID)
+	if err != nil {
+		t.Fatalf("GetPage before title update: %v", err)
+	}
 
 	if _, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Renamed Title", Slug: page.Page.Slug, Content: &content, Kind: pageKind(),
+		UserID: "system", ID: currentPage.ID, Version: currentPage.Version(), Title: "Renamed Title", Slug: currentPage.Slug, Content: &content, Kind: pageKind(),
 	}); err != nil {
 		t.Fatalf("UpdatePage(title only with unchanged content) failed: %v", err)
 	}
