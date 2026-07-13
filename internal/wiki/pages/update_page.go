@@ -21,6 +21,9 @@ type UpdatePageInput struct {
 	Tags                []string
 	Properties          map[string]string
 	PreserveFrontmatter bool
+	Draft               *bool
+	// DraftAllowed is set only for authenticated editor/admin requests.
+	DraftAllowed bool
 }
 
 // UpdatePageOutput is the output of UpdatePageUseCase.
@@ -48,6 +51,11 @@ func NewUpdatePageUseCase(
 
 // Execute validates, updates the node, and fires post-save side effects.
 func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*UpdatePageOutput, error) {
+	in.Version = sanitizeClientVersion(in.Version)
+	if in.Draft != nil {
+		return uc.transitionDraft(in)
+	}
+
 	ve := sharederrors.NewValidationErrors()
 	if in.Title == "" {
 		ve.Add("title", "Title must not be empty")
@@ -58,8 +66,6 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 	if ve.HasErrors() {
 		return nil, ve
 	}
-
-	in.Version = sanitizeClientVersion(in.Version)
 
 	before, err := uc.tree.GetPage(in.ID)
 	if err != nil {
@@ -117,4 +123,37 @@ func (uc *UpdatePageUseCase) Execute(_ context.Context, in UpdatePageInput) (*Up
 	uc.orchestrator.Run(event)
 
 	return &UpdatePageOutput{Page: after}, nil
+}
+
+func (uc *UpdatePageUseCase) transitionDraft(in UpdatePageInput) (*UpdatePageOutput, error) {
+	ve := sharederrors.NewValidationErrors()
+	if !in.DraftAllowed {
+		ve.Add("draft", "Drafts require authentication")
+	}
+	if in.Title != "" || in.Slug != "" || in.Content != nil || in.Kind != nil || in.Tags != nil || in.Properties != nil || in.PreserveFrontmatter {
+		ve.Add("draft", "Draft state must be changed separately from page content or structure")
+	}
+	if ve.HasErrors() {
+		return nil, ve
+	}
+	before, err := uc.tree.GetPage(in.ID)
+	if err != nil {
+		return nil, err
+	}
+	beforeNode := *before.PageNode
+	before.PageNode = &beforeNode
+	if err := uc.tree.SetDraft(in.UserID, in.ID, *in.Draft, in.Version); err != nil {
+		return nil, err
+	}
+	page, err := uc.tree.GetPage(in.ID)
+	if err != nil {
+		return nil, err
+	}
+	uc.orchestrator.Run(pagesave.PageSaveEvent{
+		Operation: pagesave.PageOperationUpdate,
+		UserID:    in.UserID,
+		Before:    before,
+		After:     page,
+	})
+	return &UpdatePageOutput{Page: page}, nil
 }

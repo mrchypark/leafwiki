@@ -16,6 +16,9 @@ type CreatePageInput struct {
 	Title    string
 	Slug     string
 	Kind     *tree.NodeKind
+	Draft    bool
+	// DraftAllowed is set only for authenticated editor/admin requests.
+	DraftAllowed bool
 }
 
 // CreatePageOutput is the output of CreatePageUseCase.
@@ -25,10 +28,10 @@ type CreatePageOutput struct {
 
 // CreatePageUseCase creates a new page in the tree and fires post-save side effects.
 type CreatePageUseCase struct {
-	tree        *tree.TreeService
-	slug        *tree.SlugService
+	tree         *tree.TreeService
+	slug         *tree.SlugService
 	orchestrator *pagesave.PageSaveOrchestrator
-	log         *slog.Logger
+	log          *slog.Logger
 }
 
 // NewCreatePageUseCase constructs a CreatePageUseCase.
@@ -54,6 +57,12 @@ func (uc *CreatePageUseCase) Execute(_ context.Context, in CreatePageInput) (*Cr
 	if in.Kind != nil && *in.Kind != tree.NodeKindPage && *in.Kind != tree.NodeKindSection {
 		ve.Add("kind", "Kind must be either 'page' or 'section'")
 	}
+	if in.Draft && !in.DraftAllowed {
+		ve.Add("draft", "Drafts require authentication")
+	}
+	if in.Draft && in.Kind != nil && *in.Kind != tree.NodeKindPage {
+		ve.Add("draft", "Only pages can be drafts")
+	}
 	if err := uc.slug.IsValidSlug(in.Slug); err != nil {
 		ve.Add("slug", err.Error())
 	}
@@ -67,7 +76,7 @@ func (uc *CreatePageUseCase) Execute(_ context.Context, in CreatePageInput) (*Cr
 		}
 	}
 
-	id, err := uc.tree.CreateNode(in.UserID, in.ParentID, in.Title, in.Slug, in.Kind)
+	id, err := uc.tree.CreateNodeWithDraft(in.UserID, in.ParentID, in.Title, in.Slug, in.Kind, in.Draft)
 	if err != nil {
 		return nil, err
 	}

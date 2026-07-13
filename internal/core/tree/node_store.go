@@ -65,20 +65,20 @@ type NodeStore struct {
 }
 
 const (
-	reconstructSystemUserID      = "system"
-	orderFilename                = ".order.json"
-	indexFilename                = "index.md"
-	errEntryRequired             = "an entry is required"
-	errParentEntryRequired       = "a parent entry is required"
-	errExpectedPageMissing       = "expected page file missing"
-	errExpectedFolderMissing     = "expected folder missing"
-	errExpectedFolderFoundFile   = "expected folder but found file"
-	errExpectedFileMissing       = "expected file missing"
-	errExpectedFileFoundFolder   = "expected file but found folder"
-	errUnknownNodeKind           = "unknown node kind: %q"
-	errLoadMarkdownFailed        = "could not load markdown file: %w"
-	errWriteMarkdownFailed       = "could not write markdown file: %w"
-	errEnsureParentFailed        = "could not ensure parent directory exists: %w"
+	reconstructSystemUserID    = "system"
+	orderFilename              = ".order.json"
+	indexFilename              = "index.md"
+	errEntryRequired           = "an entry is required"
+	errParentEntryRequired     = "a parent entry is required"
+	errExpectedPageMissing     = "expected page file missing"
+	errExpectedFolderMissing   = "expected folder missing"
+	errExpectedFolderFoundFile = "expected folder but found file"
+	errExpectedFileMissing     = "expected file missing"
+	errExpectedFileFoundFolder = "expected file but found folder"
+	errUnknownNodeKind         = "unknown node kind: %q"
+	errLoadMarkdownFailed      = "could not load markdown file: %w"
+	errWriteMarkdownFailed     = "could not write markdown file: %w"
+	errEnsureParentFailed      = "could not ensure parent directory exists: %w"
 )
 
 type childOrderFile struct {
@@ -130,6 +130,7 @@ func (f *NodeStore) syncManagedFrontmatter(mdFile *markdown.MarkdownFile, entry 
 		strings.TrimSpace(entry.Metadata.CreatorID),
 		strings.TrimSpace(entry.Metadata.LastAuthorID),
 	)
+	mdFile.SetDraft(entry.Kind != NodeKindSection && entry.Draft)
 }
 
 func (f *NodeStore) ensureSectionIndex(entry *PageNode) (string, error) {
@@ -360,7 +361,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 					if fm.LeafWikiID != "" {
 						id = fm.LeafWikiID
 					}
-					if fm.LeafWikiID == "" || fm.LeafWikiUpdatedAt == "" || fm.LeafWikiCreatedAt == "" {
+					if fm.LeafWikiID == "" || fm.LeafWikiUpdatedAt == "" || fm.LeafWikiCreatedAt == "" || fm.Draft {
 						sectionMdFile = mdFile
 						needsWriteback = true
 					}
@@ -448,6 +449,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			Kind:     NodeKindPage,
 			Metadata: metadata,
 			Pinned:   fm.LeafWikiPinned,
+			Draft:    fm.Draft,
 		}
 		if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filePath); err != nil {
 			return err

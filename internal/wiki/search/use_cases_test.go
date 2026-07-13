@@ -92,3 +92,22 @@ func TestSearchUseCase_Execute_TagOnlySearchEscapesTitle(t *testing.T) {
 		t.Fatalf("escaped title = %q", got)
 	}
 }
+
+func TestSearchUseCase_Execute_ExcludesDraftRowsFromSharedIndex(t *testing.T) {
+	uc, _, treeSvc := setupSearchUseCaseForTags(t)
+	id, err := treeSvc.CreateNodeWithDraft("editor", nil, "Secret draft", "secret-draft", pageKind(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	if err := uc.index.IndexPage("secret-draft", "secret-draft.md", *id, "Secret draft", tree.NodeKindPage, "confidential phrase"); err != nil {
+		t.Fatalf("IndexPage: %v", err)
+	}
+
+	out, err := uc.Execute(context.Background(), SearchInput{Query: "confidential", Limit: 10})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.Result.Count != 0 || len(out.Result.Items) != 0 {
+		t.Fatalf("draft search result = %#v", out.Result)
+	}
+}

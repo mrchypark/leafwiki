@@ -18,6 +18,7 @@ type EditPageMetadataDialogProps = {
   title: string
   slug: string
   onChange: (title: string, slug: string) => void
+  slugReadOnly?: boolean
 }
 
 export function EditPageMetadataDialog({
@@ -27,6 +28,7 @@ export function EditPageMetadataDialog({
   title: propTitle,
   slug: propSlug,
   onChange,
+  slugReadOnly = false,
 }: EditPageMetadataDialogProps) {
   const parentPath = useTreeStore((s) => s.getPathById(parentId) || '')
   const itemLabel = itemKind === NODE_KIND_PAGE ? 'page' : 'section'
@@ -45,7 +47,7 @@ export function EditPageMetadataDialog({
   const isSaveDisabled =
     !title ||
     !slug ||
-    (!slugTouched && (slugLoading || title !== lastSlugTitle))
+    (!slugReadOnly && !slugTouched && (slugLoading || title !== lastSlugTitle))
 
   const handleTitleChange = (val: string) => {
     setTitle(val)
@@ -137,7 +139,8 @@ export function EditPageMetadataDialog({
           currentId={currentId}
           parentId={parentId}
           initialTitle={propTitle}
-          enableSlugSuggestion={true}
+          enableSlugSuggestion={!slugReadOnly}
+          readOnly={slugReadOnly}
           onSlugChange={handleSlugChange}
           onSlugTouchedChange={setSlugTouched}
           onSlugLoadingChange={setSlugLoading}

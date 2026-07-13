@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	corelinks "github.com/perber/wiki/internal/links"
@@ -19,7 +21,9 @@ var ErrLinkServiceUnavailable = sharederrors.NewLocalizedError(
 // ─── GetLinkStatusUseCase ────────────────────────────────────────────────────
 
 type GetLinkStatusInput struct {
-	PageID string
+	PageID       string
+	User         *auth.User
+	AuthDisabled bool
 }
 
 type GetLinkStatusOutput struct {
@@ -42,20 +46,70 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 	page, err := uc.tree.GetPage(in.PageID)
 	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
-			return nil, sharederrors.NewLocalizedError(
-				ErrCodeLinkPageNotFound,
-				"Page not found",
-				"page not found",
-				err,
-			)
+			return nil, linkPageNotFound(err)
 		}
 		return nil, err
+	}
+	if !pagevisibility.CanView(page.PageNode, in.User, in.AuthDisabled) {
+		return nil, linkPageNotFound(nil)
+	}
+	if page.Draft {
+		return &GetLinkStatusOutput{Status: &corelinks.LinkStatusResult{
+			Backlinks: []corelinks.BacklinkResultItem{}, BrokenIncoming: []corelinks.BacklinkResultItem{},
+			Outgoings: []corelinks.OutgoingResultItem{}, BrokenOutgoings: []corelinks.OutgoingResultItem{},
+		}}, nil
 	}
 	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
 	if err != nil {
 		return nil, err
 	}
+	filterPublishedLinks(status, uc.tree)
 	return &GetLinkStatusOutput{Status: status}, nil
+}
+
+func linkPageNotFound(err error) error {
+	return sharederrors.NewLocalizedError(ErrCodeLinkPageNotFound, "Page not found", "page not found", err)
+}
+
+func filterPublishedLinks(status *corelinks.LinkStatusResult, treeService *tree.TreeService) {
+	if status == nil {
+		return
+	}
+	allowed := make(map[string]struct{})
+	for _, id := range pagevisibility.AllPublishedPageIDs(treeService) {
+		allowed[id] = struct{}{}
+	}
+	status.Backlinks = filterBacklinks(status.Backlinks, allowed)
+	status.BrokenIncoming = filterBacklinks(status.BrokenIncoming, allowed)
+	status.Outgoings = filterOutgoings(status.Outgoings, allowed)
+	status.BrokenOutgoings = filterOutgoings(status.BrokenOutgoings, allowed)
+	status.Counts = corelinks.LinkStatusCounts{
+		Backlinks: len(status.Backlinks), BrokenIncoming: len(status.BrokenIncoming),
+		Outgoings: len(status.Outgoings), BrokenOutgoings: len(status.BrokenOutgoings),
+	}
+}
+
+func filterBacklinks(items []corelinks.BacklinkResultItem, allowed map[string]struct{}) []corelinks.BacklinkResultItem {
+	visible := items[:0]
+	for _, item := range items {
+		if _, ok := allowed[item.FromPageID]; ok {
+			visible = append(visible, item)
+		}
+	}
+	return visible
+}
+
+func filterOutgoings(items []corelinks.OutgoingResultItem, allowed map[string]struct{}) []corelinks.OutgoingResultItem {
+	visible := items[:0]
+	for _, item := range items {
+		if item.ToPageID != "" {
+			if _, ok := allowed[item.ToPageID]; !ok {
+				continue
+			}
+		}
+		visible = append(visible, item)
+	}
+	return visible
 }
 
 // ─── GetBacklinksUseCase ─────────────────────────────────────────────────────

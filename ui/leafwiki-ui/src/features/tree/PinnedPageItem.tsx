@@ -1,4 +1,5 @@
 import { NODE_KIND_SECTION, PageNode } from '@/lib/api/pages'
+import { DraftBadge } from '@/components/DraftBadge'
 import { buildViewUrl } from '@/lib/routePath'
 import { useTreeStore } from '@/stores/tree'
 import clsx from 'clsx'
@@ -32,6 +33,7 @@ export function PinnedPageItem({ node, onUnpin }: Props) {
       >
         <Icon size={13} className="tree-view__pinned-item-icon" />
         <span className="tree-view__pinned-item-title">{node.title}</span>
+        {node.draft && <DraftBadge />}
       </Link>
       {hovered && (
         <button

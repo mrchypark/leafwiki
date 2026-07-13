@@ -94,6 +94,71 @@ func TestRecordContentUpdateHappyPathAndNoop(t *testing.T) {
 	}
 }
 
+func TestRecordPublishedBaseline_CapturesTitleOnlyAndAssetOnlyChanges(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*testing.T, *tree.TreeService, string, string)
+		wantTitle string
+		wantAsset string
+	}{
+		{
+			name: "title only",
+			mutate: func(t *testing.T, treeService *tree.TreeService, pageID, _ string) {
+				page, err := treeService.GetPage(pageID)
+				if err != nil {
+					t.Fatalf("GetPage() error = %v", err)
+				}
+				if err := treeService.UpdateNode("editor", pageID, "Edited title", page.Slug, nil, page.Version(), nil, nil, false); err != nil {
+					t.Fatalf("UpdateNode() error = %v", err)
+				}
+			},
+			wantTitle: "Edited title",
+			wantAsset: "old asset",
+		},
+		{
+			name: "asset only",
+			mutate: func(t *testing.T, _ *tree.TreeService, pageID, storageDir string) {
+				writeLiveAsset(t, storageDir, pageID, "asset.txt", "new asset")
+			},
+			wantTitle: "Page",
+			wantAsset: "new asset",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, treeService, storageDir := newRevisionTestService(t)
+			pageID := createRevisionTestPage(t, treeService, "Page", "page", "content")
+			writeLiveAsset(t, storageDir, pageID, "asset.txt", "old asset")
+			baseline, created, err := service.RecordContentUpdate(pageID, "editor", "baseline")
+			if err != nil || !created {
+				t.Fatalf("RecordContentUpdate() revision = %#v, created = %v, error = %v", baseline, created, err)
+			}
+
+			tt.mutate(t, treeService, pageID, storageDir)
+			published, err := service.RecordPublishedBaseline(pageID, "editor", "page published")
+			if err != nil {
+				t.Fatalf("RecordPublishedBaseline() error = %v", err)
+			}
+			if published.ID == baseline.ID || published.Type != RevisionTypeContentUpdate || published.Title != tt.wantTitle {
+				t.Fatalf("published revision = %#v", published)
+			}
+			asset, err := service.GetRevisionAsset(pageID, published.ID, "asset.txt")
+			if err != nil {
+				t.Fatalf("GetRevisionAsset() error = %v", err)
+			}
+			content, err := os.ReadFile(asset.Path)
+			if err != nil || string(content) != tt.wantAsset {
+				t.Fatalf("published asset = %q, error = %v, want %q", content, err, tt.wantAsset)
+			}
+			revisions, err := service.ListRevisions(pageID)
+			if err != nil || len(revisions) != 2 {
+				t.Fatalf("published revisions = %#v, error = %v", revisions, err)
+			}
+		})
+	}
+}
+
 func TestRecordContentUpdatesHappyPathAndNoop(t *testing.T) {
 	service, treeService, storageDir := newRevisionTestService(t)
 	pageID1 := createRevisionTestPage(t, treeService, "Page 1", "page-1", "hello")
@@ -639,6 +704,59 @@ func TestRestoreRevisionRehydratesLivePageState(t *testing.T) {
 	}
 	if latest == nil || latest.Type != RevisionTypeRestore {
 		t.Fatalf("latest revision = %#v", latest)
+	}
+}
+
+func TestRestoreRevision_RestoresDraftWithoutRecordingRevision(t *testing.T) {
+	service, treeService, storageDir := newRevisionTestService(t)
+	pageID := createRevisionTestPage(t, treeService, "Page", "page", "published")
+	writeLiveAsset(t, storageDir, pageID, "asset.txt", "published asset")
+
+	publishedRevision, created, err := service.RecordAssetChange(pageID, "editor", "published")
+	if err != nil {
+		t.Fatalf("RecordAssetChange failed: %v", err)
+	}
+	if !created || publishedRevision == nil {
+		t.Fatal("expected published revision")
+	}
+
+	page, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage failed: %v", err)
+	}
+	if err := treeService.SetDraft("editor", pageID, true, page.Version()); err != nil {
+		t.Fatalf("SetDraft failed: %v", err)
+	}
+	draftContent := "draft changes"
+	if err := treeService.UpdateNode("editor", pageID, "Draft title", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode draft failed: %v", err)
+	}
+	writeLiveAsset(t, storageDir, pageID, "asset.txt", "draft asset")
+
+	if err := service.RestoreRevision(pageID, publishedRevision.ID, "editor"); err != nil {
+		t.Fatalf("RestoreRevision failed: %v", err)
+	}
+
+	restored, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage restored draft failed: %v", err)
+	}
+	if !restored.Draft || restored.Content != "published" || restored.Title != "Page" {
+		t.Fatalf("restored draft = %#v", restored)
+	}
+	asset, err := os.ReadFile(filepath.Join(storageDir, "assets", pageID, "asset.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile restored asset failed: %v", err)
+	}
+	if string(asset) != "published asset" {
+		t.Fatalf("restored asset = %q", asset)
+	}
+	revisions, err := service.ListRevisions(pageID)
+	if err != nil {
+		t.Fatalf("ListRevisions failed: %v", err)
+	}
+	if len(revisions) != 1 || revisions[0].ID != publishedRevision.ID {
+		t.Fatalf("draft restore recorded a revision: %#v", revisions)
 	}
 }
 

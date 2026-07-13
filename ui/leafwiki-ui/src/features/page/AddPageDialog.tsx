@@ -1,12 +1,16 @@
 import BaseDialog, { BaseDialogConfirmButton } from '@/components/BaseDialog'
 import { FormInput } from '@/components/FormInput'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { createPage, NODE_KIND_PAGE } from '@/lib/api/pages'
+import { canManageDrafts } from '@/lib/drafts'
 import { handleFieldErrors } from '@/lib/handleFieldErrors'
 import i18next from '@/lib/i18n'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { buildEditUrl } from '@/lib/routePath'
 import { useTreeStore } from '@/stores/tree'
+import { useConfigStore } from '@/stores/config'
+import { useSessionStore } from '@/stores/session'
 import { CalendarDays } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -27,11 +31,16 @@ export function AddPageDialog({
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')
   const [loading, setLoading] = useState(false)
+  const [draft, setDraft] = useState(false)
   const [slugLoading, setSlugLoading] = useState(false)
   const [lastSlugTitle, setLastSlugTitle] = useState('')
   const [slugTouched, setSlugTouched] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const reloadTree = useTreeStore((s) => s.reloadTree)
+  const authDisabled = useConfigStore((s) => s.authDisabled)
+  const userRole = useSessionStore((s) => s.user?.role)
+  const showDraft =
+    nodeKind === NODE_KIND_PAGE && canManageDrafts(authDisabled, userRole)
   const parentPath = useTreeStore((s) => s.getPathById(parentId) || '')
   const navigate = useNavigate()
   const itemLabel = nodeKind === NODE_KIND_PAGE ? 'page' : 'section'
@@ -55,6 +64,7 @@ export function AddPageDialog({
     setLastSlugTitle('')
     setFieldErrors({})
     setLoading(false)
+    setDraft(false)
   }, [])
 
   const handleSlugChange = useCallback((val: string) => {
@@ -83,7 +93,13 @@ export function AddPageDialog({
       setLoading(true)
       setFieldErrors({})
       try {
-        await createPage({ title, slug, parentId, kind: nodeKind })
+        await createPage({
+          title,
+          slug,
+          parentId,
+          kind: nodeKind,
+          draft: showDraft && draft,
+        })
         toast.success(`${itemLabelCapitalized} created`)
         await reloadTree()
         if (redirect) {
@@ -111,6 +127,8 @@ export function AddPageDialog({
       navigate,
       itemLabel,
       itemLabelCapitalized,
+      showDraft,
+      draft,
     ],
   )
 
@@ -209,6 +227,16 @@ export function AddPageDialog({
           error={fieldErrors.slug}
           allowedHotkeys={DIALOG_INPUT_ALLOWED_HOTKEYS}
         />
+        {showDraft && (
+          <label className="page-dialog__draft">
+            <Checkbox
+              checked={draft}
+              onCheckedChange={(checked) => setDraft(checked === true)}
+              data-testid="add-page-draft-checkbox"
+            />
+            Draft
+          </label>
+        )}
       </div>
       <span className="dialog__path" data-testid="add-page-path-display">
         Path: {parentPath !== '' && `${parentPath}/`}

@@ -154,7 +154,7 @@ func (w *Wiki) ensureBaselineRevisions() {
 			w.log.Warn("failed to load page for baseline revision", "pageID", ids[i], "error", pageErrs[i])
 			continue
 		}
-		if p != nil {
+		if p != nil && !p.Draft {
 			valid = append(valid, p)
 		}
 	}
@@ -389,6 +389,7 @@ func (w *Wiki) buildAssetsRoutes() *wikiassets.Routes {
 		AuthService: w.auth,
 		AssetsDir:   w.asset.GetAssetsDir(),
 		Log:         w.log,
+		Tree:        w.tree,
 	})
 }
 
@@ -403,6 +404,7 @@ func (w *Wiki) buildRevisionsRoutes() *wikirevisions.Routes {
 		CheckIntegrity:   wikirevisions.NewCheckIntegrityUseCase(w.revision),
 		UserResolver:     w.userResolver,
 		AuthService:      w.auth,
+		Tree:             w.tree,
 	})
 }
 
@@ -423,7 +425,7 @@ func (w *Wiki) buildLinksRoutes() *wikilinks.Routes {
 
 func (w *Wiki) buildTagsRoutes() *wikitags.Routes {
 	return wikitags.NewRoutes(wikitags.RoutesConfig{
-		GetTags:        wikitags.NewGetTagsUseCase(w.tags),
+		GetTags:        wikitags.NewGetTagsUseCase(w.tags, w.tree),
 		GetPagesByTags: wikitags.NewGetPagesByTagsUseCase(w.tags, w.tree, w.userResolver),
 		AuthService:    w.auth,
 	})
@@ -431,7 +433,7 @@ func (w *Wiki) buildTagsRoutes() *wikitags.Routes {
 
 func (w *Wiki) buildPropertiesRoutes() *wikiproperties.Routes {
 	return wikiproperties.NewRoutes(wikiproperties.RoutesConfig{
-		GetPropertyKeys:    wikiproperties.NewGetPropertyKeysUseCase(w.props),
+		GetPropertyKeys:    wikiproperties.NewGetPropertyKeysUseCase(w.props, w.tree),
 		GetPagesByProperty: wikiproperties.NewGetPagesByPropertyUseCase(w.props, w.tree, w.userResolver),
 		AuthService:        w.auth,
 	})
@@ -732,8 +734,8 @@ func (w *Wiki) UserService() *auth.UserService {
 }
 
 func (w *Wiki) Close() error {
-	w.shutdownCancel()  // signal in-flight reloads to abort
-	w.reloadWG.Wait()   // drain goroutines before closing stores
+	w.shutdownCancel() // signal in-flight reloads to abort
+	w.reloadWG.Wait()  // drain goroutines before closing stores
 	w.status.Finish()
 	if w.auth != nil {
 		// When auth is enabled, AuthService owns both the session store and user store.

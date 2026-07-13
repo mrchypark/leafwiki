@@ -31,11 +31,11 @@ type TreeService struct {
 }
 
 const (
-	legacyTreeFilename                     = "tree.json"
-	errNilTreeReconstructed                = "internal error: tree reconstruction returned nil tree"
-	errPersistChildOrderFailed             = "could not persist child order: %w"
-	errGetPageContentFailed                = "could not get page content: %w"
-	errRollbackMovedNodeFailed             = "rollback moved node: %w"
+	legacyTreeFilename         = "tree.json"
+	errNilTreeReconstructed    = "internal error: tree reconstruction returned nil tree"
+	errPersistChildOrderFailed = "could not persist child order: %w"
+	errGetPageContentFailed    = "could not get page content: %w"
+	errRollbackMovedNodeFailed = "rollback moved node: %w"
 )
 
 func NewTreeService(storageDir string) *TreeService {
@@ -196,13 +196,19 @@ type createNodeResult struct {
 
 type createNodeOptions struct {
 	existingID string
+	draft      bool
 }
 
 // Create Node adds a new node to the tree
 func (t *TreeService) CreateNode(userID string, parentID *string, title string, slug string, nodeKind *NodeKind) (*string, error) {
+	return t.CreateNodeWithDraft(userID, parentID, title, slug, nodeKind, false)
+}
+
+// CreateNodeWithDraft creates a node and persists its initial draft state.
+func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title string, slug string, nodeKind *NodeKind, draft bool) (*string, error) {
 	var result *string
 	err := t.withLockedTree(func() error {
-		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{})
+		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{draft: draft})
 		if err != nil {
 			return err
 		}
@@ -254,6 +260,9 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 	if kind != nil {
 		k = *kind
 	}
+	if opts.draft && k != NodeKindPage {
+		return nil, &InvalidOpError{Op: "CreateNodeWithDraft", Reason: "only pages can be drafts"}
+	}
 
 	// Resolve the parent
 	parent := t.tree
@@ -262,6 +271,9 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 		if parent == nil {
 			return nil, ErrParentNotFound
 		}
+	}
+	if parent.Draft {
+		return nil, &InvalidOpError{Op: "CreateNode", Reason: "draft pages cannot contain children"}
 	}
 
 	// Check if a child with the same slug already exists
@@ -307,6 +319,7 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 		Kind:     k,
 		Position: len(parent.Children), // Set the position to the end of the list
 		Children: []*PageNode{},
+		Draft:    opts.draft,
 		Metadata: PageMetadata{
 			CreatedAt:    now,
 			UpdatedAt:    now,
@@ -678,6 +691,9 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 		if err := checkNodeVersion(node, expectedVersion); err != nil {
 			return err
 		}
+		if slug != node.Slug && node.ContainsDraft() {
+			return &InvalidOpError{Op: "UpdateNode", Reason: "draft pages cannot change slug"}
+		}
 
 		// Slug must be unique under same parent (when changed)
 		if slug != node.Slug && node.Parent != nil {
@@ -737,6 +753,41 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 
 }
 
+// SetDraft changes only a leaf page's publication state. The file is written
+// before the live node is changed, so a failed write cannot expose a draft or
+// publish content that was not persisted.
+func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion string) error {
+	return t.withLockedTree(func() error {
+		if t.tree == nil {
+			return ErrTreeNotLoaded
+		}
+		node := t.getNodeByIDLocked(id)
+		if node == nil {
+			return ErrPageNotFound
+		}
+		if err := checkNodeVersion(node, expectedVersion); err != nil {
+			return err
+		}
+		if node.Kind != NodeKindPage {
+			return &InvalidOpError{Op: "SetDraft", Reason: "only pages can be drafts"}
+		}
+		if node.Draft == draft {
+			return nil
+		}
+
+		staged := *node
+		staged.Draft = draft
+		staged.Metadata.UpdatedAt = time.Now().UTC()
+		staged.Metadata.LastAuthorID = userID
+		if err := t.store.SyncFrontmatterIfExists(&staged); err != nil {
+			return fmt.Errorf("could not persist draft state: %w", err)
+		}
+		node.Draft = staged.Draft
+		node.Metadata = staged.Metadata
+		return nil
+	})
+}
+
 func (t *TreeService) ConvertNode(userID string, id string, kind NodeKind, expectedVersion string) error {
 	return t.withLockedTree(func() error {
 		if t.tree == nil {
@@ -751,6 +802,9 @@ func (t *TreeService) ConvertNode(userID string, id string, kind NodeKind, expec
 
 		if err := checkNodeVersion(node, expectedVersion); err != nil {
 			return err
+		}
+		if node.Draft {
+			return &InvalidOpError{Op: "ConvertNode", Reason: "draft pages cannot be converted"}
 		}
 
 		if node.Kind == kind {
@@ -1294,6 +1348,9 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 	if err := checkNodeVersion(node, expectedVersion); err != nil {
 		return err
 	}
+	if node.ContainsDraft() {
+		return &InvalidOpError{Op: "MoveNode", Reason: "draft pages cannot be moved"}
+	}
 
 	oldParent := node.Parent
 	if oldParent == nil {
@@ -1307,6 +1364,9 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 		if newParent == nil {
 			return fmt.Errorf("new parent not found: %w", ErrParentNotFound)
 		}
+	}
+	if newParent.Draft {
+		return &InvalidOpError{Op: "MoveNode", Reason: "draft pages cannot contain children"}
 	}
 
 	// Same slug collision under new parent

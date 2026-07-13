@@ -12,8 +12,9 @@ import (
 
 // Routes is the RouteRegistrar for the links domain.
 type Routes struct {
-	getLinkStatus  *GetLinkStatusUseCase
-	authService    *coreauth.AuthService
+	getLinkStatus *GetLinkStatusUseCase
+	authService   *coreauth.AuthService
+	authDisabled  bool
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -33,9 +34,13 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 // RegisterRoutes implements RouteRegistrar.
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
+	r.authDisabled = opts.AuthDisabled
 
 	if opts.PublicAccess {
 		pub := ctx.Base.Group("/api")
+		if !opts.AuthDisabled {
+			pub.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
+		}
 		pub.GET("/pages/:id/links", r.handleGetLinkStatus)
 	}
 
@@ -54,8 +59,13 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 func (r *Routes) handleGetLinkStatus(c *gin.Context) {
+	if !r.authDisabled {
+		c.Header("Cache-Control", "private, no-store")
+	}
 	pageID := c.Param("id")
-	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{PageID: pageID})
+	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{
+		PageID: pageID, User: authmw.TryGetUser(c), AuthDisabled: r.authDisabled,
+	})
 	if err != nil {
 		respondWithLinkError(c, err)
 		return

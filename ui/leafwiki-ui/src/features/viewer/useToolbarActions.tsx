@@ -33,6 +33,7 @@ export interface ToolbarActionsOptions {
   copyPage: () => void
   isPinned: boolean
   onPinToggle: () => void
+  draft?: boolean
 }
 
 export function useToolbarActions({
@@ -45,6 +46,7 @@ export function useToolbarActions({
   copyPage,
   isPinned,
   onPinToggle,
+  draft = false,
 }: ToolbarActionsOptions) {
   const { t } = useTranslation('viewer')
   const setButtons = useToolbarStore((state) => state.setButtons)
@@ -115,6 +117,8 @@ export function useToolbarActions({
       },
     ]
 
+    if (draft) toolbarButtons.splice(3, 1)
+
     if (enableRevision) {
       toolbarButtons.splice(2, 0, {
         id: 'page-history',
@@ -160,7 +164,7 @@ export function useToolbarActions({
 
     registerHotkey(editHotkey)
     registerHotkey(permalinkHotkey)
-    registerHotkey(copyHotkey)
+    if (!draft) registerHotkey(copyHotkey)
     registerHotkey(printHotkey)
     if (enableRevision) {
       registerHotkey(historyHotkey)
@@ -170,7 +174,7 @@ export function useToolbarActions({
     return () => {
       unregisterHotkey(editHotkey.keyCombo)
       unregisterHotkey(permalinkHotkey.keyCombo)
-      unregisterHotkey(copyHotkey.keyCombo)
+      if (!draft) unregisterHotkey(copyHotkey.keyCombo)
       unregisterHotkey(printHotkey.keyCombo)
       if (enableRevision) {
         unregisterHotkey(historyHotkey.keyCombo)
@@ -195,5 +199,6 @@ export function useToolbarActions({
     itemLabel,
     isMacOS,
     t,
+    draft,
   ])
 }

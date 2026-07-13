@@ -1,4 +1,5 @@
 import Page404 from '@/components/Page404'
+import { DraftBadge } from '@/components/DraftBadge'
 import { formatRelativeTime } from '@/lib/formatDate'
 import {
   createNavigationVisitState,
@@ -23,6 +24,8 @@ import { useDialogsStore } from '@/stores/dialogs'
 import { useHotKeysStore } from '@/stores/hotkeys'
 import { useTocPanelStore } from '@/stores/tocPanel'
 import { useTreeStore } from '@/stores/tree'
+import { useSessionStore } from '@/stores/session'
+import { useConfigStore } from '@/stores/config'
 import { useCallback, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -61,6 +64,9 @@ export default function PageViewer() {
   const notFound = useViewerStore((s) => s.notFound)
   const page = useViewerStore((s) => s.page)
   const loadPageData = useViewerStore((s) => s.loadPageData)
+  const authDisabled = useConfigStore((s) => s.authDisabled)
+  const userId = useSessionStore((s) => s.user?.id)
+  const userRole = useSessionStore((s) => s.user?.role)
   const clearViewer = useViewerStore((s) => s.clear)
   const isPinned = useTreeStore((s) =>
     page ? (s.byId[page.id]?.pinned ?? false) : false,
@@ -107,6 +113,7 @@ export default function PageViewer() {
         })
         .catch(() => toast.error(t('pinned.pinError')))
     }, [page, isPinned, setPinnedLocally, t]),
+    draft: Boolean(page?.draft),
   }
 
   useScrollRestoration(getNavigationVisitKey(location), loading)
@@ -117,7 +124,7 @@ export default function PageViewer() {
   useEffect(() => {
     const path = toWikiLookupPath(pathname)
     loadPageData?.(path)
-  }, [pathname, loadPageData])
+  }, [pathname, loadPageData, authDisabled, userId, userRole])
 
   useEffect(() => {
     if (!page?.id) return
@@ -182,6 +189,7 @@ export default function PageViewer() {
               <div className="page-viewer__subheader-main">
                 <div className="page-viewer__subheader-copy">
                   <Breadcrumbs />
+                  {page.draft && <DraftBadge />}
                   {showUpdated && (
                     <div className="page-viewer__metadata">
                       <span className="page-viewer__metadata-item">

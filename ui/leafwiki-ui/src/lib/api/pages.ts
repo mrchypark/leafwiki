@@ -28,6 +28,7 @@ export type PageNode = {
   children: PageNode[] | null
   kind: 'page' | 'section'
   pinned?: boolean
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -41,6 +42,7 @@ export interface Page {
   properties?: Record<string, string>
   version: string
   kind: 'page' | 'section'
+  draft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -73,8 +75,8 @@ export type PageRefactorPreview = {
   warnings: string[]
 }
 
-export async function fetchTree(): Promise<PageNode> {
-  return (await fetchWithAuth(`/api/tree`)) as PageNode
+export async function fetchTree(signal?: AbortSignal): Promise<PageNode> {
+  return (await fetchWithAuth(`/api/tree`, { signal })) as PageNode
 }
 
 export async function suggestSlug(
@@ -112,18 +114,20 @@ export async function createPage({
   slug,
   parentId,
   kind,
+  draft = false,
 }: {
   title: string
   slug: string
   parentId: string | null
   kind: 'page' | 'section'
+  draft?: boolean
 }) {
   if (parentId === '') parentId = null
 
   return await fetchWithAuth(`/api/pages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, slug, parentId, kind }),
+    body: JSON.stringify({ title, slug, parentId, kind, draft }),
   })
 }
 
@@ -159,6 +163,18 @@ export async function updatePage(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version, title, slug, content, tags, properties }),
   })) as Page | null
+}
+
+export async function updatePageDraft(
+  id: string,
+  version: string,
+  draft: boolean,
+): Promise<Page> {
+  return (await fetchWithAuth(`/api/pages/${id}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version, draft }),
+  })) as Page
 }
 
 export async function deletePage(

@@ -6,6 +6,8 @@ import { DIALOG_LINK_INSERT } from '@/lib/registries'
 import { getWikiTargetRoutePath } from '@/lib/wikiPath'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
+import { useSessionStore } from '@/stores/session'
+import { useConfigStore } from '@/stores/config'
 import { useCallback, useEffect, useRef } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -29,11 +31,13 @@ export default function PageEditor() {
   const savePage = usePageEditorStore((s) => s.savePage)
   const forceOverwrite = usePageEditorStore((s) => s.forceOverwrite)
   const setContent = usePageEditorStore((s) => s.setContent)
+  const setDraft = usePageEditorStore((s) => s.setDraft)
   const setTags = usePageEditorStore((s) => s.setTags)
   const setFrontmatterFields = usePageEditorStore((s) => s.setFrontmatterFields)
   const loadPageData = usePageEditorStore((s) => s.loadPageData)
   const initialPage = usePageEditorStore((s) => s.initialPage) // contains the initial page data when loaded
   const tags = usePageEditorStore((s) => s.tags)
+  const draft = usePageEditorStore((s) => s.draft)
   const frontmatterFields = usePageEditorStore((s) => s.frontmatterFields)
   const frontmatterUnsupported = usePageEditorStore(
     (s) => s.frontmatterUnsupported,
@@ -43,6 +47,9 @@ export default function PageEditor() {
   const error = usePageEditorStore((s) => s.error)
   const openNode = useTreeStore((s) => s.openNode)
   const dirty = usePageEditorStore(isDirtyState)
+  const authDisabled = useConfigStore((s) => s.authDisabled)
+  const userId = useSessionStore((s) => s.user?.id)
+  const userRole = useSessionStore((s) => s.user?.role)
 
   // Auto-save hook — must be called unconditionally
   useAutoSave()
@@ -59,7 +66,7 @@ export default function PageEditor() {
   useEffect(() => {
     if (!path) return
     loadPageData(path)
-  }, [path, loadPageData])
+  }, [path, loadPageData, authDisabled, userId, userRole])
 
   // Open node
   useEffect(() => {
@@ -205,11 +212,14 @@ export default function PageEditor() {
         {initialPage && (
           <>
             <PageFrontmatterPanel
+              pageKind={initialPage.kind}
+              draft={draft}
               tags={tags}
               fields={frontmatterFields}
               errors={frontmatterErrors}
               hasUnsupportedFields={Boolean(frontmatterUnsupported)}
               onTagsChange={setTags}
+              onDraftChange={setDraft}
               onFieldsChange={setFrontmatterFields}
             />
             <MarkdownEditor

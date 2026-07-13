@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/shared/htmlutil"
 	"github.com/perber/wiki/internal/core/tree"
@@ -64,12 +65,12 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 		return uc.searchByTags(pageIDs, in.Offset, in.Limit)
 	}
 
-	result, err := uc.index.Search(in.Query, pageIDs, in.Offset, in.Limit)
+	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
 	if err != nil {
 		return nil, err
 	}
-
-	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
+	fullMatchPageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, fullMatchPageIDs)
+	result, err := uc.index.Search(in.Query, fullMatchPageIDs, in.Offset, in.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +92,7 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			},
 		}, nil
 	}
+	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, pageIDs)
 
 	excerpts, err := uc.tags.GetExcerptsForPages(pageIDs)
 	if err != nil {
