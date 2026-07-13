@@ -5,6 +5,7 @@ import (
 
 	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
+	"github.com/perber/wiki/internal/core/tree"
 )
 
 // RevisionSideEffect records revision history entries after page mutations.
@@ -36,7 +37,9 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 			// Draft saves never enter public history. When a draft becomes public,
 			// capture each newly visible page exactly once as its published baseline.
 			seen := make(map[string]struct{}, len(event.AffectedPages)+1)
-			pages := append(event.AffectedPages, event.After)
+			pages := make([]*tree.Page, len(event.AffectedPages), len(event.AffectedPages)+1)
+			copy(pages, event.AffectedPages)
+			pages = append(pages, event.After)
 			for _, page := range pages {
 				if page == nil || pagevisibility.IsInDraftSubtree(page.PageNode) {
 					continue

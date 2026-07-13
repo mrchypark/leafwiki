@@ -816,6 +816,53 @@ func (t *TreeService) GetTree() *PageNode {
 	return t.tree
 }
 
+// SnapshotTree returns a detached copy of the current tree.
+func (t *TreeService) SnapshotTree() *PageNode {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return clonePageNodeSubtree(t.tree, nil)
+}
+
+// SnapshotPageNode returns a detached copy of the node's subtree. Its ancestor
+// chain is retained for path and inherited-state checks, without sibling trees.
+func (t *TreeService) SnapshotPageNode(id string) (*PageNode, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if t.tree == nil {
+		return nil, ErrTreeNotLoaded
+	}
+	node := t.getNodeByIDLocked(id)
+	if node == nil {
+		return nil, ErrPageNotFound
+	}
+	return clonePageNodeSubtree(node, clonePageNodeAncestors(node.Parent)), nil
+}
+
+func clonePageNodeAncestors(node *PageNode) *PageNode {
+	if node == nil {
+		return nil
+	}
+	clone := *node
+	clone.Parent = clonePageNodeAncestors(node.Parent)
+	clone.Children = nil
+	return &clone
+}
+
+func clonePageNodeSubtree(node, parent *PageNode) *PageNode {
+	if node == nil {
+		return nil
+	}
+	clone := *node
+	clone.Parent = parent
+	clone.Children = make([]*PageNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		clone.Children = append(clone.Children, clonePageNodeSubtree(child, &clone))
+	}
+	return &clone
+}
+
 // IsLoaded reports whether the tree has been loaded into memory.
 func (t *TreeService) IsLoaded() bool {
 	t.mu.RLock()

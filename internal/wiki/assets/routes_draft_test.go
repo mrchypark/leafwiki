@@ -10,7 +10,7 @@ import (
 	"github.com/perber/wiki/internal/core/tree"
 )
 
-func TestRequireStaticAssetVisibility_AllowsDraftAssetsOnlyForEditorsAndAdmins(t *testing.T) {
+func TestRequireStaticAssetVisibility_BehindBasePathAllowsDraftAssetsOnlyForEditorsAndAdmins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	treeService := tree.NewTreeService(t.TempDir())
 	if err := treeService.LoadTree(); err != nil {
@@ -42,13 +42,13 @@ func TestRequireStaticAssetVisibility_AllowsDraftAssetsOnlyForEditorsAndAdmins(t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := gin.New()
-			router.GET("/assets/*filepath", func(c *gin.Context) {
+			router.GET("/wiki/assets/*filepath", func(c *gin.Context) {
 				if tc.user != nil {
 					c.Set("user", tc.user)
 				}
 			}, routes.requireStaticAssetVisibility(tc.authDisabled), func(c *gin.Context) { c.Status(http.StatusNoContent) })
 			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/"+*id+"/secret.png", nil))
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/wiki/assets/"+*id+"/secret.png", nil))
 			if recorder.Code != tc.status {
 				t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
 			}

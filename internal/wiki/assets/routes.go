@@ -96,7 +96,7 @@ func (r *Routes) requireStaticAssetVisibility(authDisabled bool) gin.HandlerFunc
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		node, err := r.tree.FindPageByID(assetPageID(c.Request.URL.Path))
+		node, err := r.tree.FindPageByID(assetPageID(c.Param("filepath")))
 		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
@@ -125,8 +125,8 @@ func (r *Routes) requireDraftManagement(authDisabled bool) gin.HandlerFunc {
 	}
 }
 
-func assetPageID(requestPath string) string {
-	path := strings.TrimPrefix(requestPath, "/assets/")
+func assetPageID(filepath string) string {
+	path := strings.TrimPrefix(filepath, "/")
 	pageID, _, _ := strings.Cut(path, "/")
 	decoded, err := url.PathUnescape(pageID)
 	if err != nil {

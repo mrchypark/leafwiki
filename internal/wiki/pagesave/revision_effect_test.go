@@ -332,3 +332,31 @@ func TestRevisionSideEffect_PublishSectionRecordsVisibleDescendants(t *testing.T
 		t.Fatalf("published child snapshot content = %q", snapshot.Content)
 	}
 }
+
+func TestRevisionSideEffect_DoesNotMutateAffectedPagesBackingArray(t *testing.T) {
+	dir := t.TempDir()
+	treeService := tree.NewTreeService(dir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	pageID, err := treeService.CreateNode("editor", nil, "Page", "page", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	page, err := treeService.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	sentinel := &tree.Page{PageNode: &tree.PageNode{ID: "sentinel"}}
+	backing := []*tree.Page{page, sentinel}
+
+	NewRevisionSideEffect(revision.NewService(dir, treeService, nil, revision.ServiceOptions{}), nil).Apply(PageSaveEvent{
+		Operation: PageOperationUpdate, UserID: "editor", After: page,
+		AffectedPages: backing[:1], DraftChanged: true,
+	})
+
+	if backing[1] != sentinel {
+		t.Fatalf("AffectedPages backing array was mutated: got %#v", backing[1])
+	}
+}

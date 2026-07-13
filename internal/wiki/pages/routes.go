@@ -150,7 +150,7 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 func (r *Routes) handleGetTree(c *gin.Context) {
 	r.setVisibilityCacheHeader(c)
-	root := pagevisibility.Prune(r.treeService.GetTree(), authmw.TryGetUser(c), r.authDisabled)
+	root := pagevisibility.Prune(r.treeService.SnapshotTree(), authmw.TryGetUser(c), r.authDisabled)
 	depth := -1
 	if depthStr := strings.TrimSpace(c.Query("depth")); depthStr != "" {
 		if parsed, err := strconv.Atoi(depthStr); err == nil {
@@ -674,8 +674,13 @@ func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
 }
 
 func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
+	node, err := r.treeService.SnapshotPageNode(page.ID)
+	if err != nil {
+		respondWithPageError(c, err)
+		return
+	}
 	visible := *page
-	visible.PageNode = pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
+	visible.PageNode = pagevisibility.Prune(node, authmw.TryGetUser(c), r.authDisabled)
 	apiPage := dto.ToAPIPageWithDepth(&visible, r.userResolver, depth)
 	r.enrichPageMetadata(apiPage)
 	c.JSON(status, apiPage)
