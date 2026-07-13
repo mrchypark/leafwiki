@@ -3,6 +3,10 @@ import { createLeafWikiRouter } from '@/features/router/router'
 import { useBootstrapAuth } from '@/lib/bootstrapAuth'
 import { BASE_PATH } from '@/lib/config'
 import { useIsReadOnly } from '@/lib/useIsReadOnly'
+import {
+  clearPrivilegedVisibilityState,
+  getVisibilityScope,
+} from '@/features/auth/visibilityScope'
 import { useSessionStore } from '@/stores/session'
 import useApplyDesignMode from '@/useApplyDesignMode'
 import { Loader2 } from 'lucide-react'
@@ -27,9 +31,22 @@ function App() {
   useBootstrapAuth(configHasLoaded && !authDisabled)
 
   const isLoggedIn = useSessionStore((s) => !!s.user)
+  const userId = useSessionStore((s) => s.user?.id ?? null)
+  const userRole = useSessionStore((s) => s.user?.role ?? null)
   const isRefreshing = useSessionStore((s) => s.isRefreshing)
   const isReadOnly = useIsReadOnly()
   const isReadOnlyViewer = isReadOnly && !isLoggedIn
+  const visibilityScopeRef = useRef<string | null>(null)
+  const visibilityScope = getVisibilityScope(authDisabled, userId, userRole)
+
+  useLayoutEffect(() => {
+    if (!configHasLoaded) return
+    const previous = visibilityScopeRef.current
+    visibilityScopeRef.current = visibilityScope
+    if (previous && previous !== visibilityScope) {
+      clearPrivilegedVisibilityState()
+    }
+  }, [configHasLoaded, visibilityScope])
 
   useApplyDesignMode()
   useEffect(() => {
@@ -77,7 +94,7 @@ function App() {
               </div>
             }
           >
-            <RouterProvider router={router} />
+            <RouterProvider key={visibilityScope} router={router} />
           </Suspense>
         </ErrorBoundary>
       ) : null}

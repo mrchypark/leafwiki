@@ -55,6 +55,7 @@ type TreeStore = {
   expandAll: () => void
   collapseAll: () => void
   reloadTree: () => Promise<void>
+  clearVisibilityData: () => void
   patchNodeVersion: (id: string, version: string) => void
   setPinnedLocally: (id: string, pinned: boolean, version: string) => void
   toggleNode: (id: string) => void
@@ -74,6 +75,9 @@ type TreeStore = {
   byId: Record<string, PageNode>
   flatPages: FlatPageSearchItem[]
 }
+
+let treeLoadController: AbortController | null = null
+
 export const useTreeStore = create<TreeStore>()(
   persist(
     (set, get) => ({
@@ -95,6 +99,20 @@ export const useTreeStore = create<TreeStore>()(
 
       collapseAll: () => {
         set({ openNodeIds: [], openNodeIdSet: {} })
+      },
+      clearVisibilityData: () => {
+        treeLoadController?.abort()
+        treeLoadController = null
+        set({
+          tree: null,
+          loading: false,
+          error: null,
+          activeNodeId: null,
+          pinnedPages: [],
+          byPath: {},
+          byId: {},
+          flatPages: [],
+        })
       },
       toggleNode: (id: string) => {
         const current = new Set(get().openNodeIds)
@@ -210,10 +228,13 @@ export const useTreeStore = create<TreeStore>()(
       },
 
       reloadTree: async () => {
+        treeLoadController?.abort()
+        treeLoadController = new AbortController()
+        const { signal } = treeLoadController
         set({ loading: true, error: null })
 
         try {
-          const tree = await fetchTree()
+          const tree = await fetchTree(signal)
           assignParentIds(tree)
           const { byPath, byId } = buildIndexes(tree)
           const flatPages = buildFlatPageSearchItems(tree)
@@ -231,13 +252,14 @@ export const useTreeStore = create<TreeStore>()(
           })
           // FIXME: a better error handling is required here
         } catch (err: unknown) {
+          if (signal.aborted) return
           if (err instanceof Error) {
             set({ error: err.message })
           } else {
             set({ error: 'An unknown error occurred' })
           }
         } finally {
-          set({ loading: false })
+          if (!signal.aborted) set({ loading: false })
         }
       },
     }),

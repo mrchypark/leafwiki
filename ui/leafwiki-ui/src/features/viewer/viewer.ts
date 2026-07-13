@@ -18,15 +18,17 @@ interface ViewerState {
 
 let loadController: AbortController | null = null
 
-export const useViewerStore = create<ViewerState>((set) => ({
+export const useViewerStore = create<ViewerState>((set, get) => ({
   error: null,
   isLoading: false,
   notFound: false,
   page: null,
   setError: (error) => set({ error }),
   clear: () => {
+    const wasLoading = get().isLoading
     loadController?.abort()
     loadController = null
+    if (wasLoading) useProgressbarStore.getState().setLoading(false)
     set({ error: null, isLoading: false, notFound: false, page: null })
   },
   loadPageData: async (path: string) => {

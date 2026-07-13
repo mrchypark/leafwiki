@@ -6,7 +6,6 @@ import (
 	"github.com/perber/wiki/internal/core/markdown"
 )
 
-
 type PropertiesService struct {
 	store *PropertiesStore
 }
@@ -34,6 +33,10 @@ func (s *PropertiesService) DeletePropertiesForPage(pageID string) error {
 
 func (s *PropertiesService) GetAllPropertyKeys(filter string, limit int) ([]PropertyKeyCount, error) {
 	return s.store.GetAllPropertyKeys(filter, limit)
+}
+
+func (s *PropertiesService) GetAllPropertyKeysForPageIDs(filter string, limit int, pageIDs []string) ([]PropertyKeyCount, error) {
+	return s.store.GetAllPropertyKeysForPageIDs(filter, limit, pageIDs)
 }
 
 func (s *PropertiesService) GetPageIDsByProperty(key, value string) ([]string, error) {
@@ -104,7 +107,6 @@ func extractFlatEntryDepth(prefix string, value interface{}, result map[string]P
 		}
 	}
 }
-
 
 func toPropertyEntry(value interface{}) (PropertyEntry, bool) {
 	s, ok := value.(string)

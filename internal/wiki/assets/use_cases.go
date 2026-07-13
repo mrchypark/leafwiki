@@ -54,7 +54,7 @@ func (uc *UploadAssetUseCase) Execute(_ context.Context, in UploadAssetInput) (*
 	if err != nil {
 		return nil, err
 	}
-	recordAssetRevision(uc.revision, in.PageID, in.UserID, uc.log)
+	recordAssetRevision(uc.revision, page, in.UserID, uc.log)
 	return &UploadAssetOutput{URL: url}, nil
 }
 
@@ -128,7 +128,7 @@ func (uc *RenameAssetUseCase) Execute(_ context.Context, in RenameAssetInput) (*
 	if err != nil {
 		return nil, err
 	}
-	recordAssetRevision(uc.revision, in.PageID, in.UserID, uc.log)
+	recordAssetRevision(uc.revision, page, in.UserID, uc.log)
 	return &RenameAssetOutput{URL: newPath}, nil
 }
 
@@ -162,17 +162,17 @@ func (uc *DeleteAssetUseCase) Execute(_ context.Context, in DeleteAssetInput) er
 	if err := uc.asset.DeleteAsset(page, in.Filename); err != nil {
 		return err
 	}
-	recordAssetRevision(uc.revision, in.PageID, in.UserID, uc.log)
+	recordAssetRevision(uc.revision, page, in.UserID, uc.log)
 	return nil
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func recordAssetRevision(svc *revision.Service, pageID, userID string, log *slog.Logger) {
-	if svc == nil {
+func recordAssetRevision(svc *revision.Service, page *tree.PageNode, userID string, log *slog.Logger) {
+	if svc == nil || page == nil || page.Draft {
 		return
 	}
-	if _, _, err := svc.RecordAssetChange(pageID, userID, ""); err != nil {
-		log.Warn("failed to record asset revision", "pageID", pageID, "error", err)
+	if _, _, err := svc.RecordAssetChange(page.ID, userID, ""); err != nil {
+		log.Warn("failed to record asset revision", "pageID", page.ID, "error", err)
 	}
 }

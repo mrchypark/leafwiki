@@ -87,6 +87,9 @@ func (uc *PreviewPageRefactorUseCase) Execute(_ context.Context, in RefactorPrev
 	if err != nil {
 		return nil, err
 	}
+	if page.ContainsDraft() {
+		return nil, &tree.InvalidOpError{Op: "PreviewPageRefactor", Reason: "draft pages cannot be refactored"}
+	}
 
 	oldPath := page.CalculatePath()
 	newPath, err := uc.computeTargetPath(page, in)
@@ -406,6 +409,9 @@ func (uc *ApplyPageRefactorUseCase) buildApplyPlan(in RefactorApplyInput) (*appl
 	page, err := uc.tree.GetPage(in.PageID)
 	if err != nil {
 		return nil, err
+	}
+	if page.ContainsDraft() {
+		return nil, &tree.InvalidOpError{Op: "ApplyPageRefactor", Reason: "draft pages cannot be refactored"}
 	}
 
 	oldPath := page.CalculatePath()

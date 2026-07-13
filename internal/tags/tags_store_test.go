@@ -19,6 +19,27 @@ func newTestStore(t *testing.T) *TagsStore {
 	return store
 }
 
+func TestTagsStore_GetAllTagsForPageIDs_UsesOnlyExplicitAllowlist(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.SetTagsForPage("public", []string{"shared", "public"})
+	_ = store.SetTagsForPage("draft", []string{"shared", "secret"})
+
+	got, err := store.GetAllTagsForPageIDs("", nil, 50, []string{"public"})
+	if err != nil {
+		t.Fatalf("GetAllTagsForPageIDs: %v", err)
+	}
+	want := []TagCount{{Tag: "public", Count: 1}, {Tag: "shared", Count: 1}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("tags = %#v, want %#v", got, want)
+	}
+	for _, ids := range [][]string{nil, {}} {
+		got, err = store.GetAllTagsForPageIDs("", nil, 50, ids)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("empty allowlist tags = %#v, err = %v", got, err)
+		}
+	}
+}
+
 // ─── DB lifecycle ────────────────────────────────────────────────────────────
 
 func TestTagsStore_CreatesDatabaseInStorageDir(t *testing.T) {

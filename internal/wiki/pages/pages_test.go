@@ -215,6 +215,53 @@ func TestCreatePageUseCase_Section_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCreatePageUseCase_DraftRequiresAuthenticatedModeAndLeafPage(t *testing.T) {
+	tests := []struct {
+		name         string
+		kind         *tree.NodeKind
+		draftAllowed bool
+	}{
+		{name: "auth disabled", kind: pageKind(), draftAllowed: false},
+		{name: "section", kind: sectionKind(), draftAllowed: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := newTestDeps(t)
+			uc := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+			_, err := uc.Execute(context.Background(), pages.CreatePageInput{
+				UserID: "editor", Title: "Draft", Slug: "draft", Kind: tt.kind,
+				Draft: true, DraftAllowed: tt.draftAllowed,
+			})
+			if err == nil {
+				t.Fatal("expected draft creation to be rejected")
+			}
+		})
+	}
+}
+
+func TestCreatePageUseCase_CreatesPersistentDraftWhenAllowed(t *testing.T) {
+	deps := newTestDeps(t)
+	uc := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	out, err := uc.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Draft", Slug: "draft", Kind: pageKind(),
+		Draft: true, DraftAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !out.Page.Draft {
+		t.Fatal("created page is not a draft")
+	}
+	raw, err := os.ReadFile(filepath.Join(deps.storageDir, "root", "draft.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(raw), "draft: true") {
+		t.Fatalf("draft frontmatter missing from %q", raw)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UpdatePageUseCase
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,6 +385,90 @@ func TestUpdatePageUseCase_EmptyTitle_ReturnsValidationError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
+	}
+}
+
+func TestUpdatePageUseCase_DraftTransitionMustBeAuthorizedAndSeparate(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	effect := &captureEffect{}
+	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, pagesave.NewPageSaveOrchestrator(effect), slog.Default())
+	created, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+	if err != nil {
+		t.Fatalf("create Execute() error = %v", err)
+	}
+	draft := true
+
+	_, err = updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "editor", ID: created.Page.ID, Version: created.Page.Version(), Draft: &draft,
+	})
+	if err == nil {
+		t.Fatal("expected auth-disabled draft transition to fail")
+	}
+
+	content := "must not be combined"
+	_, err = updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "editor", ID: created.Page.ID, Version: created.Page.Version(), Draft: &draft,
+		DraftAllowed: true, Title: "Changed", Content: &content,
+	})
+	if err == nil {
+		t.Fatal("expected combined draft transition to fail")
+	}
+
+	out, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "editor", ID: created.Page.ID, Version: created.Page.Version(), Draft: &draft,
+		DraftAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("draft transition Execute() error = %v", err)
+	}
+	if !out.Page.Draft || out.Page.Title != "Page" {
+		t.Fatalf("transitioned page = {draft:%v title:%q}", out.Page.Draft, out.Page.Title)
+	}
+	if len(effect.events) != 1 || effect.events[0].Before == nil || effect.events[0].Before.Draft || effect.events[0].After == nil || !effect.events[0].After.Draft {
+		t.Fatalf("transition event = %+v", effect.events)
+	}
+
+	content = "edited while private"
+	out, err = updateUC.Execute(context.Background(), pages.UpdatePageInput{
+		UserID: "editor", ID: out.Page.ID, Version: out.Page.Version(),
+		Title: "Edited draft", Slug: out.Page.Slug, Content: &content,
+		Tags: []string{"private"}, Properties: map[string]string{"status": "wip"},
+	})
+	if err != nil {
+		t.Fatalf("ordinary draft edit Execute() error = %v", err)
+	}
+	if !out.Page.Draft || out.Page.Title != "Edited draft" || out.Page.Content != content {
+		t.Fatalf("edited draft = {draft:%v title:%q content:%q}", out.Page.Draft, out.Page.Title, out.Page.Content)
+	}
+}
+
+func TestDraftPage_RejectsCopyAndRefactorPreview(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
+	created, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Draft", Slug: "draft", Kind: pageKind(), Draft: true, DraftAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("create Execute() error = %v", err)
+	}
+
+	copyUC := pages.NewCopyPageUseCase(deps.tree, deps.slug, deps.orchestrator(), deps.assets, slog.Default())
+	_, err = copyUC.Execute(context.Background(), pages.CopyPageInput{
+		UserID: "editor", SourcePageID: created.Page.ID, Title: "Copy", Slug: "copy",
+	})
+	if !errors.Is(err, tree.ErrInvalidOperation) {
+		t.Fatalf("copy Execute() error = %v, want ErrInvalidOperation", err)
+	}
+
+	previewUC := pages.NewPreviewPageRefactorUseCase(deps.tree, deps.slug, deps.links, slog.Default())
+	_, err = previewUC.Execute(context.Background(), pages.RefactorPreviewInput{
+		PageID: created.Page.ID, Kind: pages.RefactorKindRename, Title: "Renamed", Slug: "renamed",
+	})
+	if !errors.Is(err, tree.ErrInvalidOperation) {
+		t.Fatalf("preview Execute() error = %v, want ErrInvalidOperation", err)
 	}
 }
 

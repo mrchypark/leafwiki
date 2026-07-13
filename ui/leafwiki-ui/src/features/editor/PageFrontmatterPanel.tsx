@@ -6,7 +6,13 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { canManageDrafts } from '@/lib/drafts'
+import type { Page } from '@/lib/api/pages'
+import { useConfigStore } from '@/stores/config'
+import { useSessionStore } from '@/stores/session'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { EditorFrontmatterField } from './frontmatter'
@@ -14,11 +20,14 @@ import { EditorFrontmatterField } from './frontmatter'
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
+  pageKind: Page['kind']
+  draft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
   errors: Record<string, string>
   hasUnsupportedFields: boolean
   onTagsChange: (tags: string[]) => void
+  onDraftChange: (draft: boolean) => void
   onFieldsChange: (fields: EditorFrontmatterField[]) => void
 }
 
@@ -43,13 +52,20 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
+  pageKind,
+  draft,
   tags,
   fields,
   errors,
   hasUnsupportedFields,
   onTagsChange,
+  onDraftChange,
   onFieldsChange,
 }: PageFrontmatterPanelProps) {
+  const authDisabled = useConfigStore((state) => state.authDisabled)
+  const userRole = useSessionStore((state) => state.user?.role)
+  const showDraft =
+    pageKind === 'page' && canManageDrafts(authDisabled, userRole)
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {
@@ -122,6 +138,7 @@ export function PageFrontmatterPanel({
   const hasErrors = Object.keys(errors).length > 0
 
   const summaryParts = [
+    ...(showDraft ? [draft ? 'Draft' : 'Published'] : []),
     normalizedTags.length === 1 ? '1 tag' : `${normalizedTags.length} tags`,
     editableFields.length === 1
       ? '1 property'
@@ -161,6 +178,24 @@ export function PageFrontmatterPanel({
           </AccordionTrigger>
           <AccordionContent className="page-frontmatter-panel__content">
             <div className="page-frontmatter-panel__stack">
+              {showDraft && (
+                <div className="page-frontmatter-panel__row">
+                  <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
+                    Visibility
+                  </div>
+                  <div className="page-frontmatter-panel__draft-field">
+                    <Checkbox
+                      id="page-frontmatter-draft"
+                      checked={draft}
+                      onCheckedChange={(checked) =>
+                        onDraftChange(checked === true)
+                      }
+                    />
+                    <Label htmlFor="page-frontmatter-draft">Draft</Label>
+                  </div>
+                </div>
+              )}
+
               <div className="page-frontmatter-panel__row page-frontmatter-panel__row--tags">
                 <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
                   Tags

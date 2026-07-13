@@ -7,6 +7,7 @@ import {
   Page,
   previewPageRefactor,
   updatePage,
+  updatePageDraft,
 } from '@/lib/api/pages'
 import { isPageNotFoundError, mapApiError } from '@/lib/api/errors'
 import { useConfigStore } from '@/stores/config'
@@ -25,6 +26,7 @@ export interface PageEditorState {
   title: string // current title in the editor
   slug: string // current slug in the editor
   content: string // current markdown content in the editor
+  draft: boolean
   tags: string[] // convenient tag editor state
   frontmatterFields: EditorFrontmatterField[]
   frontmatterUnsupported: string
@@ -37,6 +39,7 @@ export interface PageEditorState {
   setTitle: (title: string) => void // set the current title
   setSlug: (slug: string) => void // set the current slug
   setContent: (content: string) => void // set the current markdown content
+  setDraft: (draft: boolean) => void
   setTags: (tags: string[]) => void
   setFrontmatterFields: (fields: EditorFrontmatterField[]) => void
   setFrontmatterErrors: (errors: Record<string, string>) => void
@@ -80,12 +83,13 @@ function buildEditableProperties(
 }
 
 export const isDirtyState = (s: PageEditorState) => {
-  const { page, title, slug, content, tags, frontmatterFields } = s
+  const { page, title, slug, content, draft, tags, frontmatterFields } = s
   if (!page) return false
   return (
     page.title !== title ||
     page.slug !== slug ||
     page.content !== content ||
+    Boolean(page.draft) !== draft ||
     tagsChanged(tags, page.tags ?? []) ||
     propertiesChanged(frontmatterFields, page.properties ?? {})
   )
@@ -106,6 +110,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   path: '',
   slug: '',
   content: '',
+  draft: false,
   tags: [],
   frontmatterFields: [],
   frontmatterUnsupported: '',
@@ -115,6 +120,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   setTitle: (title) => set({ title }),
   setSlug: (slug) => set({ slug }),
   setContent: (content) => set({ content }),
+  setDraft: (draft) => set({ draft }),
   setTags: (tags) =>
     set((state) => {
       const nextErrors = { ...state.frontmatterErrors }
@@ -139,8 +145,20 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   setError: (error) => set({ error }),
   setPage: (page) => set({ page }),
   savePage: async (options?: { silent?: boolean }) => {
-    const { page, title, slug, content, tags, frontmatterFields } = get()
+    const {
+      page,
+      initialPage,
+      title,
+      slug,
+      content,
+      draft,
+      tags,
+      frontmatterFields,
+    } = get()
     if (!page || !isDirtyState(get())) return
+
+    const isCurrentSave = () =>
+      get().initialPage === initialPage && get().page?.id === page.id
 
     const frontmatterErrors = validateEditorFrontmatterMetadata(
       tags,
@@ -162,34 +180,73 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       set({ frontmatterErrors: {} })
       const titleChanged = page.title !== title
       const slugChanged = page.slug !== slug
+      const wasDraft = Boolean(page.draft)
+      const draftChanged = wasDraft !== draft
       const enableLinkRefactor = useConfigStore.getState().enableLinkRefactor
       const frontmatterChanged =
         tagsChanged(tags, page.tags ?? []) ||
         propertiesChanged(frontmatterFields, page.properties ?? {})
 
+      if (slugChanged && (wasDraft || draftChanged)) {
+        throw new Error('Publish this page before changing its slug.')
+      }
+
+      const applyServerPage = (serverPage: Page) => {
+        set((state) => {
+          if (
+            state.initialPage !== initialPage ||
+            !state.page ||
+            state.page.id !== serverPage.id
+          ) {
+            return {}
+          }
+          return {
+            page: {
+              ...state.page,
+              ...serverPage,
+              content: serverPage.content ?? state.page.content,
+              tags: serverPage.tags ?? state.page.tags,
+              properties: serverPage.properties ?? state.page.properties,
+            },
+          }
+        })
+      }
+
+      let workingPage = page
+      if (draftChanged && draft) {
+        workingPage = await updatePageDraft(page.id, page.version, true)
+        if (!isCurrentSave()) return
+        applyServerPage(workingPage)
+        await useTreeStore.getState().reloadTree()
+        if (!isCurrentSave()) return
+      }
+
       let updatedPage: Page | null = null
 
       if (slugChanged && enableLinkRefactor) {
-        const preview = await previewPageRefactor(page.id, {
+        const preview = await previewPageRefactor(workingPage.id, {
           kind: 'rename',
           title,
           slug,
         })
+        if (!isCurrentSave()) return
         const rewriteLinks = await confirmPageRefactor(preview, {
           allowSkipRewrite: true,
         })
+        if (!isCurrentSave()) return
         if (rewriteLinks === null) {
           return null
         }
 
-        updatedPage = await applyPageRefactor(page.id, {
+        updatedPage = await applyPageRefactor(workingPage.id, {
           kind: 'rename',
-          version: page.version,
+          version: workingPage.version,
           title,
           slug,
           content,
           rewriteLinks,
         })
+        if (!isCurrentSave()) return
 
         if (updatedPage && frontmatterChanged) {
           updatedPage = await updatePage(
@@ -201,35 +258,48 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
             tags,
             properties,
           )
+          if (!isCurrentSave()) return
         }
       } else {
         updatedPage = await updatePage(
-          page.id,
-          page.version,
+          workingPage.id,
+          workingPage.version,
           title,
           slug,
           content,
           tags,
           properties,
         )
+        if (!isCurrentSave()) return
       }
 
-      const nextTags = updatedPage?.tags ?? tags
-      const nextProperties =
-        updatedPage && updatedPage.properties
-          ? updatedPage.properties
-          : properties
+      if (!updatedPage) {
+        throw new Error('Page update returned no page.')
+      }
+      applyServerPage(updatedPage)
+
+      if (draftChanged && !draft) {
+        updatedPage = await updatePageDraft(
+          updatedPage.id,
+          updatedPage.version,
+          false,
+        )
+        if (!isCurrentSave()) return
+        applyServerPage(updatedPage)
+      }
+
+      const nextTags = updatedPage.tags ?? tags
+      const nextProperties = updatedPage.properties ?? properties
 
       // Keep the local page snapshot canonical after save so metadata-only
       // updates do not remain dirty when the API omits empty collections.
       set((state) => {
-        if (!state.page) return {}
-
         if (
-          updatedPage?.content === null ||
-          updatedPage?.content === undefined
+          state.initialPage !== initialPage ||
+          !state.page ||
+          state.page.id !== page.id
         ) {
-          throw new Error('Updated page content is null or undefined')
+          return {}
         }
         state.page.title = updatedPage.title
         state.page.slug = updatedPage.slug
@@ -238,6 +308,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         state.page.version = updatedPage.version
         state.page.tags = nextTags
         state.page.properties = nextProperties
+        state.page.draft = updatedPage.draft ?? draft
 
         return {
           page: state.page,
@@ -256,8 +327,9 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       })
 
       // sync tree: full reload on structural changes, version-only patch otherwise
-      if (titleChanged || slugChanged) {
+      if (titleChanged || slugChanged || draftChanged) {
         await useTreeStore.getState().reloadTree()
+        if (!isCurrentSave()) return
       } else if (updatedPage?.id && updatedPage?.version) {
         useTreeStore
           .getState()
@@ -279,6 +351,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         const fetchLinkStatusForPage =
           useLinkStatusStore.getState().fetchLinkStatusForPage
         await fetchLinkStatusForPage(editorPageID)
+        if (!isCurrentSave()) return
       }
 
       return updatedPage
@@ -288,13 +361,17 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
     }
   },
   forceOverwrite: async () => {
-    const { page } = get()
+    const { page, initialPage } = get()
     if (!page?.path) return
 
     const fresh = await getPageByPath(page.path)
+    if (get().initialPage !== initialPage || get().page?.id !== page.id) return
     set((state) => {
-      if (!state.page) return {}
+      if (state.initialPage !== initialPage || state.page?.id !== page.id) {
+        return {}
+      }
       state.page.version = fresh.version
+      state.page.draft = fresh.draft
       return { page: state.page }
     })
     return get().savePage()
@@ -329,6 +406,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         title: page.title,
         slug: page.slug,
         content: page.content,
+        draft: Boolean(page.draft),
         tags: page.tags ?? [],
         frontmatterFields: fields,
         frontmatterUnsupported: '',
@@ -360,7 +438,9 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   // reads elsewhere, e.g. TreeNodeActionsMenu's rename/delete guards) doesn't
   // keep pointing at the last-edited page indefinitely after the editor closes.
   resetEditorState: () => {
+    const wasLoading = get().isLoading
     loadController?.abort()
+    if (wasLoading) useProgressbarStore.getState().setLoading(false)
     set({
       error: null,
       isLoading: false,
@@ -369,6 +449,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       title: '',
       slug: '',
       content: '',
+      draft: false,
       tags: [],
       frontmatterFields: [],
       frontmatterUnsupported: '',

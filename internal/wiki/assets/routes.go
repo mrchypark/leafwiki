@@ -3,9 +3,13 @@ package assets
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
+	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
 	"github.com/perber/wiki/internal/http/middleware/security"
@@ -22,6 +26,7 @@ type Routes struct {
 	authService *coreauth.AuthService
 	assetsDir   string
 	log         *slog.Logger
+	tree        *tree.TreeService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -33,6 +38,7 @@ type RoutesConfig struct {
 	AuthService *coreauth.AuthService
 	AssetsDir   string
 	Log         *slog.Logger
+	Tree        *tree.TreeService
 }
 
 // NewRoutes constructs the assets RouteRegistrar.
@@ -45,6 +51,7 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 		authService: cfg.AuthService,
 		assetsDir:   cfg.AssetsDir,
 		log:         cfg.Log,
+		tree:        cfg.Tree,
 	}
 }
 
@@ -55,16 +62,18 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	// Static file serving for /assets with access control.
 	if r.assetsDir != "" {
 		assetsFS := gin.Dir(r.assetsDir, false)
-		if opts.PublicAccess || opts.AuthDisabled {
-			ctx.Base.StaticFS("/assets", assetsFS)
+		assetsGroup := ctx.Base.Group("/assets")
+		if opts.AuthDisabled {
+			assetsGroup.Use(authmw.InjectPublicEditor(true))
+		} else if opts.PublicAccess {
+			assetsGroup.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
 		} else {
-			assetsGroup := ctx.Base.Group("/assets")
 			assetsGroup.Use(
-				authmw.InjectPublicEditor(opts.AuthDisabled),
-				authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
+				authmw.RequireAuth(r.authService, ctx.AuthCookies, false),
 			)
-			assetsGroup.StaticFS("/", assetsFS)
 		}
+		assetsGroup.Use(r.requireAssetPageVisible(opts.AuthDisabled, true))
+		assetsGroup.StaticFS("/", assetsFS)
 	}
 
 	authGroup := ctx.Base.Group("/api")
@@ -73,11 +82,36 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
 		security.CSRFMiddleware(ctx.CSRFCookie),
 	)
+	authGroup.Use(r.requireAssetPageVisible(opts.AuthDisabled, false))
 
 	authGroup.POST("/pages/:id/assets", authmw.RequireEditorOrAdmin(), r.handleUpload(opts.MaxAssetUploadSizeBytes))
 	authGroup.GET("/pages/:id/assets", authmw.RequireEditorOrAdmin(), r.handleList)
 	authGroup.PUT("/pages/:id/assets/rename", authmw.RequireEditorOrAdmin(), r.handleRename)
 	authGroup.DELETE("/pages/:id/assets/:name", authmw.RequireEditorOrAdmin(), r.handleDelete)
+}
+
+func (r *Routes) requireAssetPageVisible(authDisabled, static bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := strings.TrimSpace(c.Param("id"))
+		if static {
+			path := strings.TrimPrefix(c.Param("filepath"), "/")
+			id, _, _ = strings.Cut(path, "/")
+			if decoded, err := url.PathUnescape(id); err == nil {
+				id = decoded
+			} else {
+				id = ""
+			}
+		}
+		node, err := r.tree.FindPageByID(id)
+		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if !authDisabled {
+			c.Header("Cache-Control", "private, no-store")
+		}
+		c.Next()
+	}
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────

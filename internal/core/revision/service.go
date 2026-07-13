@@ -106,6 +106,46 @@ func (s *Service) RecordContentUpdate(pageID, authorID, summary string) (*Revisi
 	return s.recordContentUpdateForPage(page, authorID, summary)
 }
 
+// RecordPublishedBaseline records the current published page and live assets
+// as one full revision without content deduplication or coalescing.
+func (s *Service) RecordPublishedBaseline(pageID, authorID, summary string) (*Revision, error) {
+	mu := s.pageWriteLock(pageID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	state, err := s.capturePageState(pageID, true)
+	if err != nil {
+		return nil, err
+	}
+	contentHash, err := s.store.SaveContentBlob(pageID, []byte(state.Content))
+	if err != nil {
+		return nil, err
+	}
+	if contentHash != state.ContentHash {
+		return nil, fmt.Errorf(errContentHashMismatch, state.ContentHash, contentHash)
+	}
+	if err := s.persistLiveAssets(pageID, state.Assets); err != nil {
+		return nil, err
+	}
+	assetManifestHash, err := s.store.SaveAssetManifest(state.Assets)
+	if err != nil {
+		return nil, err
+	}
+	if assetManifestHash != state.AssetManifestHash {
+		return nil, fmt.Errorf(errAssetManifestHashMismatch, state.AssetManifestHash, assetManifestHash)
+	}
+	rev, err := s.newRevision(RevisionTypeContentUpdate, state, authorID, summary, assetManifestHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.SaveRevision(rev); err != nil {
+		return nil, err
+	}
+	s.assetManifestCache.Store(pageID, assetManifestEntry{hash: assetManifestHash})
+	s.pruneAfterSave(pageID)
+	return rev, nil
+}
+
 func (s *Service) RecordContentUpdates(pages []*tree.Page, authorID, summary string) []error {
 	errs := make([]error, len(pages))
 	if len(pages) == 0 {
@@ -537,7 +577,8 @@ func (s *Service) RestoreRevision(pageID, revisionID, authorID string) error {
 		)
 	}
 
-	if _, err := s.pages.GetPage(pageID); err != nil {
+	page, err := s.pages.GetPage(pageID)
+	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
 			return sharederrors.NewLocalizedError(
 				"revision_restore_page_not_found",
@@ -656,6 +697,9 @@ func (s *Service) RestoreRevision(pageID, revisionID, authorID string) error {
 		)
 	}
 
+	if page.Draft {
+		return nil
+	}
 	if err := s.recordRestoreRevision(pageID, authorID); err != nil {
 		restoreRollbackContent, rollbackPreserveFrontmatter, buildErr := buildRestoredRawContent(beforeState.ExtraFrontmatter, beforeState.Content)
 		if buildErr != nil {

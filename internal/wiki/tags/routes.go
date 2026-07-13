@@ -41,12 +41,14 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 	if opts.PublicAccess {
 		pub := ctx.Base.Group("/api")
+		pub.Use(security.NoStore())
 		pub.GET("/tags", r.handleGetTags)
 		pub.GET("/tags/pages", r.handleGetPagesByTags)
 	}
 
 	authGroup := ctx.Base.Group("/api")
 	authGroup.Use(
+		security.NoStore(),
 		authmw.InjectPublicEditor(opts.AuthDisabled),
 		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
 		security.CSRFMiddleware(ctx.CSRFCookie),

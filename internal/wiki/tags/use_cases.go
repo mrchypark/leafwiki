@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/http/dto"
 	coretags "github.com/perber/wiki/internal/tags"
@@ -23,11 +24,12 @@ type GetTagsOutput struct {
 }
 
 type GetTagsUseCase struct {
-	svc *coretags.TagsService
+	svc  *coretags.TagsService
+	tree *tree.TreeService
 }
 
-func NewGetTagsUseCase(svc *coretags.TagsService) *GetTagsUseCase {
-	return &GetTagsUseCase{svc: svc}
+func NewGetTagsUseCase(svc *coretags.TagsService, treeService *tree.TreeService) *GetTagsUseCase {
+	return &GetTagsUseCase{svc: svc, tree: treeService}
 }
 
 func (uc *GetTagsUseCase) Execute(_ context.Context, in GetTagsInput) (*GetTagsOutput, error) {
@@ -42,15 +44,7 @@ func (uc *GetTagsUseCase) Execute(_ context.Context, in GetTagsInput) (*GetTagsO
 	filter := strings.ToLower(strings.TrimSpace(in.Filter))
 	selected := normalizeTags(in.Selected)
 
-	var (
-		tags []coretags.TagCount
-		err  error
-	)
-	if len(selected) == 0 {
-		tags, err = uc.svc.GetAllTags(filter, limit)
-	} else {
-		tags, err = uc.svc.GetAllTagsForSelection(filter, selected, limit)
-	}
+	tags, err := uc.svc.GetAllTagsForPageIDs(filter, selected, limit, pagevisibility.AllPublishedPageIDs(uc.tree))
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +87,7 @@ func (uc *GetPagesByTagsUseCase) Execute(_ context.Context, in GetPagesByTagsInp
 	if len(pageIDs) == 0 {
 		return &GetPagesByTagsOutput{Pages: []*dto.TaggedPage{}}, nil
 	}
+	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.treeService, pageIDs)
 
 	tagsPerPage, err := uc.svc.GetTagsForPages(pageIDs)
 	if err != nil {

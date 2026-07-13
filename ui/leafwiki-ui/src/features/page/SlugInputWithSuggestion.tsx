@@ -26,6 +26,7 @@ type Props = {
   onLastSlugTitleChange?: (title: string) => void
   error?: string
   allowedHotkeys?: string
+  readOnly?: boolean
 }
 
 export function SlugInputWithSuggestion({
@@ -42,6 +43,7 @@ export function SlugInputWithSuggestion({
   onLastSlugTitleChange,
   error,
   allowedHotkeys,
+  readOnly = false,
 }: Props) {
   const [slugTouched, setSlugTouched] = useState(false)
   const debouncedTitle = useDebounce(title, 300)
@@ -49,7 +51,12 @@ export function SlugInputWithSuggestion({
   const initialHandledRef = useRef(false)
 
   useEffect(() => {
-    if (!enableSlugSuggestion || slugTouched || debouncedTitle.trim() === '') {
+    if (
+      readOnly ||
+      !enableSlugSuggestion ||
+      slugTouched ||
+      debouncedTitle.trim() === ''
+    ) {
       return
     }
 
@@ -97,6 +104,7 @@ export function SlugInputWithSuggestion({
     onSlugChange,
     onLastSlugTitleChange,
     enableSlugSuggestion,
+    readOnly,
   ])
 
   const handleChange = (val: string) => {
@@ -114,6 +122,7 @@ export function SlugInputWithSuggestion({
       testid={testid}
       error={error}
       allowedHotkeys={allowedHotkeys}
+      readOnly={readOnly}
     />
   )
 }

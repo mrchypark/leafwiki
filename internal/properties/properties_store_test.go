@@ -27,6 +27,27 @@ func props(kv ...string) map[string]PropertyEntry {
 	return m
 }
 
+func TestPropertiesStore_GetAllPropertyKeysForPageIDs_UsesOnlyExplicitAllowlist(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.SetPropertiesForPage("public", props("shared", "yes", "public", "yes"))
+	_ = store.SetPropertiesForPage("draft", props("shared", "yes", "secret", "yes"))
+
+	got, err := store.GetAllPropertyKeysForPageIDs("", 50, []string{"public"})
+	if err != nil {
+		t.Fatalf("GetAllPropertyKeysForPageIDs: %v", err)
+	}
+	want := []PropertyKeyCount{{Key: "public", Count: 1}, {Key: "shared", Count: 1}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("keys = %#v, want %#v", got, want)
+	}
+	for _, ids := range [][]string{nil, {}} {
+		got, err = store.GetAllPropertyKeysForPageIDs("", 50, ids)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("empty allowlist keys = %#v, err = %v", got, err)
+		}
+	}
+}
+
 // ─── DB lifecycle ────────────────────────────────────────────────────────────
 
 func TestPropertiesStore_CreatesDatabaseInStorageDir(t *testing.T) {

@@ -308,6 +308,231 @@ func TestTreeService_CreateNode_ReloadsFromFilesystem(t *testing.T) {
 	}
 }
 
+func TestTreeService_CreateDraftPage_ReloadsDraftFromFilesystem(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+
+	id, err := svc.CreateNodeWithDraft("editor", nil, "Work in progress", "work-in-progress", ptrKind(NodeKindPage), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "work-in-progress.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(raw), "draft: true") {
+		t.Fatalf("draft frontmatter missing from %q", raw)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	page, err := reloaded.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+	if !page.Draft {
+		t.Fatal("reloaded page is not a draft")
+	}
+}
+
+func TestTreeService_CreateDraftSection_IsRejected(t *testing.T) {
+	svc, _ := newLoadedService(t)
+
+	_, err := svc.CreateNodeWithDraft("editor", nil, "Draft section", "draft-section", ptrKind(NodeKindSection), true)
+	if !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("CreateNodeWithDraft() error = %v, want ErrInvalidOperation", err)
+	}
+}
+
+func TestTreeService_LoadTree_DoesNotTreatSectionFrontmatterAsDraft(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmpDir, "root", "docs", "index.md"), `---
+leafwiki_id: docs
+leafwiki_title: Docs
+leafwiki_created_at: 2026-07-13T00:00:00Z
+leafwiki_updated_at: 2026-07-13T00:00:00Z
+draft: true
+---
+Docs`, 0o644)
+	if err := saveSchema(tmpDir, CurrentSchemaVersion); err != nil {
+		t.Fatalf("saveSchema() error = %v", err)
+	}
+
+	svc := NewTreeService(tmpDir)
+	if err := svc.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	section, err := svc.GetPage("docs")
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+	if section.Draft {
+		t.Fatal("section loaded as draft")
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "docs", "index.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(raw), "draft:") {
+		t.Fatalf("section draft frontmatter was not removed: %q", raw)
+	}
+}
+
+func TestTreeService_SetDraft_RoundtripsAndBlocksDraftStructureChanges(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	page, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+
+	if err := svc.SetDraft("editor", *id, true, page.Version()); err != nil {
+		t.Fatalf("SetDraft(true) error = %v", err)
+	}
+	draft, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage(draft) error = %v", err)
+	}
+	if !draft.Draft {
+		t.Fatal("page did not become a draft")
+	}
+
+	content := "edited while draft"
+	if err := svc.UpdateNode("editor", *id, draft.Title, draft.Slug, &content, draft.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(content while draft) error = %v", err)
+	}
+	draft, _ = svc.GetPage(*id)
+	if err := svc.UpdateNode("editor", *id, draft.Title, "renamed", nil, draft.Version(), nil, nil, false); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("UpdateNode(slug while draft) error = %v, want ErrInvalidOperation", err)
+	}
+	if err := svc.MoveNode("editor", *id, "root", draft.Version()); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("MoveNode(draft) error = %v, want ErrInvalidOperation", err)
+	}
+	if err := svc.ConvertNode("editor", *id, NodeKindSection, draft.Version()); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("ConvertNode(draft) error = %v, want ErrInvalidOperation", err)
+	}
+
+	if err := svc.SetDraft("editor", *id, false, draft.Version()); err != nil {
+		t.Fatalf("SetDraft(false) error = %v", err)
+	}
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	published, err := reloaded.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage(reloaded) error = %v", err)
+	}
+	if published.Draft || published.Content != content {
+		t.Fatalf("published page = {draft:%v content:%q}", published.Draft, published.Content)
+	}
+}
+
+func TestTreeService_SetDraft_DoesNotChangeLiveVisibilityWhenPersistenceFails(t *testing.T) {
+	for _, startDraft := range []bool{false, true} {
+		name := "publish_to_draft"
+		if startDraft {
+			name = "draft_to_publish"
+		}
+		t.Run(name, func(t *testing.T) {
+			svc, tmpDir := newLoadedService(t)
+			id, err := svc.CreateNodeWithDraft("editor", nil, "Page", "page", ptrKind(NodeKindPage), startDraft)
+			if err != nil {
+				t.Fatalf("CreateNodeWithDraft() error = %v", err)
+			}
+			page, err := svc.GetPage(*id)
+			if err != nil {
+				t.Fatalf("GetPage() error = %v", err)
+			}
+
+			filePath := filepath.Join(tmpDir, "root", "page.md")
+			if err := os.Remove(filePath); err != nil {
+				t.Fatalf("Remove() error = %v", err)
+			}
+			if err := os.Mkdir(filePath, 0o755); err != nil {
+				t.Fatalf("Mkdir() error = %v", err)
+			}
+
+			if err := svc.SetDraft("editor", *id, !startDraft, page.Version()); err == nil {
+				t.Fatal("SetDraft() unexpectedly succeeded")
+			}
+			unchanged, err := svc.FindPageByID(*id)
+			if err != nil {
+				t.Fatalf("FindPageByID(after failure) error = %v", err)
+			}
+			if unchanged.Draft != startDraft {
+				t.Fatalf("draft after failed persistence = %v, want %v", unchanged.Draft, startDraft)
+			}
+		})
+	}
+}
+
+func TestTreeService_DraftDescendantPreventsSubtreePathChanges(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	sectionID, err := svc.CreateNode("editor", nil, "Section", "section", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode(section) error = %v", err)
+	}
+	if _, err := svc.CreateNodeWithDraft("editor", sectionID, "Draft", "draft", ptrKind(NodeKindPage), true); err != nil {
+		t.Fatalf("CreateNodeWithDraft() error = %v", err)
+	}
+	section, err := svc.GetPage(*sectionID)
+	if err != nil {
+		t.Fatalf("GetPage(section) error = %v", err)
+	}
+
+	if err := svc.UpdateNode("editor", section.ID, section.Title, "renamed", nil, section.Version(), nil, nil, false); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("UpdateNode(section slug) error = %v, want ErrInvalidOperation", err)
+	}
+	if err := svc.MoveNode("editor", section.ID, "root", section.Version()); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("MoveNode(section) error = %v, want ErrInvalidOperation", err)
+	}
+}
+
+func TestTreeService_MovePublishedPageToDraftParentPreservesLeafInvariant(t *testing.T) {
+	svc, storageDir := newLoadedService(t)
+	draftID, err := svc.CreateNodeWithDraft("editor", nil, "Draft", "draft", ptrKind(NodeKindPage), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft() error = %v", err)
+	}
+	publishedID, err := svc.CreateNode("editor", nil, "Published", "published", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	published, err := svc.GetPage(*publishedID)
+	if err != nil {
+		t.Fatalf("GetPage(published) error = %v", err)
+	}
+
+	if err := svc.MoveNode("editor", *publishedID, *draftID, published.Version()); !errors.Is(err, ErrInvalidOperation) {
+		t.Fatalf("MoveNode() error = %v, want ErrInvalidOperation", err)
+	}
+	mustStat(t, filepath.Join(storageDir, "root", "draft.md"))
+	mustStat(t, filepath.Join(storageDir, "root", "published.md"))
+	mustNotExist(t, filepath.Join(storageDir, "root", "draft", "published.md"))
+
+	reloaded := NewTreeService(storageDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	draft, err := reloaded.GetPage(*draftID)
+	if err != nil {
+		t.Fatalf("GetPage(draft) error = %v", err)
+	}
+	published, err = reloaded.GetPage(*publishedID)
+	if err != nil {
+		t.Fatalf("GetPage(published after reload) error = %v", err)
+	}
+	if !draft.Draft || draft.Kind != NodeKindPage || published.Parent == nil || published.Parent.ID != "root" {
+		t.Fatalf("reloaded state = {draft:%v kind:%q publishedParent:%v}", draft.Draft, draft.Kind, published.Parent)
+	}
+}
+
 func TestTreeService_CreateChild_RollsBackParentAutoConvertWhenTreeSaveFails(t *testing.T) {
 	svc, tmpDir := newLoadedService(t)
 

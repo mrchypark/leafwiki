@@ -33,7 +33,10 @@ export type LinkStatusResult = {
 
 export async function fetchLinkStatus(
   pageId: string,
+  signal?: AbortSignal,
 ): Promise<LinkStatusResult> {
   if (!pageId) throw new Error('Page ID is required')
-  return (await fetchWithAuth(`/api/pages/${pageId}/links`)) as LinkStatusResult
+  return (await fetchWithAuth(`/api/pages/${pageId}/links`, {
+    signal,
+  })) as LinkStatusResult
 }

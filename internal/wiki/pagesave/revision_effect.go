@@ -21,7 +21,11 @@ func NewRevisionSideEffect(svc *revision.Service, log *slog.Logger) *RevisionSid
 }
 
 func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
-	if e.svc == nil {
+	if e.svc == nil || event.After != nil && event.After.Draft {
+		return
+	}
+	if event.Before != nil && event.Before.Draft && event.After != nil && !event.After.Draft {
+		e.recordPublishedBaseline(event.After.ID, event.UserID)
 		return
 	}
 	switch event.Operation {
@@ -64,6 +68,12 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 func (e *RevisionSideEffect) recordContent(pageID, userID, summary string) {
 	if _, _, err := e.svc.RecordContentUpdate(pageID, userID, summary); err != nil {
 		e.log.Warn("failed to record content revision", "pageID", pageID, "error", err)
+	}
+}
+
+func (e *RevisionSideEffect) recordPublishedBaseline(pageID, userID string) {
+	if _, err := e.svc.RecordPublishedBaseline(pageID, userID, "page published"); err != nil {
+		e.log.Warn("failed to record published baseline", "pageID", pageID, "error", err)
 	}
 }
 

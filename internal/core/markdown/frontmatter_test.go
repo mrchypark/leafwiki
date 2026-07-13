@@ -136,6 +136,19 @@ func TestParseFrontmatter(t *testing.T) {
 		wantErrType error
 	}{
 		{
+			name:  "draft is managed frontmatter",
+			input: "---\ndraft: true\ncustom: value\n---\nBody",
+			wantFM: Frontmatter{
+				Draft: true,
+				ExtraFields: map[string]interface{}{
+					"custom": "value",
+				},
+			},
+			wantBody: "Body",
+			wantHas:  true,
+			wantErr:  false,
+		},
+		{
 			name:     "no frontmatter",
 			input:    "# Hello\nWorld\n",
 			wantFM:   Frontmatter{},
@@ -308,6 +321,20 @@ func TestParseFrontmatter(t *testing.T) {
 				t.Fatalf("body = %q, want %q", body, tt.wantBody)
 			}
 		})
+	}
+}
+
+func TestFrontmatter_DraftRoundtrip(t *testing.T) {
+	raw, err := BuildMarkdownWithFrontmatter(Frontmatter{Draft: true}, "Body")
+	if err != nil {
+		t.Fatalf("BuildMarkdownWithFrontmatter() error = %v", err)
+	}
+	fm, body, has, err := ParseFrontmatter(raw)
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+	if !has || !fm.Draft || body != "Body" {
+		t.Fatalf("roundtrip = {has:%v draft:%v body:%q}", has, fm.Draft, body)
 	}
 }
 

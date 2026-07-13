@@ -62,6 +62,9 @@ func (uc *CopyPageUseCase) Execute(_ context.Context, in CopyPageInput) (*CopyPa
 	if err != nil {
 		return nil, err
 	}
+	if page.Draft {
+		return nil, &tree.InvalidOpError{Op: "CopyPage", Reason: "draft pages cannot be copied"}
+	}
 
 	kind := tree.NodeKindPage
 	copyID, err := uc.tree.CreateNode(in.UserID, in.TargetParentID, in.Title, in.Slug, &kind)
