@@ -7,9 +7,10 @@ type Page struct {
 }
 
 type PermalinkTarget struct {
-	ID   string `json:"id"`
-	Slug string `json:"slug"`
-	Path string `json:"path"`
+	ID             string    `json:"id"`
+	Slug           string    `json:"slug"`
+	Path           string    `json:"path"`
+	VisibilityNode *PageNode `json:"-"`
 }
 
 // Version returns a stable optimistic-lock token for the current page state.

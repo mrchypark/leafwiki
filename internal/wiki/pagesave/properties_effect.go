@@ -2,66 +2,46 @@ package pagesave
 
 import (
 	"log/slog"
+	"sync"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/properties"
 )
 
 // PropertiesSideEffect updates the properties index after every page mutation.
 type PropertiesSideEffect struct {
-	svc *properties.PropertiesService
-	log *slog.Logger
+	svc  *properties.PropertiesService
+	tree *tree.TreeService
+	log  *slog.Logger
+	mu   sync.Mutex
 }
 
-func NewPropertiesSideEffect(svc *properties.PropertiesService, log *slog.Logger) *PropertiesSideEffect {
+func NewPropertiesSideEffect(svc *properties.PropertiesService, treeService *tree.TreeService, log *slog.Logger) *PropertiesSideEffect {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &PropertiesSideEffect{svc: svc, log: log}
+	return &PropertiesSideEffect{svc: svc, tree: treeService, log: log}
 }
 
 func (e *PropertiesSideEffect) Apply(event PageSaveEvent) {
 	if e.svc == nil {
 		return
 	}
-	switch event.Operation {
-	case PageOperationCreate, PageOperationRestore:
-		if event.After != nil {
-			e.setProperties(event.After)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, state := range loadProjectionPages(e.tree, projectionPageIDs(event, false)) {
+		if state.err != nil {
+			e.log.Warn("failed to load current page for property index", "pageID", state.id, "error", state.err)
+			continue
 		}
-	case PageOperationUpdate:
-		if event.DraftChanged {
-			for _, page := range event.AffectedPages {
-				e.setProperties(page)
+		if state.remove {
+			if err := e.svc.DeletePropertiesForPage(state.id); err != nil {
+				e.log.Warn("failed to delete page property index", "pageID", state.id, "error", err)
 			}
-		} else if event.After != nil {
-			e.setProperties(event.After)
+			continue
 		}
-
-	case PageOperationMove:
-		// page_id is stable across moves; properties in frontmatter are unchanged — no-op.
-
-	case PageOperationDelete:
-		for _, p := range event.AffectedPages {
-			e.deleteProperties(p)
+		if err := e.svc.SetPropertiesForPage(state.id, properties.ExtractPropertiesFromContent(state.page.RawContent)); err != nil {
+			e.log.Warn("failed to reconcile property index", "pageID", state.id, "error", err)
 		}
-	}
-}
-
-func (e *PropertiesSideEffect) setProperties(p *tree.Page) {
-	if pagevisibility.IsInDraftSubtree(p.PageNode) {
-		e.deleteProperties(p)
-		return
-	}
-	props := properties.ExtractPropertiesFromContent(p.RawContent)
-	if err := e.svc.SetPropertiesForPage(p.ID, props); err != nil {
-		e.log.Warn("failed to set properties for page", "pageID", p.ID, "error", err)
-	}
-}
-
-func (e *PropertiesSideEffect) deleteProperties(p *tree.Page) {
-	if err := e.svc.DeletePropertiesForPage(p.ID); err != nil {
-		e.log.Warn("failed to delete properties for page", "pageID", p.ID, "error", err)
 	}
 }

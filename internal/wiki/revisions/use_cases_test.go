@@ -99,8 +99,7 @@ func TestRestoreRevisionUseCase_RestoresAssetsAndStructure(t *testing.T) {
 
 	originalContent := "first version"
 	pageOut, err := updateUC.Execute(context.Background(), wikipages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Original", Slug: "original", Content: &originalContent, Kind: pageKind(),
-	})
+		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Original", Slug: "original", Content: &originalContent})
 	if err != nil {
 		t.Fatalf("UpdatePage(original) failed: %v", err)
 	}
@@ -123,8 +122,7 @@ func TestRestoreRevisionUseCase_RestoresAssetsAndStructure(t *testing.T) {
 
 	changedContent := "second version"
 	pageOut, err = updateUC.Execute(context.Background(), wikipages.UpdatePageInput{
-		UserID: "system", ID: pageOut.Page.ID, Version: pageOut.Page.Version(), Title: "Changed", Slug: "changed", Content: &changedContent, Kind: pageKind(),
-	})
+		UserID: "system", ID: pageOut.Page.ID, Version: pageOut.Page.Version(), Title: "Changed", Slug: "changed", Content: &changedContent})
 	if err != nil {
 		t.Fatalf("UpdatePage(changed) failed: %v", err)
 	}

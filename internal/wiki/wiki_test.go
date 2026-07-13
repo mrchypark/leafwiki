@@ -55,7 +55,7 @@ func updatePageForTest(t *testing.T, w *Wiki, userID, id, title, slug string, co
 
 	out, err := wikipages.NewUpdatePageUseCase(w.tree, w.slug, w.newPageOrchestrator(), w.log).Execute(
 		context.Background(),
-		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content, Kind: kind},
+		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content},
 	)
 	if err != nil {
 		t.Fatalf("UpdatePage failed: %v", err)
@@ -116,7 +116,7 @@ func TestWiki_BootstrapTagsAndProperties_SkipsDraftPages(t *testing.T) {
 		t.Fatalf("IndexPageContent properties: %v", err)
 	}
 
-	w.bootstrapTagsAndProperties()
+	w.bootstrapTagsAndProperties(context.Background())
 
 	tagIDs, err := w.tags.GetPageIDsByTags([]string{"secret"})
 	if err != nil {

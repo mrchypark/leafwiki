@@ -1,5 +1,6 @@
 import BaseDialog from '@/components/BaseDialog'
 import { FormInput } from '@/components/FormInput'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { ensurePage, lookupPath, PathLookupResult } from '@/lib/api/pages'
 import { handleFieldErrors } from '@/lib/handleFieldErrors'
@@ -42,6 +43,7 @@ export function CreatePageByPathDialog({
     requestedPath: string
     result: PathLookupResult
   } | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
   const lookupRequest = useRef(0)
   const [loading, setLoading] = useState(false)
   const [draft, setDraft] = useState(false)
@@ -52,20 +54,26 @@ export function CreatePageByPathDialog({
 
   const runLookup = async (requestedPath: string) => {
     const request = ++lookupRequest.current
+    setLookupError(null)
     try {
       const result = await lookupPath(requestedPath)
       if (request === lookupRequest.current && result) {
         setCompletedLookup({ requestedPath, result })
       }
-    } catch (error) {
-      console.error('Error looking up path:', error)
+    } catch {
+      if (request === lookupRequest.current) {
+        setCompletedLookup(null)
+        setLookupError('Could not check whether this path can be created.')
+      }
     }
   }
 
   const lookup =
     completedLookup?.requestedPath === path ? completedLookup.result : null
 
-  const isCreateButtonDisabled = !title || !path || loading || lookup === null
+  const canUseLookup =
+    lookup !== null && (lookup.exists || lookup.canCreate === true)
+  const isCreateButtonDisabled = !title || !path || loading || !canUseLookup
 
   const handleCreate = async (): Promise<boolean> => {
     setLoading(true)
@@ -95,6 +103,7 @@ export function CreatePageByPathDialog({
   useEffect(() => {
     lookupRequest.current += 1
     setCompletedLookup(null)
+    setLookupError(null)
   }, [path])
 
   useEffect(() => {
@@ -147,6 +156,19 @@ export function CreatePageByPathDialog({
       ]}
     >
       <div>
+        {lookupError && (
+          <div className="create-page-by-path-dialog__alert" role="alert">
+            <span>{lookupError}</span>{' '}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void runLookup(path)}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
         {lookup?.exists && (
           <div className="create-page-by-path-dialog__alert">
             A page already exists at this path.
@@ -211,16 +233,18 @@ export function CreatePageByPathDialog({
           error={fieldErrors.path}
           allowedHotkeys={DIALOG_INPUT_ALLOWED_HOTKEYS}
         />
-        {!authDisabled && lookup?.exists === false && (
-          <label className="page-dialog__draft">
-            <Checkbox
-              checked={draft}
-              onCheckedChange={(checked) => setDraft(checked === true)}
-              data-testid="create-page-by-path-draft-checkbox"
-            />
-            Draft
-          </label>
-        )}
+        {!authDisabled &&
+          lookup?.exists === false &&
+          lookup.canCreate === true && (
+            <label className="page-dialog__draft">
+              <Checkbox
+                checked={draft}
+                onCheckedChange={(checked) => setDraft(checked === true)}
+                data-testid="create-page-by-path-draft-checkbox"
+              />
+              Draft
+            </label>
+          )}
       </div>
     </BaseDialog>
   )

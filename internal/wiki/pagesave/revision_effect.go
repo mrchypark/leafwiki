@@ -3,9 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
-	"github.com/perber/wiki/internal/core/tree"
 )
 
 // RevisionSideEffect records revision history entries after page mutations.
@@ -23,7 +21,7 @@ func NewRevisionSideEffect(svc *revision.Service, log *slog.Logger) *RevisionSid
 }
 
 func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
-	if e.svc == nil {
+	if e.svc == nil || event.ReconciliationOnly {
 		return
 	}
 	switch event.Operation {
@@ -36,29 +34,18 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 		if event.DraftChanged {
 			// Draft saves never enter public history. When a draft becomes public,
 			// capture each newly visible page exactly once as its published baseline.
-			seen := make(map[string]struct{}, len(event.AffectedPages)+1)
-			pages := make([]*tree.Page, len(event.AffectedPages), len(event.AffectedPages)+1)
-			copy(pages, event.AffectedPages)
-			pages = append(pages, event.After)
-			for _, page := range pages {
-				if page == nil || pagevisibility.IsInDraftSubtree(page.PageNode) {
-					continue
-				}
-				if _, ok := seen[page.ID]; ok {
-					continue
-				}
-				seen[page.ID] = struct{}{}
-				e.recordPublishedBaseline(page.ID, event.UserID, event.Summary)
+			for _, pageID := range revisionAffectedPageIDs(event) {
+				e.recordPublishedBaseline(pageID, event.UserID, event.Summary)
 			}
 			return
 		}
 		if event.SlugChanged {
-			for _, p := range event.AffectedPages {
-				if event.ContentChanged && p.ID == event.After.ID {
+			for _, pageID := range revisionAffectedPageIDs(event) {
+				if event.ContentChanged && event.After != nil && pageID == event.After.ID {
 					// Root page with content change: record content revision instead.
 					continue
 				}
-				e.recordStructure(p.ID, event.UserID)
+				e.recordStructure(pageID, event.UserID)
 			}
 		} else if event.TitleChanged && !event.ContentChanged {
 			if event.After != nil {
@@ -70,8 +57,8 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 		}
 
 	case PageOperationMove:
-		for _, p := range event.AffectedPages {
-			e.recordStructure(p.ID, event.UserID)
+		for _, pageID := range revisionAffectedPageIDs(event) {
+			e.recordStructure(pageID, event.UserID)
 		}
 
 	case PageOperationDelete:
@@ -80,6 +67,35 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 	case PageOperationRestore:
 		// RestoreRevision already writes a RevisionTypeRestore entry internally.
 	}
+}
+
+func revisionAffectedPageIDs(event PageSaveEvent) []string {
+	ids := event.AffectedPageIDs
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(event.AffectedPages)+1)
+		for _, page := range event.AffectedPages {
+			if page != nil {
+				ids = append(ids, page.ID)
+			}
+		}
+		if event.After != nil {
+			ids = append(ids, event.After.ID)
+		}
+	}
+
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, pageID := range ids {
+		if pageID == "" {
+			continue
+		}
+		if _, ok := seen[pageID]; ok {
+			continue
+		}
+		seen[pageID] = struct{}{}
+		unique = append(unique, pageID)
+	}
+	return unique
 }
 
 func (e *RevisionSideEffect) recordContent(pageID, userID, summary string) {

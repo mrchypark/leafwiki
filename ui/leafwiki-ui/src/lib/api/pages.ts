@@ -234,6 +234,9 @@ export async function applyPageRefactor(
         title: string
         slug: string
         content: string
+        tags: string[]
+        properties: Record<string, string>
+        draft: boolean
         rewriteLinks: boolean
       }
     | {

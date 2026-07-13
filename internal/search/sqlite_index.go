@@ -3,6 +3,7 @@ package search
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -265,10 +266,13 @@ func (s *SQLiteIndex) Search(query string, pageIDs []string, offset, limit int) 
 
 	sr := &SearchResult{TagFacets: []SearchTagFacet{}}
 	ftsQuery := buildFuzzyQuery(query)
+	whereClause, whereArgs, err := buildSearchWhereClause(query, ftsQuery, pageIDs)
+	if err != nil {
+		return nil, err
+	}
 
-	err := s.withDB(func(db *sql.DB) error {
+	err = s.withDB(func(db *sql.DB) error {
 		var total int
-		whereClause, whereArgs := buildSearchWhereClause(query, ftsQuery, pageIDs)
 
 		countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM pages WHERE %s;`, whereClause)
 		if err := db.QueryRow(countQuery, whereArgs...).Scan(&total); err != nil {
@@ -358,10 +362,13 @@ func (s *SQLiteIndex) SearchPageIDs(query string, pageIDs []string) ([]string, e
 	}
 
 	ftsQuery := buildFuzzyQuery(query)
+	whereClause, whereArgs, err := buildSearchWhereClause(query, ftsQuery, pageIDs)
+	if err != nil {
+		return nil, err
+	}
 	var result []string
 
-	err := s.withDB(func(db *sql.DB) error {
-		whereClause, whereArgs := buildSearchWhereClause(query, ftsQuery, pageIDs)
+	err = s.withDB(func(db *sql.DB) error {
 		searchQuery := fmt.Sprintf(`
 		SELECT pageID, %s AS bm25_score
 		FROM pages
@@ -394,24 +401,27 @@ func (s *SQLiteIndex) SearchPageIDs(query string, pageIDs []string) ([]string, e
 	return result, err
 }
 
-func buildSearchWhereClause(query string, ftsQuery string, pageIDs []string) (string, []interface{}) {
+func buildSearchWhereClause(query string, ftsQuery string, pageIDs []string) (string, []interface{}, error) {
 	clauses := make([]string, 0, 2)
-	args := make([]interface{}, 0, 1+len(pageIDs))
+	args := make([]interface{}, 0, 2)
 
 	if query != "" {
 		clauses = append(clauses, "pages MATCH ?")
 		args = append(args, ftsQuery)
 	}
 
-	if len(pageIDs) > 0 {
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(pageIDs)), ",")
-		clauses = append(clauses, fmt.Sprintf("pageID IN (%s)", placeholders))
-		for _, pageID := range pageIDs {
-			args = append(args, pageID)
+	if pageIDs != nil && len(pageIDs) == 0 {
+		clauses = append(clauses, "0")
+	} else if len(pageIDs) > 0 {
+		pageIDsJSON, err := json.Marshal(pageIDs)
+		if err != nil {
+			return "", nil, err
 		}
+		clauses = append(clauses, "pageID IN (SELECT DISTINCT value FROM json_each(?))")
+		args = append(args, string(pageIDsJSON))
 	}
 
-	return strings.Join(clauses, " AND "), args
+	return strings.Join(clauses, " AND "), args, nil
 }
 
 func searchTitleExpr(hasQuery bool) string {

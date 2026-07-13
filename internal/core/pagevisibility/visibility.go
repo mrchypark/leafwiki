@@ -41,49 +41,36 @@ func IsInDraftSubtree(node *tree.PageNode) bool {
 
 // FilterPublishedPageIDs keeps IDs that currently resolve outside a draft subtree.
 func FilterPublishedPageIDs(treeService *tree.TreeService, pageIDs []string) []string {
-	visible := make([]string, 0, len(pageIDs))
-	published := make(map[string]struct{})
-	for _, pageID := range AllPublishedPageIDs(treeService) {
-		published[pageID] = struct{}{}
+	if treeService == nil {
+		return []string{}
 	}
-	for _, pageID := range pageIDs {
-		if _, ok := published[pageID]; ok {
-			visible = append(visible, pageID)
-		}
-	}
-	return visible
+	return treeService.FilterPublishedPageIDs(pageIDs)
 }
 
 // AllPublishedPageIDs returns every current non-root ID outside draft subtrees.
 func AllPublishedPageIDs(treeService *tree.TreeService) []string {
-	pageIDs := []string{}
 	if treeService == nil {
-		return pageIDs
+		return []string{}
 	}
-	root := treeService.SnapshotTree()
-	if root == nil || root.Draft {
-		return pageIDs
-	}
-
-	var collect func(*tree.PageNode)
-	collect = func(node *tree.PageNode) {
-		if node == nil || node.Draft {
-			return
-		}
-		pageIDs = append(pageIDs, node.ID)
-		for _, child := range node.Children {
-			collect(child)
-		}
-	}
-	for _, child := range root.Children {
-		collect(child)
-	}
-	return pageIDs
+	return treeService.PublishedPageIDs()
 }
 
 // Prune returns a detached visible copy. A hidden draft also hides its subtree.
 func Prune(root *tree.PageNode, user *auth.User, authDisabled bool) *tree.PageNode {
-	return cloneVisible(root, nil, user, authDisabled)
+	if root == nil {
+		return nil
+	}
+	return cloneVisible(root, cloneAncestors(root.Parent), user, authDisabled)
+}
+
+func cloneAncestors(node *tree.PageNode) *tree.PageNode {
+	if node == nil {
+		return nil
+	}
+	clone := *node
+	clone.Parent = cloneAncestors(node.Parent)
+	clone.Children = nil
+	return &clone
 }
 
 func cloneVisible(node, parent *tree.PageNode, user *auth.User, authDisabled bool) *tree.PageNode {

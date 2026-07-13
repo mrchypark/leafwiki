@@ -133,6 +133,10 @@ describe('draft creation dialogs', () => {
 
   it('hides the create-by-path draft control when authentication is disabled', () => {
     useConfigStore.setState({ authDisabled: true })
+    vi.mocked(fetchWithAuth).mockImplementation((path) => {
+      if (path.startsWith('/api/pages/lookup')) return pendingResponse()
+      return Promise.resolve(null)
+    })
     useDialogsStore.setState({
       dialogType: DIALOG_CREATE_PAGE_BY_PATH,
       dialogProps: null,
@@ -148,6 +152,85 @@ describe('draft creation dialogs', () => {
     expect(
       screen.queryByTestId('create-page-by-path-draft-checkbox'),
     ).not.toBeInTheDocument()
+  })
+
+  it('does not allow creation when the current path cannot be created', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation((path) => {
+      if (path.startsWith('/api/pages/lookup')) {
+        return Promise.resolve({
+          path: 'history/private',
+          exists: false,
+          canCreate: false,
+          segments: [{ slug: 'history', exists: false }],
+        })
+      }
+      return Promise.resolve(null)
+    })
+    useDialogsStore.setState({
+      dialogType: DIALOG_CREATE_PAGE_BY_PATH,
+      dialogProps: null,
+    })
+
+    renderDialog(
+      <CreatePageByPathDialog
+        initialPath="history/private"
+        initialTitle="Private Draft"
+        readOnlyPath
+      />,
+    )
+
+    expect(
+      await screen.findByText('Result of path lookup:'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeDisabled()
+    expect(
+      screen.queryByTestId('create-page-by-path-draft-checkbox'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows a lookup error and succeeds after an explicit retry', async () => {
+    const user = userEvent.setup()
+    vi.mocked(fetchWithAuth)
+      .mockRejectedValueOnce(new Error('lookup unavailable'))
+      .mockResolvedValueOnce({
+        path: 'notes/private',
+        exists: false,
+        canCreate: true,
+        segments: [],
+      })
+    useDialogsStore.setState({
+      dialogType: DIALOG_CREATE_PAGE_BY_PATH,
+      dialogProps: null,
+    })
+
+    renderDialog(
+      <CreatePageByPathDialog
+        initialPath="notes/private"
+        initialTitle="Private Draft"
+        readOnlyPath
+      />,
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not check whether this path can be created.',
+    )
+    expect(
+      screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+    ).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('create-page-by-path-dialog-button-confirm'),
+      ).toBeEnabled(),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(
+      screen.getByTestId('create-page-by-path-draft-checkbox'),
+    ).toBeInTheDocument()
   })
 
   it('does not offer draft mode while the current path lookup is pending', async () => {

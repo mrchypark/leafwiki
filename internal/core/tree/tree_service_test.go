@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -278,6 +279,175 @@ func TestTreeService_UpdateNode_PersistsDraftBoolean(t *testing.T) {
 	}
 	if !page.Draft || !strings.Contains(page.RawContent, "\ndraft: true\n") {
 		t.Fatalf("draft was not persisted as boolean: node=%v raw=%q", page.Draft, page.RawContent)
+	}
+}
+
+func TestTreeService_UpdateNode_MaterializesDraftForIndexlessSection(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	id, err := svc.CreateNode("alice", nil, "Draft Section", "draft-section", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+	indexPath := filepath.Join(tmpDir, "root", "draft-section", "index.md")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("remove section index: %v", err)
+	}
+
+	draft := true
+	if err := svc.UpdateNodeWithDraft("alice", *id, "Draft Section", "draft-section", nil, VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft failed: %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree after draft transition: %v", err)
+	}
+	section, err := reloaded.GetPage(*id)
+	if err != nil || !section.Draft {
+		t.Fatalf("reloaded section draft = %v, err = %v", section != nil && section.Draft, err)
+	}
+}
+
+func TestTreeService_RollbackNodeUpdate_RestoresRenamedPageOnDisk(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	id, err := svc.CreateNode("alice", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+
+	oldFile := filepath.Join(tmpDir, "root", "page.md")
+	newFile := filepath.Join(tmpDir, "root", "renamed.md")
+	original, err := os.ReadFile(oldFile)
+	if err != nil {
+		t.Fatalf("read original page: %v", err)
+	}
+	if err := os.Chmod(oldFile, 0o600); err != nil {
+		t.Fatalf("chmod original page: %v", err)
+	}
+
+	err = svc.withLockedTree(func() error {
+		node := svc.getNodeByIDLocked(*id)
+		snapshot, err := svc.store.snapshotNodeContent(node)
+		if err != nil {
+			return err
+		}
+		node.Draft = true
+		if err := svc.store.PersistFrontmatterWithDraft(node); err != nil {
+			return err
+		}
+		if err := svc.store.RenameNode(node, "renamed"); err != nil {
+			return err
+		}
+		node.Slug = "renamed"
+		svc.rebuildChildSlugIndexForParentLocked(node.Parent)
+		return svc.rollbackNodeUpdateLocked(node, "page", false, snapshot)
+	})
+	if err != nil {
+		t.Fatalf("rollbackNodeUpdateLocked failed: %v", err)
+	}
+
+	after, err := svc.SnapshotPageNode(*id)
+	if err != nil {
+		t.Fatalf("SnapshotPageNode after rollback: %v", err)
+	}
+	if after.Draft || after.Slug != "page" {
+		t.Fatalf("rollback did not restore in-memory state: %#v", after)
+	}
+	raw, err := os.ReadFile(oldFile)
+	if err != nil {
+		t.Fatalf("read rolled-back page: %v", err)
+	}
+	if !bytes.Equal(raw, original) {
+		t.Fatalf("rolled-back raw content changed:\n%s", raw)
+	}
+	info, err := os.Stat(oldFile)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("rolled-back page mode = %v, err = %v; want 0600", info, err)
+	}
+	if _, err := os.Stat(newFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("renamed page still exists after rollback: %v", err)
+	}
+}
+
+func TestTreeService_RollbackNodeUpdate_KeepsRenamedPageDraftWhenRenameRollbackFails(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	id, err := svc.CreateNode("alice", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+
+	oldFile := filepath.Join(tmpDir, "root", "page.md")
+	newFile := filepath.Join(tmpDir, "root", "renamed.md")
+	if err := os.Chmod(oldFile, 0o600); err != nil {
+		t.Fatalf("chmod original page: %v", err)
+	}
+
+	var rollbackErr error
+	err = svc.withLockedTree(func() error {
+		node := svc.getNodeByIDLocked(*id)
+		snapshot, err := svc.store.snapshotNodeContent(node)
+		if err != nil {
+			return err
+		}
+		node.Draft = true
+		if err := svc.store.PersistFrontmatterWithDraft(node); err != nil {
+			return err
+		}
+		if err := svc.store.RenameNode(node, "renamed"); err != nil {
+			return err
+		}
+		node.Slug = "renamed"
+		svc.rebuildChildSlugIndexForParentLocked(node.Parent)
+		if err := os.WriteFile(oldFile, []byte("rollback collision"), 0o644); err != nil {
+			return err
+		}
+		rollbackErr = svc.rollbackNodeUpdateLocked(node, "page", false, snapshot)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("arrange failed update state: %v", err)
+	}
+	if rollbackErr == nil {
+		t.Fatal("rollbackNodeUpdateLocked unexpectedly succeeded")
+	}
+
+	after, err := svc.SnapshotPageNode(*id)
+	if err != nil {
+		t.Fatalf("SnapshotPageNode after failed update: %v", err)
+	}
+	if !after.Draft || after.Slug != "renamed" {
+		t.Fatalf("incomplete rollback must keep the renamed node hidden: %#v", after)
+	}
+
+	raw, err := os.ReadFile(newFile)
+	if err != nil {
+		t.Fatalf("read renamed page: %v", err)
+	}
+	fm, _, hasFrontmatter, err := markdown.ParseFrontmatter(string(raw))
+	if err != nil {
+		t.Fatalf("ParseFrontmatter: %v", err)
+	}
+	if !hasFrontmatter || !fm.Draft {
+		t.Fatalf("renamed page must retain a durable draft marker: %#v", fm)
+	}
+	info, err := os.Stat(newFile)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("renamed page mode = %v, err = %v; want 0600", info, err)
+	}
+
+	if err := os.Remove(oldFile); err != nil {
+		t.Fatalf("remove rollback collision: %v", err)
+	}
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree after incomplete rollback: %v", err)
+	}
+	reloadedPage, err := reloaded.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage after reload: %v", err)
+	}
+	if !reloadedPage.Draft || reloadedPage.Slug != "renamed" {
+		t.Fatalf("reloaded renamed page was exposed: %#v", reloadedPage.PageNode)
 	}
 }
 
@@ -1022,6 +1192,201 @@ func TestTreeService_MoveNode_PersistsMovedNodeMetadataToFrontmatter(t *testing.
 	}
 	if !reloadedNode.Metadata.UpdatedAt.Equal(persistedUpdatedAt) {
 		t.Fatalf("expected reloaded metadata to match persisted frontmatter, fm=%s reloaded=%s (before=%s)", persistedUpdatedAt, reloadedNode.Metadata.UpdatedAt, beforeUpdatedAt)
+	}
+}
+
+func TestTreeService_MoveNode_PreservesInheritedDraftWhenMovedToPublicParent(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft parent: %v", err)
+	}
+	movedSectionID, err := svc.CreateNode("editor", draftParentID, "Moved Section", "moved", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	childID, err := svc.CreateNode("editor", movedSectionID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+
+	movedBefore, err := svc.GetPage(*movedSectionID)
+	if err != nil {
+		t.Fatalf("GetPage before move: %v", err)
+	}
+	if movedBefore.Draft {
+		t.Fatal("expected the source node to inherit draft without an explicit flag")
+	}
+	if err := svc.MoveNode("editor", *movedSectionID, "root", movedBefore.Version()); err != nil {
+		t.Fatalf("MoveNode: %v", err)
+	}
+
+	moved, err := svc.GetPage(*movedSectionID)
+	if err != nil {
+		t.Fatalf("GetPage after move: %v", err)
+	}
+	if !moved.Draft || moved.Parent == nil || moved.Parent.ID != "root" {
+		t.Fatalf("moved section did not retain explicit draft: %#v", moved.PageNode)
+	}
+	if len(moved.Children) != 1 || moved.Children[0].ID != *childID {
+		t.Fatalf("moved subtree changed: %#v", moved.Children)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "moved", "index.md"))
+	if err != nil {
+		t.Fatalf("read moved index: %v", err)
+	}
+	fm, _, _, err := markdown.ParseFrontmatter(string(raw))
+	if err != nil || !fm.Draft {
+		t.Fatalf("moved section draft frontmatter = %v, err = %v", fm.Draft, err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree after move: %v", err)
+	}
+	reloadedSection, err := reloaded.GetPage(*movedSectionID)
+	if err != nil || !reloadedSection.Draft {
+		t.Fatalf("reloaded moved section draft = %v, err = %v", reloadedSection != nil && reloadedSection.Draft, err)
+	}
+}
+
+func TestTreeService_MoveNode_MaterializesDraftForIndexlessInheritedSection(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft parent: %v", err)
+	}
+	movedSectionID, err := svc.CreateNode("editor", draftParentID, "Moved Section", "moved", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	indexPath := filepath.Join(tmpDir, "root", "draft-parent", "moved", "index.md")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("remove moved section index: %v", err)
+	}
+
+	movedBefore, err := svc.GetPage(*movedSectionID)
+	if err != nil {
+		t.Fatalf("GetPage before move: %v", err)
+	}
+	if err := svc.MoveNode("editor", *movedSectionID, "root", movedBefore.Version()); err != nil {
+		t.Fatalf("MoveNode: %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree after move: %v", err)
+	}
+	reloadedSection, err := reloaded.GetPage(*movedSectionID)
+	if err != nil || !reloadedSection.Draft {
+		t.Fatalf("reloaded moved section draft = %v, err = %v", reloadedSection != nil && reloadedSection.Draft, err)
+	}
+}
+
+func TestTreeService_MoveNode_DiskCollisionLeavesInheritedDraftSourceUnchanged(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft parent: %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftParentID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	child, err := svc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage before move: %v", err)
+	}
+
+	// A disk-only collision passes the in-memory validation and fails in NodeStore.MoveNode.
+	rogueDestination := filepath.Join(tmpDir, "root", "child.md")
+	if err := os.WriteFile(rogueDestination, []byte("rogue"), 0o644); err != nil {
+		t.Fatalf("write destination collision: %v", err)
+	}
+	if err := svc.MoveNode("editor", *childID, "root", child.Version()); err == nil {
+		t.Fatal("expected move collision")
+	}
+
+	failed, err := svc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage after failed move: %v", err)
+	}
+	if failed.Draft || failed.Version() != child.Version() || failed.Parent == nil || failed.Parent.ID != *draftParentID {
+		t.Fatalf("failed move changed source state: before=%#v after=%#v", child.PageNode, failed.PageNode)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "draft-parent", "child.md"))
+	if err != nil {
+		t.Fatalf("read source after failed move: %v", err)
+	}
+	fm, _, _, err := markdown.ParseFrontmatter(string(raw))
+	if err != nil || fm.Draft {
+		t.Fatalf("source draft frontmatter = %v, err = %v", fm.Draft, err)
+	}
+	rogue, err := os.ReadFile(rogueDestination)
+	if err != nil || string(rogue) != "rogue" {
+		t.Fatalf("destination collision changed: content=%q err=%v", rogue, err)
+	}
+}
+
+func TestTreeService_MoveNode_DiskCollisionDoesNotConvertDestinationPage(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft parent: %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftParentID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	destinationID, err := svc.CreateNode("editor", nil, "Destination", "destination", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode destination: %v", err)
+	}
+	child, err := svc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	destination, err := svc.GetPage(*destinationID)
+	if err != nil {
+		t.Fatalf("GetPage destination: %v", err)
+	}
+
+	// Seed a disk-only collision at the prospective post-conversion path.
+	rogueDir := filepath.Join(tmpDir, "root", "destination")
+	if err := os.MkdirAll(rogueDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll rogue destination: %v", err)
+	}
+	rogue := filepath.Join(rogueDir, "child.md")
+	if err := os.WriteFile(rogue, []byte("rogue"), 0o644); err != nil {
+		t.Fatalf("write destination collision: %v", err)
+	}
+
+	if err := svc.MoveNode("editor", child.ID, destination.ID, child.Version()); err == nil {
+		t.Fatal("expected move collision")
+	}
+
+	failed, err := svc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage child after failure: %v", err)
+	}
+	unchangedDestination, err := svc.GetPage(destination.ID)
+	if err != nil {
+		t.Fatalf("GetPage destination after failure: %v", err)
+	}
+	if failed.Draft || failed.Version() != child.Version() || failed.Parent == nil || failed.Parent.ID != *draftParentID {
+		t.Fatalf("failed move changed source: before=%#v after=%#v", child.PageNode, failed.PageNode)
+	}
+	if unchangedDestination.Kind != NodeKindPage || unchangedDestination.Version() != destination.Version() {
+		t.Fatalf("failed move changed destination: before=%#v after=%#v", destination.PageNode, unchangedDestination.PageNode)
+	}
+	mustStat(t, filepath.Join(tmpDir, "root", "destination.md"))
+	if raw, err := os.ReadFile(rogue); err != nil || string(raw) != "rogue" {
+		t.Fatalf("rogue collision changed: content=%q err=%v", raw, err)
 	}
 }
 
@@ -3114,6 +3479,62 @@ func TestTreeService_BulkUpdateContent_TreatsFrontmatterLikeInputAsBody(t *testi
 	// The "invalid YAML" block is now stored verbatim as body content.
 	if !strings.Contains(afterSecond.Content, "invalid: [") {
 		t.Fatalf("expected second content to contain plain body text, got %q", afterSecond.Content)
+	}
+}
+
+func TestTreeService_BulkUpdateContent_UpdatesOnlyItemsWhoseVersionsMatch(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	kind := NodeKindPage
+	pageID, err := svc.CreateNode("system", nil, "Page", "page", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	page, err := svc.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	expectedVersion := page.Version()
+	newerContent := "newer editor content"
+	if err := svc.UpdateNode("editor", page.ID, page.Title, page.Slug, &newerContent, expectedVersion, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode: %v", err)
+	}
+	newerPage, err := svc.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage newer page: %v", err)
+	}
+	matchingID, err := svc.CreateNode("system", nil, "Matching", "matching", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode matching: %v", err)
+	}
+	matching, err := svc.GetPage(*matchingID)
+	if err != nil {
+		t.Fatalf("GetPage matching: %v", err)
+	}
+
+	errs := svc.BulkUpdateContent("refactor", []BulkContentUpdate{{
+		ID: page.ID, Content: "stale rewritten content", ExpectedVersion: expectedVersion,
+	}, {
+		ID: matching.ID, Content: "matching rewritten content", ExpectedVersion: matching.Version(),
+	}})
+	if len(errs) != 2 || !errors.Is(errs[0], ErrVersionConflict) || errs[1] != nil {
+		t.Fatalf("expected version conflict, got %#v", errs)
+	}
+	after, err := svc.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage after conflict: %v", err)
+	}
+	if after.Content != newerContent {
+		t.Fatalf("newer content was overwritten: %q", after.Content)
+	}
+	if after.Metadata != newerPage.Metadata {
+		t.Fatalf("conflicting item metadata changed: before=%#v after=%#v", newerPage.Metadata, after.Metadata)
+	}
+	matchingAfter, err := svc.GetPage(matching.ID)
+	if err != nil {
+		t.Fatalf("GetPage matching after update: %v", err)
+	}
+	if matchingAfter.Content != "matching rewritten content" || matchingAfter.Metadata.LastAuthorID != "refactor" {
+		t.Fatalf("matching item was not updated: %#v", matchingAfter)
 	}
 }
 

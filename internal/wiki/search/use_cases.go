@@ -53,11 +53,11 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 	if len(in.Tags) > 0 {
 		pageIDs = []string{}
 		if uc.tags != nil {
-			var err error
-			pageIDs, err = uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
+			matchedPageIDs, err := uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
 			if err != nil {
 				return nil, err
 			}
+			pageIDs = append(pageIDs, matchedPageIDs...)
 		}
 	}
 

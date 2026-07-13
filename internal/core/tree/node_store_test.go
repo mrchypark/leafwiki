@@ -1051,6 +1051,64 @@ func TestNodeStore_ReadPageRaw_Section_NoIndex_ReturnsEmptyNil(t *testing.T) {
 	}
 }
 
+func TestNodeStore_RestoreNodeContent_RestoresExactExistingFile(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+	root := &PageNode{ID: "root", Slug: "root", Kind: NodeKindSection}
+	page := &PageNode{ID: "p1", Slug: "page", Kind: NodeKindPage, Parent: root}
+	path := filepath.Join(tmp, "root", "page.md")
+	original := "---\ncustom: untouched\n---\nbody without trailing newline"
+	mustWriteFile(t, path, original, 0o600)
+
+	snapshot, err := store.snapshotNodeContent(page)
+	if err != nil {
+		t.Fatalf("snapshotNodeContent: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+		t.Fatalf("replace content: %v", err)
+	}
+	if err := store.restoreNodeContent(page, snapshot); err != nil {
+		t.Fatalf("restoreNodeContent: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read restored content: %v", err)
+	}
+	if string(raw) != original {
+		t.Fatalf("restored raw = %q, want %q", raw, original)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat restored content: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("restored mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestNodeStore_RestoreNodeContent_RemovesContentCreatedAfterSnapshot(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+	root := &PageNode{ID: "root", Slug: "root", Kind: NodeKindSection}
+	section := &PageNode{ID: "s1", Slug: "section", Kind: NodeKindSection, Parent: root}
+	dir := filepath.Join(tmp, "root", "section")
+	mustMkdir(t, dir)
+
+	snapshot, err := store.snapshotNodeContent(section)
+	if err != nil {
+		t.Fatalf("snapshotNodeContent: %v", err)
+	}
+	indexPath := filepath.Join(dir, indexFilename)
+	mustWriteFile(t, indexPath, "new content", 0o644)
+	if err := store.restoreNodeContent(section, snapshot); err != nil {
+		t.Fatalf("restoreNodeContent: %v", err)
+	}
+	if _, err := os.Stat(indexPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new content still exists: %v", err)
+	}
+}
+
 func TestNodeStore_ReadPageRaw_Page_Missing_IsDrift(t *testing.T) {
 	tmp := t.TempDir()
 	store := NewNodeStore(tmp)

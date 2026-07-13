@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
@@ -13,8 +14,9 @@ import (
 // SearchIndexSideEffect updates the search index after every page mutation.
 type SearchIndexSideEffect struct {
 	index *search.SQLiteIndex
-	tree  *tree.TreeService // only used by IndexAllPages for the initial walk
+	tree  *tree.TreeService
 	log   *slog.Logger
+	mu    sync.Mutex
 }
 
 func NewSearchIndexSideEffect(index *search.SQLiteIndex, treeService *tree.TreeService, log *slog.Logger) *SearchIndexSideEffect {
@@ -28,31 +30,21 @@ func (e *SearchIndexSideEffect) Apply(event PageSaveEvent) {
 	if e.index == nil {
 		return
 	}
-
-	switch event.Operation {
-	case PageOperationCreate, PageOperationRestore:
-		if event.After != nil {
-			e.indexPage(event.After)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, state := range loadProjectionPages(e.tree, projectionPageIDs(event, true)) {
+		if state.err != nil {
+			e.log.Warn("failed to load current page for search index", "pageID", state.id, "error", state.err)
+			continue
 		}
-	case PageOperationUpdate:
-		if event.DraftChanged {
-			for _, page := range event.AffectedPages {
-				e.indexPage(page)
+		if state.remove {
+			if err := e.index.RemovePage(state.id); err != nil {
+				e.log.Warn("failed to remove page from search index", "pageID", state.id, "error", err)
 			}
-		} else if event.After != nil {
-			e.indexPage(event.After)
+			continue
 		}
-
-	case PageOperationMove:
-		for _, page := range event.AffectedPages {
-			e.indexPage(page)
-		}
-
-	case PageOperationDelete:
-		for _, page := range event.AffectedPages {
-			if err := e.index.RemovePage(page.ID); err != nil {
-				e.log.Warn("failed to remove page from search index", "pageID", page.ID, "error", err)
-			}
+		if err := e.writeToIndex(state.page, state.page.RawContent); err != nil {
+			e.log.Warn("failed to reconcile search index", "pageID", state.id, "error", err)
 		}
 	}
 }
@@ -67,6 +59,8 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 	if e.index == nil {
 		return nil
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,31 +91,18 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 		if pagevisibility.IsInDraftSubtree(page.PageNode) {
 			continue
 		}
-		e.writeToIndex(page, page.RawContent)
+		if err := e.writeToIndex(page, page.RawContent); err != nil {
+			e.log.Warn("failed to update search index during bootstrap", "pageID", page.ID, "error", err)
+		}
 	}
 	return nil
 }
 
-func (e *SearchIndexSideEffect) indexPage(page *tree.Page) {
-	if page == nil {
-		return
-	}
-	if pagevisibility.IsInDraftSubtree(page.PageNode) {
-		if err := e.index.RemovePage(page.ID); err != nil {
-			e.log.Warn("failed to remove draft page from search index", "pageID", page.ID, "error", err)
-		}
-		return
-	}
-	e.writeToIndex(page, page.RawContent)
-}
-
-func (e *SearchIndexSideEffect) writeToIndex(page *tree.Page, content string) {
+func (e *SearchIndexSideEffect) writeToIndex(page *tree.Page, content string) error {
 	path := strings.TrimPrefix(page.CalculatePath(), "/")
 	filePath := path
 	if filePath != "" {
 		filePath += ".md"
 	}
-	if err := e.index.IndexPage(path, filePath, page.ID, page.Title, page.Kind, content); err != nil {
-		e.log.Warn("failed to update search index for page", "pageID", page.ID, "error", err)
-	}
+	return e.index.IndexPage(path, filePath, page.ID, page.Title, page.Kind, content)
 }

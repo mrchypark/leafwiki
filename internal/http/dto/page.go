@@ -49,7 +49,7 @@ type Page struct {
 // ToAPIPage converts a tree.Page to its HTTP representation.
 func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 	return &Page{
-		Node:       ToAPINode(p.PageNode, "", userResolver),
+		Node:       ToAPINode(p.PageNode, BuildPathFromNode(p.PageNode.Parent), userResolver),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},
@@ -60,7 +60,7 @@ func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 // ToAPIPageWithDepth converts a tree.Page with a depth-limited node tree.
 func ToAPIPageWithDepth(p *tree.Page, userResolver *auth.UserResolver, depth int) *Page {
 	return &Page{
-		Node:       ToAPINodeWithDepth(p.PageNode, "", userResolver, depth),
+		Node:       ToAPINodeWithDepth(p.PageNode, BuildPathFromNode(p.PageNode.Parent), userResolver, depth),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},

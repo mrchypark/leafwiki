@@ -11,7 +11,6 @@ import (
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
@@ -64,6 +63,9 @@ type Wiki struct {
 	links            *links.LinkService
 	tags             *tags.TagsService
 	props            *properties.PropertiesService
+	searchEffect     *pagesave.SearchIndexSideEffect
+	tagsEffect       *pagesave.TagsSideEffect
+	propertiesEffect *pagesave.PropertiesSideEffect
 	backupRoutes     *wikibackup.Routes
 	resyncRoutes     *wikiresync.Routes
 	resyncJob        *wikiresync.ResyncJob
@@ -113,7 +115,7 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 	if err := w.initPropertiesService(); err != nil {
 		return nil, err
 	}
-	w.bootstrapTagsAndProperties()
+	w.bootstrapTagsAndProperties(w.shutdownCtx)
 	if err := w.initSearch(); err != nil {
 		return nil, err
 	}
@@ -225,6 +227,7 @@ func (w *Wiki) initTagsService() error {
 		return fmt.Errorf("failed to init tags store: %w", err)
 	}
 	w.tags = tags.NewTagsService(tagsStore)
+	w.tagsEffect = pagesave.NewTagsSideEffect(w.tags, w.tree, w.log)
 	return nil
 }
 
@@ -234,43 +237,15 @@ func (w *Wiki) initPropertiesService() error {
 		return fmt.Errorf("failed to init properties store: %w", err)
 	}
 	w.props = properties.NewPropertiesService(propsStore)
+	w.propertiesEffect = pagesave.NewPropertiesSideEffect(w.props, w.tree, w.log)
 	return nil
 }
 
-// bootstrapTagsAndProperties clears and rebuilds tag and property indexes in a single
-// parallel GetPages pass — avoids two sequential ReadPageRaw loops at startup.
-func (w *Wiki) bootstrapTagsAndProperties() {
-	if err := w.tags.ClearIndex(); err != nil {
-		w.log.Warn("failed to clear tags index before bootstrap", "error", err)
-		return
-	}
-	if err := w.props.ClearIndex(); err != nil {
-		w.log.Warn("failed to clear properties index before bootstrap", "error", err)
-		return
-	}
-	var ids []string
-	if err := w.tree.WalkNodes(func(id string) error {
-		ids = append(ids, id)
-		return nil
-	}); err != nil {
-		w.log.Warn("failed to walk pages for tags/properties bootstrap", "error", err)
-		return
-	}
-	pages, errs := w.tree.GetPages(ids)
-	for i, page := range pages {
-		if errs[i] != nil {
-			w.log.Warn("skipping page during bootstrap", "pageID", ids[i], "error", errs[i])
-			continue
-		}
-		if pagevisibility.IsInDraftSubtree(page.PageNode) {
-			continue
-		}
-		if err := w.tags.IndexPageContent(page.ID, page.RawContent); err != nil {
-			w.log.Warn("failed to index tags", "pageID", page.ID, "error", err)
-		}
-		if err := w.props.IndexPageContent(page.ID, page.RawContent); err != nil {
-			w.log.Warn("failed to index properties", "pageID", page.ID, "error", err)
-		}
+// bootstrapTagsAndProperties rebuilds both projections through their shared
+// runtime coordination boundaries.
+func (w *Wiki) bootstrapTagsAndProperties(ctx context.Context) {
+	if err := pagesave.IndexAllTagsAndPropertiesContext(ctx, w.tagsEffect, w.propertiesEffect); err != nil {
+		w.log.Warn("failed to rebuild tags and properties indexes", "error", err)
 	}
 }
 
@@ -281,14 +256,14 @@ func (w *Wiki) initSearch() error {
 		return fmt.Errorf("failed to init search index: %w", err)
 	}
 	w.status = search.NewIndexingStatus()
-	searchEffect := pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log)
+	w.searchEffect = pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log)
 	w.log.Info("search indexing started")
 	w.reloadWG.Add(1)
 	go func() {
 		defer w.reloadWG.Done()
 		w.status.Start()
 		defer w.status.Finish()
-		if err := searchEffect.IndexAllPagesContext(w.shutdownCtx); err != nil {
+		if err := w.searchEffect.IndexAllPagesContext(w.shutdownCtx); err != nil {
 			w.log.Warn("search bootstrap failed", "error", err)
 			w.status.Fail()
 		} else {
@@ -335,11 +310,11 @@ func (w *Wiki) buildRoutes(options *WikiOptions) {
 
 func (w *Wiki) newPageOrchestrator() *pagesave.PageSaveOrchestrator {
 	return pagesave.NewPageSaveOrchestrator(
-		pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log),
+		w.searchEffect,
 		pagesave.NewLinkIndexSideEffect(w.links, w.log),
 		pagesave.NewRevisionSideEffect(w.revision, w.log),
-		pagesave.NewTagsSideEffect(w.tags, w.log),
-		pagesave.NewPropertiesSideEffect(w.props, w.log),
+		w.tagsEffect,
+		w.propertiesEffect,
 	)
 }
 
@@ -362,7 +337,7 @@ func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
 		EnsurePath:       wikipages.NewEnsurePathUseCase(w.tree, w.slug, o, w.log),
 		SuggestSlug:      wikipages.NewSuggestSlugUseCase(w.tree, w.slug),
 		PreviewRefactor:  wikipages.NewPreviewPageRefactorUseCase(w.tree, w.slug, w.links, w.log),
-		ApplyRefactor:    wikipages.NewApplyPageRefactorUseCase(w.tree, w.slug, w.revision, w.links, w.log),
+		ApplyRefactor:    wikipages.NewApplyPageRefactorUseCase(w.tree, w.slug, w.links, o, w.log),
 		PinPage:          wikipages.NewPinPageUseCase(w.tree, w.log),
 		UserResolver:     w.userResolver,
 		AuthService:      w.auth,
@@ -583,7 +558,7 @@ For more information, visit the [LeafWiki GitHub repository](https://github.com/
 	}
 	if _, err := wikipages.NewUpdatePageUseCase(w.tree, w.slug, o, w.log).Execute(
 		context.Background(),
-		wikipages.UpdatePageInput{UserID: SYSTEM_USER_ID, ID: p.ID, Version: current.Version(), Title: p.Title, Slug: p.Slug, Content: &content, Kind: &k},
+		wikipages.UpdatePageInput{UserID: SYSTEM_USER_ID, ID: p.ID, Version: current.Version(), Title: p.Title, Slug: p.Slug, Content: &content},
 	); err != nil {
 		return err
 	}
@@ -628,12 +603,11 @@ func (w *Wiki) ReloadFromFSContext(ctx context.Context) error {
 		return err
 	}
 
-	w.bootstrapTagsAndProperties()
+	w.bootstrapTagsAndProperties(ctx)
 
 	w.status.Start()
 	defer w.status.Finish()
-	searchEffect := pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log)
-	if err := searchEffect.IndexAllPagesContext(ctx); err != nil {
+	if err := w.searchEffect.IndexAllPagesContext(ctx); err != nil {
 		w.log.Warn("search re-index failed during reload", "error", err)
 		w.status.Fail()
 		return fmt.Errorf("search re-index failed: %w", err)
@@ -698,12 +672,11 @@ func (w *Wiki) reloadWithProgress(ctx context.Context) {
 	}
 
 	job.SetPhase(wikiresync.PhaseTags)
-	w.bootstrapTagsAndProperties()
+	w.bootstrapTagsAndProperties(ctx)
 
 	job.SetPhase(wikiresync.PhaseSearch)
 	w.status.Start()
-	searchEffect := pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log)
-	if err := searchEffect.IndexAllPagesContext(ctx); err != nil {
+	if err := w.searchEffect.IndexAllPagesContext(ctx); err != nil {
 		w.log.Warn("search re-index failed during reload", "error", err)
 		w.status.Fail()
 		w.status.Finish()

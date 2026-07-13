@@ -183,6 +183,32 @@ func TestSearchIndexSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublishe
 	}
 }
 
+func TestSearchIndexSideEffect_MoveIntoDraftRemovesPage(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+	page := createPageWithContent(t, treeSvc, "Moved Search", "moved-search", "uniquemovedvisibility term")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+	draftParentID, err := treeSvc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", pageKindPtr(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	if err := treeSvc.MoveNode("editor", page.ID, *draftParentID, page.Version()); err != nil {
+		t.Fatalf("MoveNode into draft: %v", err)
+	}
+	page, err = treeSvc.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage after move: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationMove, AffectedPages: []*tree.Page{page}})
+
+	result, err := index.Search("uniquemovedvisibility", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatalf("page moved into draft remained searchable: %#v", result.Items)
+	}
+}
+
 func TestSearchIndexSideEffect_Apply_DraftToggleReindexesSubtree(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 	parent := createPageWithContent(t, treeSvc, "Parent", "parent-draft", "parentvisibilityterm")
@@ -287,6 +313,62 @@ func TestSearchIndexSideEffect_Apply_Update_ReplacesContentAfterBootstrap(t *tes
 	}
 }
 
+func TestSearchIndexSideEffect_UpdateReindexesDescendantPathsWhenSectionSlugChanges(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	kind := tree.NodeKindSection
+	sectionID, err := treeSvc.CreateNode("system", nil, "Docs", "docs", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	kind = tree.NodeKindPage
+	childID, err := treeSvc.CreateNode("system", sectionID, "Child", "child", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	child, err := treeSvc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	content := "descendantsearchtoken"
+	if err := treeSvc.UpdateNode("system", child.ID, child.Title, child.Slug, &content, child.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode child: %v", err)
+	}
+	if err := effect.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+
+	section, err := treeSvc.GetPage(*sectionID)
+	if err != nil {
+		t.Fatalf("GetPage section: %v", err)
+	}
+	if err := treeSvc.UpdateNode("system", section.ID, section.Title, "guides", nil, section.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode section slug: %v", err)
+	}
+	section, err = treeSvc.GetPage(section.ID)
+	if err != nil {
+		t.Fatalf("GetPage renamed section: %v", err)
+	}
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage renamed child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{
+		Operation:     PageOperationUpdate,
+		After:         section,
+		SlugChanged:   true,
+		AffectedPages: []*tree.Page{section, child},
+	})
+
+	result, err := index.Search("descendantsearchtoken", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 1 || result.Items[0].Path != "guides/child" {
+		t.Fatalf("descendant search path was not refreshed: %#v", result.Items)
+	}
+}
+
 func TestSearchIndexSideEffect_Apply_Delete_RemovesFromIndex(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 
@@ -302,6 +384,9 @@ func TestSearchIndexSideEffect_Apply_Delete_RemovesFromIndex(t *testing.T) {
 	}
 	if before.Count == 0 {
 		t.Fatal("expected page to be indexed before deletion")
+	}
+	if err := treeSvc.DeleteNode("system", page.ID, false, page.Version()); err != nil {
+		t.Fatalf("DeleteNode: %v", err)
 	}
 
 	effect.Apply(PageSaveEvent{
@@ -376,6 +461,9 @@ func TestSearchIndexSideEffect_Apply_Delete_Recursive_RemovesAllPagesFromIndex(t
 	parentFinal, err := treeSvc.GetPage(parent.ID)
 	if err != nil {
 		t.Fatalf("GetPage parentFinal: %v", err)
+	}
+	if err := treeSvc.DeleteNode("system", parentFinal.ID, true, parentFinal.Version()); err != nil {
+		t.Fatalf("DeleteNode recursive: %v", err)
 	}
 	effect.Apply(PageSaveEvent{
 		Operation:     PageOperationDelete,

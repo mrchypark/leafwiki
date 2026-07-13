@@ -56,7 +56,7 @@ func TestRequireStaticAssetVisibility_BehindBasePathAllowsDraftAssetsOnlyForEdit
 	}
 }
 
-func TestRequireStaticAssetVisibility_DisablesCachingOnlyForDraftSubtrees(t *testing.T) {
+func TestRequireStaticAssetVisibility_AppliesVisibilitySafeCachePolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	treeService := tree.NewTreeService(t.TempDir())
 	if err := treeService.LoadTree(); err != nil {
@@ -81,17 +81,41 @@ func TestRequireStaticAssetVisibility_DisablesCachingOnlyForDraftSubtrees(t *tes
 	for _, tc := range []struct {
 		name         string
 		pageID       string
+		user         *auth.User
+		authDisabled bool
 		cacheControl string
 		pragma       string
 	}{
-		{name: "draft", pageID: *draftID, cacheControl: "private, no-store", pragma: "no-cache"},
-		{name: "public", pageID: *publicID},
+		{
+			name:         "draft with authentication enabled",
+			pageID:       *draftID,
+			user:         &auth.User{ID: "owner", Role: auth.RoleEditor},
+			cacheControl: "private, no-store",
+			pragma:       "no-cache",
+		},
+		{
+			name:         "public with authentication enabled",
+			pageID:       *publicID,
+			cacheControl: "private, no-store",
+			pragma:       "no-cache",
+		},
+		{
+			name:         "public with authentication disabled",
+			pageID:       *publicID,
+			authDisabled: true,
+			cacheControl: "public, max-age=3600",
+			pragma:       "cache",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := gin.New()
 			router.GET("/assets/*filepath", func(c *gin.Context) {
-				c.Set("user", &auth.User{ID: "owner", Role: auth.RoleEditor})
-			}, routes.requireStaticAssetVisibility(false), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+				if tc.user != nil {
+					c.Set("user", tc.user)
+				}
+				c.Header("Cache-Control", "public, max-age=3600")
+				c.Header("Pragma", "cache")
+			}, routes.requireStaticAssetVisibility(tc.authDisabled), func(c *gin.Context) { c.Status(http.StatusNoContent) })
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/"+tc.pageID+"/file.png", nil))
 			if got := recorder.Header().Get("Cache-Control"); got != tc.cacheControl {

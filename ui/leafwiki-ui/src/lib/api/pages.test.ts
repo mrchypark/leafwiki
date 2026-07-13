@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchWithAuth } from './auth'
-import { createPage, ensurePage, updatePage } from './pages'
+import { applyPageRefactor, createPage, ensurePage, updatePage } from './pages'
 
 vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }))
 
@@ -25,6 +25,45 @@ describe('updatePage', () => {
         draft: true,
       }),
     })
+  })
+})
+
+describe('applyPageRefactor', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('sends final visibility and metadata with a rename', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(null)
+
+    await applyPageRefactor('page-1', {
+      kind: 'rename',
+      version: 'v1',
+      title: 'Published',
+      slug: 'published',
+      content: 'Ready',
+      tags: ['ready'],
+      properties: { owner: 'alice' },
+      draft: false,
+      rewriteLinks: true,
+    })
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/api/pages/page-1/refactor/apply',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'rename',
+          version: 'v1',
+          title: 'Published',
+          slug: 'published',
+          content: 'Ready',
+          tags: ['ready'],
+          properties: { owner: 'alice' },
+          draft: false,
+          rewriteLinks: true,
+        }),
+      },
+    )
   })
 })
 

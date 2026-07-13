@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,13 @@ import (
 // assetManifestEntry is the in-memory cache entry for a page's latest asset manifest hash.
 type assetManifestEntry struct {
 	hash string
+}
+
+type pageLineageVersion struct {
+	id      string
+	slug    string
+	version string
+	draft   bool
 }
 
 const (
@@ -174,9 +182,6 @@ func (s *Service) RecordPublishedBaseline(pageID, authorID, summary string) (*Re
 }
 
 func (s *Service) recordFullSnapshot(pageID, authorID, summary string, revisionType RevisionType, force bool) (*Revision, bool, error) {
-	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
-		return nil, false, err
-	}
 	mu := s.pageWriteLock(pageID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -186,8 +191,8 @@ func (s *Service) recordFullSnapshot(pageID, authorID, summary string, revisionT
 		return nil, false, err
 	}
 
-	state, err := s.capturePageState(pageID, true)
-	if err != nil {
+	state, skip, err := s.captureRevisionState(pageID, true)
+	if err != nil || skip {
 		return nil, false, err
 	}
 
@@ -231,9 +236,6 @@ func (s *Service) recordFullSnapshot(pageID, authorID, summary string, revisionT
 }
 
 func (s *Service) RecordStructureChange(pageID, authorID, summary string) (*Revision, bool, error) {
-	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
-		return nil, false, err
-	}
 	mu := s.pageWriteLock(pageID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -243,13 +245,13 @@ func (s *Service) RecordStructureChange(pageID, authorID, summary string) (*Revi
 		return nil, false, err
 	}
 
-	state, err := s.capturePageState(pageID, false)
-	if err != nil {
+	state, skip, err := s.captureRevisionState(pageID, false)
+	if err != nil || skip {
 		return nil, false, err
 	}
 
-	assetManifestHash, err := s.resolveAssetManifestHash(pageID, prev)
-	if err != nil {
+	assetManifestHash, skip, err := s.resolveAssetManifestHash(pageID, prev)
+	if err != nil || skip {
 		return nil, false, err
 	}
 
@@ -273,13 +275,13 @@ func (s *Service) RecordStructureChange(pageID, authorID, summary string) (*Revi
 	return rev, true, nil
 }
 
-func (s *Service) resolveAssetManifestHash(pageID string, prev *Revision) (string, error) {
+func (s *Service) resolveAssetManifestHash(pageID string, prev *Revision) (string, bool, error) {
 	// Check in-memory cache first — avoids a full asset scan on every content save.
 	// Use a stat to verify the file still exists without parsing its JSON content.
 	if v, ok := s.assetManifestCache.Load(pageID); ok {
 		entry := v.(assetManifestEntry)
 		if s.store.AssetManifestExists(entry.hash) {
-			return entry.hash, nil
+			return entry.hash, false, nil
 		}
 		s.assetManifestCache.Delete(pageID)
 	}
@@ -287,26 +289,26 @@ func (s *Service) resolveAssetManifestHash(pageID string, prev *Revision) (strin
 	if prev != nil && prev.AssetManifestHash != "" {
 		if _, err := s.store.LoadAssetManifest(prev.AssetManifestHash); err == nil {
 			s.assetManifestCache.Store(pageID, assetManifestEntry{hash: prev.AssetManifestHash})
-			return prev.AssetManifestHash, nil
+			return prev.AssetManifestHash, false, nil
 		}
 	}
 
-	fullState, err := s.capturePageState(pageID, true)
-	if err != nil {
-		return "", err
+	fullState, skip, err := s.captureRevisionState(pageID, true)
+	if err != nil || skip {
+		return "", skip, err
 	}
 	if err := s.persistLiveAssets(pageID, fullState.Assets); err != nil {
-		return "", err
+		return "", false, err
 	}
 	savedManifestHash, err := s.store.SaveAssetManifest(fullState.Assets)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if savedManifestHash != fullState.AssetManifestHash {
-		return "", fmt.Errorf(errAssetManifestHashMismatch, fullState.AssetManifestHash, savedManifestHash)
+		return "", false, fmt.Errorf(errAssetManifestHashMismatch, fullState.AssetManifestHash, savedManifestHash)
 	}
 	s.assetManifestCache.Store(pageID, assetManifestEntry{hash: savedManifestHash})
-	return savedManifestHash, nil
+	return savedManifestHash, false, nil
 }
 
 func (s *Service) ListRevisions(pageID string) ([]*Revision, error) {
@@ -705,9 +707,61 @@ func (s *Service) capturePageState(pageID string, withAssets bool) (*RevisionSta
 	if err != nil {
 		return nil, err
 	}
+	return s.capturePageStateFromPage(page, withAssets)
+}
 
+func (s *Service) captureRevisionState(pageID string, withAssets bool) (*RevisionState, bool, error) {
+	page, err := s.pages.GetPage(pageID)
+	if err != nil {
+		return nil, false, err
+	}
+	if pagevisibility.IsInDraftSubtree(page.PageNode) {
+		return nil, true, nil
+	}
+
+	lineage := pageLineage(page.PageNode)
+	state, err := s.capturePageStateFromPage(page, withAssets)
+	if err != nil {
+		return nil, false, err
+	}
+	if !withAssets {
+		return state, false, nil
+	}
+
+	skip, err := s.validatePublicLineage(pageID, lineage)
+	return state, skip, err
+}
+
+func pageLineage(node *tree.PageNode) []pageLineageVersion {
+	lineage := make([]pageLineageVersion, 0, 4)
+	for current := node; current != nil; current = current.Parent {
+		lineage = append(lineage, pageLineageVersion{
+			id:      current.ID,
+			slug:    current.Slug,
+			version: current.Version(),
+			draft:   current.Draft,
+		})
+	}
+	return lineage
+}
+
+func (s *Service) validatePublicLineage(pageID string, expected []pageLineageVersion) (bool, error) {
+	current, err := s.pages.SnapshotPageNode(pageID)
+	if err != nil {
+		return false, err
+	}
+	if pagevisibility.IsInDraftSubtree(current) {
+		return true, nil
+	}
+	if !slices.Equal(expected, pageLineage(current)) {
+		return false, fmt.Errorf("page %s changed while recording revision: %w", pageID, tree.ErrVersionConflict)
+	}
+	return false, nil
+}
+
+func (s *Service) capturePageStateFromPage(page *tree.Page, withAssets bool) (*RevisionState, error) {
 	state := s.revisionStateFromPage(page)
-	if err := s.enrichStateWithExtraFrontmatter(page.ID, state); err != nil {
+	if err := enrichStateWithExtraFrontmatter(page.RawContent, state); err != nil {
 		return nil, err
 	}
 
@@ -715,7 +769,7 @@ func (s *Service) capturePageState(pageID string, withAssets bool) (*RevisionSta
 		return state, nil
 	}
 
-	assets, err := s.scanLiveAssets(pageID)
+	assets, err := s.scanLiveAssets(page.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -758,14 +812,6 @@ func (s *Service) pageWriteLock(pageID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-func (s *Service) shouldSkipRevision(pageID string) (bool, error) {
-	node, err := s.pages.SnapshotPageNode(pageID)
-	if err != nil {
-		return false, err
-	}
-	return pagevisibility.IsInDraftSubtree(node), nil
-}
-
 func (s *Service) shouldCoalesce(prev *Revision, authorID string) bool {
 	if s.coalesceWindow <= 0 || prev == nil {
 		return false
@@ -778,12 +824,17 @@ func (s *Service) shouldCoalesce(prev *Revision, authorID string) bool {
 }
 
 func (s *Service) recordContentUpdateForPage(page *tree.Page, authorID, summary string) (*Revision, bool, error) {
-	if skip, err := s.shouldSkipRevision(page.ID); err != nil || skip {
-		return nil, false, err
-	}
 	mu := s.pageWriteLock(page.ID)
 	mu.Lock()
 	defer mu.Unlock()
+
+	if pagevisibility.IsInDraftSubtree(page.PageNode) {
+		return nil, false, nil
+	}
+	lineage := pageLineage(page.PageNode)
+	if skip, err := s.validatePublicLineage(page.ID, lineage); err != nil || skip {
+		return nil, false, err
+	}
 
 	prev, err := s.store.GetLatestRevision(page.ID)
 	if err != nil {
@@ -791,7 +842,7 @@ func (s *Service) recordContentUpdateForPage(page *tree.Page, authorID, summary 
 	}
 
 	state := s.revisionStateFromPage(page)
-	if err := s.enrichStateWithExtraFrontmatter(page.ID, state); err != nil {
+	if err := enrichStateWithExtraFrontmatter(page.RawContent, state); err != nil {
 		return nil, false, err
 	}
 
@@ -799,20 +850,25 @@ func (s *Service) recordContentUpdateForPage(page *tree.Page, authorID, summary 
 		return prev, false, nil
 	}
 
+	assetManifestHash, skip, err := s.resolveAssetManifestHash(page.ID, prev)
+	if err != nil || skip {
+		return nil, false, err
+	}
+	if skip, err := s.validatePublicLineage(page.ID, lineage); err != nil || skip {
+		return nil, false, err
+	}
+
+	contentHash, err := s.store.SaveContentBlob(page.ID, []byte(state.Content))
+	if err != nil {
+		return nil, false, err
+	}
+	if contentHash != state.ContentHash {
+		return nil, false, fmt.Errorf(errContentHashMismatch, state.ContentHash, contentHash)
+	}
+
 	if s.shouldCoalesce(prev, authorID) {
 		s.log.Debug("coalescing revision", "pageID", page.ID, "revisionID", prev.ID, "authorID", authorID)
 		oldHash := prev.ContentHash
-		contentHash, err := s.store.SaveContentBlob(page.ID, []byte(state.Content))
-		if err != nil {
-			return nil, false, err
-		}
-		if contentHash != state.ContentHash {
-			return nil, false, fmt.Errorf(errContentHashMismatch, state.ContentHash, contentHash)
-		}
-		assetManifestHash, err := s.resolveAssetManifestHash(page.ID, prev)
-		if err != nil {
-			return nil, false, err
-		}
 		prev.ContentHash = contentHash
 		prev.AssetManifestHash = assetManifestHash
 		prev.ExtraFrontmatter = state.ExtraFrontmatter
@@ -832,19 +888,6 @@ func (s *Service) recordContentUpdateForPage(page *tree.Page, authorID, summary 
 			}
 		}
 		return prev, true, nil
-	}
-
-	assetManifestHash, err := s.resolveAssetManifestHash(page.ID, prev)
-	if err != nil {
-		return nil, false, err
-	}
-
-	contentHash, err := s.store.SaveContentBlob(page.ID, []byte(state.Content))
-	if err != nil {
-		return nil, false, err
-	}
-	if contentHash != state.ContentHash {
-		return nil, false, fmt.Errorf(errContentHashMismatch, state.ContentHash, contentHash)
 	}
 
 	rev, err := s.newRevision(RevisionTypeContentUpdate, state, authorID, summary, assetManifestHash)
@@ -888,14 +931,9 @@ func (s *Service) newRevision(t RevisionType, state *RevisionState, authorID, su
 	}, nil
 }
 
-func (s *Service) enrichStateWithExtraFrontmatter(pageID string, state *RevisionState) error {
+func enrichStateWithExtraFrontmatter(raw string, state *RevisionState) error {
 	if state == nil {
 		return fmt.Errorf("revision state is required")
-	}
-
-	raw, err := s.pages.ReadPageRaw(pageID)
-	if err != nil {
-		return err
 	}
 
 	fm, _, has, err := markdown.ParseFrontmatter(raw)
@@ -1076,11 +1114,8 @@ func (s *Service) restoreAssets(pageID string, refs []AssetRef) error {
 }
 
 func (s *Service) recordRestoreRevision(pageID, authorID string) error {
-	if skip, err := s.shouldSkipRevision(pageID); err != nil || skip {
-		return err
-	}
-	state, err := s.capturePageState(pageID, true)
-	if err != nil {
+	state, skip, err := s.captureRevisionState(pageID, true)
+	if err != nil || skip {
 		return err
 	}
 

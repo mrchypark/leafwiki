@@ -58,7 +58,7 @@ func TestNewSearchIndexSideEffect_DefaultsLogger(t *testing.T) {
 }
 
 func TestNewTagsSideEffect_DefaultsLogger(t *testing.T) {
-	effect := NewTagsSideEffect(nil, nil)
+	effect := NewTagsSideEffect(nil, nil, nil)
 	if effect.log == nil {
 		t.Fatal("expected default logger to be set")
 	}
@@ -68,7 +68,7 @@ func TestNewTagsSideEffect_DefaultsLogger(t *testing.T) {
 }
 
 func TestNewPropertiesSideEffect_DefaultsLogger(t *testing.T) {
-	effect := NewPropertiesSideEffect(nil, nil)
+	effect := NewPropertiesSideEffect(nil, nil, nil)
 	if effect.log == nil {
 		t.Fatal("expected default logger to be set")
 	}

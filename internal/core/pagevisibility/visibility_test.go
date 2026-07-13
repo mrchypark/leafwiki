@@ -122,6 +122,28 @@ func TestPrune_DropsHiddenDraftSubtreeWithoutMutatingSource(t *testing.T) {
 	}
 }
 
+func TestPrune_PreservesDetachedAncestorsForNestedPaths(t *testing.T) {
+	root := &tree.PageNode{ID: "root", Slug: "root"}
+	a := &tree.PageNode{ID: "a", Slug: "a", Parent: root}
+	b := &tree.PageNode{ID: "b", Slug: "b", Parent: a}
+	c := &tree.PageNode{ID: "c", Slug: "c", Parent: b}
+	root.Children = []*tree.PageNode{a}
+	a.Children = []*tree.PageNode{b}
+	b.Children = []*tree.PageNode{c}
+
+	got := Prune(b, nil, false)
+	if got.CalculatePath() != "/a/b" || len(got.Children) != 1 || got.Children[0].CalculatePath() != "/a/b/c" {
+		t.Fatalf("nested paths = %q, %#v", got.CalculatePath(), got.Children)
+	}
+	if got.Parent == a || got.Parent.Parent == root || len(got.Parent.Children) != 0 || len(got.Parent.Parent.Children) != 0 {
+		t.Fatalf("ancestor chain is not detached and child-free: %#v", got.Parent)
+	}
+	got.Parent.Title = "changed clone"
+	if a.Title == "changed clone" || len(a.Children) != 1 || a.Children[0] != b {
+		t.Fatal("pruning mutated the source ancestor chain")
+	}
+}
+
 func TestFilterPublishedPageIDs_DropsDraftSubtreesAndMissingPages(t *testing.T) {
 	dir := t.TempDir()
 	treeService := tree.NewTreeService(dir)

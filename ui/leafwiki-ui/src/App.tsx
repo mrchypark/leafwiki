@@ -3,7 +3,10 @@ import { createLeafWikiRouter } from '@/features/router/router'
 import { useBootstrapAuth } from '@/lib/bootstrapAuth'
 import { BASE_PATH } from '@/lib/config'
 import { useIsReadOnly } from '@/lib/useIsReadOnly'
-import { getVisibilityScope } from '@/lib/visibilityScope'
+import {
+  getVisibilityScope,
+  hasVisibilityScopeChanged,
+} from '@/lib/visibilityScope'
 import { useSessionStore } from '@/stores/session'
 import { useTreeStore } from '@/stores/tree'
 import { usePageEditorStore } from '@/features/editor/pageEditorStore'
@@ -40,11 +43,12 @@ function App() {
   const visibilityScope = getVisibilityScope(authDisabled, userId, userRole)
 
   useLayoutEffect(() => {
-    if (!configHasLoaded || visibilityScopeRef.current === visibilityScope) {
-      return
-    }
+    if (!configHasLoaded) return
 
+    const previousScope = visibilityScopeRef.current
     visibilityScopeRef.current = visibilityScope
+    if (!hasVisibilityScopeChanged(previousScope, visibilityScope)) return
+
     usePageEditorStore.getState().resetEditorState()
     useViewerStore.getState().clear()
     useTreeStore.getState().clearVisibilityData()

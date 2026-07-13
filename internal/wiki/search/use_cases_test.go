@@ -131,3 +131,59 @@ func TestSearchUseCase_Execute_FiltersStaleDraftRowsBeforePaginationAndFacets(t 
 		t.Fatalf("stale draft affected facets: %#v", out.Result.TagFacets)
 	}
 }
+
+func TestSearchUseCase_Execute_DoesNotReExposeSoleStaleDraftMatch(t *testing.T) {
+	uc, _, treeSvc := setupSearchUseCaseForTags(t)
+	draftID := createTaggedPage(t, treeSvc, "Draft", "draft", nil)
+	page, err := treeSvc.GetPage(draftID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if err := uc.index.IndexPage(page.CalculatePath(), page.CalculatePath()+".md", page.ID, page.Title, page.Kind, "draft-only-search-term"); err != nil {
+		t.Fatalf("IndexPage: %v", err)
+	}
+	draft, err := treeSvc.FindPageByID(draftID)
+	if err != nil {
+		t.Fatalf("FindPageByID: %v", err)
+	}
+	draft.Draft = true
+
+	stale, err := uc.index.Search("draft-only-search-term", nil, 0, 10)
+	if err != nil || stale.Count != 1 {
+		t.Fatalf("stale index precondition = %#v, %v", stale, err)
+	}
+	out, err := uc.Execute(context.Background(), SearchInput{Query: "draft-only-search-term", Limit: 10})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.Result.Count != 0 || len(out.Result.Items) != 0 {
+		t.Fatalf("stale draft was re-exposed: %#v", out.Result)
+	}
+}
+
+func TestSearchUseCase_Execute_QueryWithZeroTagIntersectionReturnsNoResults(t *testing.T) {
+	uc, tagsSvc, treeSvc := setupSearchUseCaseForTags(t)
+	pageID := createTaggedPage(t, treeSvc, "Public", "public", []string{"present"})
+	page, err := treeSvc.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if err := uc.index.IndexPage(page.CalculatePath(), page.CalculatePath()+".md", page.ID, page.Title, page.Kind, "shared-query-term"); err != nil {
+		t.Fatalf("IndexPage: %v", err)
+	}
+	if err := tagsSvc.IndexPageContent(page.ID, page.RawContent); err != nil {
+		t.Fatalf("IndexPageContent: %v", err)
+	}
+
+	out, err := uc.Execute(context.Background(), SearchInput{
+		Query: "shared-query-term",
+		Tags:  []string{"missing"},
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.Result.Count != 0 || len(out.Result.Items) != 0 {
+		t.Fatalf("zero tag intersection returned results: %#v", out.Result)
+	}
+}

@@ -9,9 +9,6 @@ import (
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/links"
-	"github.com/perber/wiki/internal/properties"
-	"github.com/perber/wiki/internal/search"
-	"github.com/perber/wiki/internal/tags"
 	wikiassets "github.com/perber/wiki/internal/wiki/assets"
 	wikipages "github.com/perber/wiki/internal/wiki/pages"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -20,30 +17,30 @@ import (
 // WikiImportAdapter implements the importer.ImporterWiki interface using
 // the wiki's internal services directly via use cases.
 type WikiImportAdapter struct {
-	tree        *tree.TreeService
-	slug        *tree.SlugService
-	revision    *revision.Service
-	links       *links.LinkService
-	asset       *assets.AssetService
-	tags        *tags.TagsService
-	props       *properties.PropertiesService
-	searchIndex *search.SQLiteIndex
-	log         *slog.Logger
+	tree             *tree.TreeService
+	slug             *tree.SlugService
+	revision         *revision.Service
+	links            *links.LinkService
+	asset            *assets.AssetService
+	searchEffect     *pagesave.SearchIndexSideEffect
+	tagsEffect       *pagesave.TagsSideEffect
+	propertiesEffect *pagesave.PropertiesSideEffect
+	log              *slog.Logger
 }
 
 // NewWikiImportAdapter constructs an importer adapter backed by the wiki's
 // internal services.
 func NewWikiImportAdapter(w *Wiki) *WikiImportAdapter {
 	return &WikiImportAdapter{
-		tree:        w.tree,
-		slug:        w.slug,
-		revision:    w.revision,
-		links:       w.links,
-		asset:       w.asset,
-		tags:        w.tags,
-		props:       w.props,
-		searchIndex: w.searchIndex,
-		log:         w.log,
+		tree:             w.tree,
+		slug:             w.slug,
+		revision:         w.revision,
+		links:            w.links,
+		asset:            w.asset,
+		searchEffect:     w.searchEffect,
+		tagsEffect:       w.tagsEffect,
+		propertiesEffect: w.propertiesEffect,
+		log:              w.log,
 	}
 }
 
@@ -69,10 +66,10 @@ func (a *WikiImportAdapter) ListAssets(pageID string) ([]string, error) {
 
 func (a *WikiImportAdapter) orchestrator() *pagesave.PageSaveOrchestrator {
 	return pagesave.NewPageSaveOrchestrator(
-		pagesave.NewSearchIndexSideEffect(a.searchIndex, a.tree, a.log),
+		a.searchEffect,
 		pagesave.NewLinkIndexSideEffect(a.links, a.log),
-		pagesave.NewTagsSideEffect(a.tags, a.log),
-		pagesave.NewPropertiesSideEffect(a.props, a.log),
+		a.tagsEffect,
+		a.propertiesEffect,
 		pagesave.NewRevisionSideEffect(a.revision, a.log),
 	)
 }
@@ -95,7 +92,7 @@ func (a *WikiImportAdapter) UpdatePage(userID, id, title, slug string, content *
 	}
 	out, err := wikipages.NewUpdatePageUseCase(a.tree, a.slug, a.orchestrator(), a.log).Execute(
 		context.Background(),
-		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content, Kind: kind, PreserveFrontmatter: true},
+		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content, PreserveFrontmatter: true},
 	)
 	if err != nil {
 		return nil, err

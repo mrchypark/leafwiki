@@ -82,6 +82,33 @@ func TestRevisionSideEffect_RecordsOnlyPublishedHistory(t *testing.T) {
 	}
 }
 
+func TestRevisionSideEffect_ReconciliationOnlyDoesNotWriteHistory(t *testing.T) {
+	dir := t.TempDir()
+	treeService := tree.NewTreeService(dir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	pageID, err := treeService.CreateNode("editor", nil, "Page", "page", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	page, err := treeService.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	service := revision.NewService(dir, treeService, nil, revision.ServiceOptions{})
+	NewRevisionSideEffect(service, nil).Apply(PageSaveEvent{
+		Operation: PageOperationUpdate, UserID: "editor", After: page,
+		AffectedPageIDs: []string{page.ID}, ContentChanged: true, DraftChanged: true, ReconciliationOnly: true,
+	})
+
+	revisions, err := service.ListRevisions(page.ID)
+	if err != nil || len(revisions) != 0 {
+		t.Fatalf("reconciliation revisions = %#v, err=%v", revisions, err)
+	}
+}
+
 func TestRevisionSideEffect_PublishRecordsDirectPageOnce(t *testing.T) {
 	dir := t.TempDir()
 	treeService := tree.NewTreeService(dir)
@@ -272,7 +299,7 @@ func TestRevisionSideEffect_PublishBypassesCoalescing(t *testing.T) {
 	}
 }
 
-func TestRevisionSideEffect_PublishSectionRecordsVisibleDescendants(t *testing.T) {
+func TestRevisionSideEffect_PublishSectionRecordsVisibleDescendantsMissingFromSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	treeService := tree.NewTreeService(dir)
 	if err := treeService.LoadTree(); err != nil {
@@ -306,12 +333,13 @@ func TestRevisionSideEffect_PublishSectionRecordsVisibleDescendants(t *testing.T
 	service := revision.NewService(dir, treeService, nil, revision.ServiceOptions{})
 	effect := NewRevisionSideEffect(service, nil)
 	effect.Apply(PageSaveEvent{
-		Operation:     PageOperationUpdate,
-		UserID:        "editor",
-		After:         pages[0],
-		AffectedPages: pages,
-		DraftChanged:  true,
-		Summary:       "published",
+		Operation:       PageOperationUpdate,
+		UserID:          "editor",
+		After:           pages[0],
+		AffectedPages:   pages[:1],
+		AffectedPageIDs: []string{*sectionID, *childID},
+		DraftChanged:    true,
+		Summary:         "published",
 	})
 
 	for _, pageID := range []string{*sectionID, *childID} {
@@ -330,6 +358,45 @@ func TestRevisionSideEffect_PublishSectionRecordsVisibleDescendants(t *testing.T
 	}
 	if snapshot.Content != childContent {
 		t.Fatalf("published child snapshot content = %q", snapshot.Content)
+	}
+}
+
+func TestRevisionSideEffect_MoveRecordsVisibleDescendantsMissingFromSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	treeService := tree.NewTreeService(dir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	sectionKind, pageKind := tree.NodeKindSection, tree.NodeKindPage
+	sectionID, err := treeService.CreateNode("editor", nil, "Section", "section", &sectionKind)
+	if err != nil {
+		t.Fatalf("CreateNode(section): %v", err)
+	}
+	childID, err := treeService.CreateNode("editor", sectionID, "Child", "child", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode(child): %v", err)
+	}
+	section, err := treeService.GetPage(*sectionID)
+	if err != nil {
+		t.Fatalf("GetPage(section): %v", err)
+	}
+
+	service := revision.NewService(dir, treeService, nil, revision.ServiceOptions{})
+	NewRevisionSideEffect(service, nil).Apply(PageSaveEvent{
+		Operation:       PageOperationMove,
+		UserID:          "editor",
+		AffectedPages:   []*tree.Page{section},
+		AffectedPageIDs: []string{*sectionID, *childID},
+	})
+
+	for _, pageID := range []string{*sectionID, *childID} {
+		revisions, err := service.ListRevisions(pageID)
+		if err != nil || len(revisions) != 1 {
+			t.Fatalf("page %s revisions = %#v, err = %v", pageID, revisions, err)
+		}
+		if revisions[0].Type != revision.RevisionTypeStructureUpdate {
+			t.Fatalf("page %s revision type = %q", pageID, revisions[0].Type)
+		}
 	}
 }
 
@@ -358,5 +425,46 @@ func TestRevisionSideEffect_DoesNotMutateAffectedPagesBackingArray(t *testing.T)
 
 	if backing[1] != sentinel {
 		t.Fatalf("AffectedPages backing array was mutated: got %#v", backing[1])
+	}
+}
+
+func TestRevisionSideEffect_InheritedDraftMovedPublicRemainsOutsideHistory(t *testing.T) {
+	dir := t.TempDir()
+	treeService := tree.NewTreeService(dir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	sectionKind, pageKind := tree.NodeKindSection, tree.NodeKindPage
+	draftParentID, err := treeService.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", &sectionKind, true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	pageID, err := treeService.CreateNode("editor", draftParentID, "Child", "child", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	page, err := treeService.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage before move: %v", err)
+	}
+
+	service := revision.NewService(dir, treeService, nil, revision.ServiceOptions{})
+	effect := NewRevisionSideEffect(service, nil)
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, UserID: "editor", After: page})
+	if err := treeService.MoveNode("editor", page.ID, "root", page.Version()); err != nil {
+		t.Fatalf("MoveNode: %v", err)
+	}
+	page, err = treeService.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage after move: %v", err)
+	}
+	if !page.Draft {
+		t.Fatal("moved page did not preserve inherited draft explicitly")
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationMove, UserID: "editor", AffectedPages: []*tree.Page{page}})
+
+	revisions, err := service.ListRevisions(page.ID)
+	if err != nil || len(revisions) != 0 {
+		t.Fatalf("draft move revisions = %#v, err = %v", revisions, err)
 	}
 }

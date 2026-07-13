@@ -101,7 +101,9 @@ func (r *Routes) requireStaticAssetVisibility(authDisabled bool) gin.HandlerFunc
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if pagevisibility.IsInDraftSubtree(node) {
+		// Asset URLs stay stable when a published page becomes a draft. Do not let
+		// an authenticated wiki cache a formerly public response past that change.
+		if !authDisabled {
 			c.Header("Cache-Control", "private, no-store")
 			c.Header("Pragma", "no-cache")
 		}

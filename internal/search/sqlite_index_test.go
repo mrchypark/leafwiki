@@ -2,6 +2,7 @@ package search
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -471,6 +472,43 @@ func TestSQLiteIndex_Search_FiltersByPageIDs(t *testing.T) {
 	}
 	if result.Items[0].PageID != "react-guide" {
 		t.Fatalf("expected filtered page react-guide, got %s", result.Items[0].PageID)
+	}
+}
+
+func TestSQLiteIndex_Search_FiltersWithAllowlistLargerThanSQLiteVariableLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	index, err := NewSQLiteIndex(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create SQLiteIndex: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(index.Close, t)
+
+	if err := index.IndexPage(
+		"docs/allowed",
+		"docs/allowed.md",
+		"allowed",
+		"Allowed",
+		tree.NodeKindPage,
+		"shared search term",
+	); err != nil {
+		t.Fatalf("failed to index allowed page: %v", err)
+	}
+
+	// SQLite builds commonly cap statement variables at 32,766. The allowlist
+	// must remain one bound value regardless of the number of page IDs.
+	allowedPageIDs := make([]string, 40_000)
+	for i := range allowedPageIDs {
+		allowedPageIDs[i] = fmt.Sprintf("missing-%d", i)
+	}
+	allowedPageIDs[len(allowedPageIDs)-1] = "allowed"
+
+	result, err := index.Search("shared", allowedPageIDs, 0, 10)
+	if err != nil {
+		t.Fatalf("search with large allowlist failed: %v", err)
+	}
+	if result.Count != 1 || len(result.Items) != 1 || result.Items[0].PageID != "allowed" {
+		t.Fatalf("large allowlist result = %#v", result)
 	}
 }
 

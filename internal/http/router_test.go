@@ -1141,6 +1141,52 @@ func TestRefactorApply_DoesNotPersistRevisionsWhenRevisionDisabled(t *testing.T)
 	}
 }
 
+func TestRefactorApplyEndpoint_AppliesFinalVisibilityAndMetadata(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            false,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		HideLinkMetadataSection: false,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+		EnableLinkRefactor:      true,
+	})
+
+	target := createPageViaAPI(t, router, "Target", "target", nil, pageNodeKind())
+	payload := map[string]any{
+		"kind":         "rename",
+		"version":      target.Version,
+		"title":        "Private Target",
+		"slug":         "private-target",
+		"content":      "private content",
+		"tags":         []string{"Ready"},
+		"properties":   map[string]string{"owner": "alice"},
+		"draft":        true,
+		"rewriteLinks": false,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal(refactor payload): %v", err)
+	}
+	rec := authenticatedRequest(t, router, http.MethodPost, "/api/pages/"+target.ID+"/refactor/apply", strings.NewReader(string(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d - %s", rec.Code, rec.Body.String())
+	}
+
+	var updated apiPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("Invalid refactor response JSON: %v", err)
+	}
+	if !updated.Draft || updated.Title != "Private Target" || updated.Slug != "private-target" || updated.Content != "private content" {
+		t.Fatalf("atomic refactor response mismatch: %#v", updated)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "ready" || updated.Properties["owner"] != "alice" {
+		t.Fatalf("atomic refactor metadata mismatch: tags=%#v properties=%#v", updated.Tags, updated.Properties)
+	}
+}
+
 func TestUploadAssetEndpoint_RejectsFilesExceedingConfiguredLimit(t *testing.T) {
 	w := createWikiTestInstance(t)
 	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
@@ -3080,6 +3126,25 @@ func TestGetPageByPathEndpoint_SectionReturnsDirectChildrenOnly(t *testing.T) {
 	}
 	if grandchildren, ok := firstChild["children"]; ok && grandchildren != nil {
 		t.Errorf("Expected no grandchildren for section kind (depth=1), got: %v", grandchildren)
+	}
+}
+
+func TestGetPageByPathEndpoint_NestedSectionReturnsFullPaths(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+
+	sectionKind := tree.NodeKindSection
+	a := createPageViaAPI(t, router, "A", "a", nil, &sectionKind)
+	b := createPageViaAPI(t, router, "B", "b", &a.ID, &sectionKind)
+	createPageViaAPI(t, router, "C", "c", &b.ID, pageNodeKind())
+
+	page := getPageByPathViaAPI(t, router, "a/b")
+	if page.Path != "a/b" {
+		t.Fatalf("page path = %q, want a/b", page.Path)
+	}
+	if len(page.Children) != 1 || page.Children[0].Path != "a/b/c" {
+		t.Fatalf("children = %#v", page.Children)
 	}
 }
 

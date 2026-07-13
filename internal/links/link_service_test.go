@@ -1,8 +1,10 @@
 package links
 
 import (
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/perber/wiki/internal/core/tree"
 )
@@ -367,6 +369,252 @@ func TestLinkService_IndexAllPages_DoesNotResolveDraftTargets(t *testing.T) {
 	}
 	if backlinks.Count != 0 {
 		t.Fatalf("draft target received backlinks: %#v", backlinks.Backlinks)
+	}
+}
+
+func TestLinkService_ReconcileWikiLinksForTitle_SerializesConcurrentVisibilityChanges(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	keeperID, err := ts.CreateNode("system", nil, "Shared", "keeper", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode keeper: %v", err)
+	}
+	targetID, err := ts.CreateNodeWithDraft("system", nil, "Shared", "target", pageNodeKind(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft target: %v", err)
+	}
+	sourceID, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	source, err := ts.GetPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source: %v", err)
+	}
+	content := "[[Shared]]"
+	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode source: %v", err)
+	}
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+	before, err := svc.GetOutgoingLinksForPage(*sourceID)
+	if err != nil || before.Count != 1 || before.Outgoings[0].Broken || before.Outgoings[0].ToPageID != *keeperID {
+		t.Fatalf("precondition: expected resolved keeper link, out=%#v err=%v", before, err)
+	}
+
+	// Queue both reconciliations at the service boundary, publish the second
+	// candidate between the events, then release them together. The calls must
+	// execute serially and leave the final two-candidate state ambiguous.
+	svc.reconcileMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			svc.reconcileMu.Unlock()
+		}
+	}()
+	started := make(chan struct{}, 2)
+	errs := make(chan error, 2)
+	go func() {
+		started <- struct{}{}
+		errs <- svc.ReconcileWikiLinksForTitle("Shared")
+	}()
+	<-started
+
+	draft := false
+	target, err := ts.GetPage(*targetID)
+	if err != nil {
+		t.Fatalf("GetPage target: %v", err)
+	}
+	if err := ts.UpdateNodeWithDraft("system", target.ID, target.Title, target.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("publish target: %v", err)
+	}
+	go func() {
+		started <- struct{}{}
+		errs <- svc.ReconcileWikiLinksForTitle("Shared")
+	}()
+	<-started
+	svc.reconcileMu.Unlock()
+	locked = false
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("ReconcileWikiLinksForTitle: %v", err)
+		}
+	}
+
+	after, err := svc.GetOutgoingLinksForPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if after.Count != 1 || !after.Outgoings[0].Broken || after.Outgoings[0].ToPageID != "" {
+		t.Fatalf("concurrent reconciliation resolved ambiguous sentinel: %#v", after)
+	}
+}
+
+func TestLinkService_DeleteHealAndPublishReconcileShareSerializationBoundary(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+	firstID, err := ts.CreateNode("system", nil, "Shared", "first", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode first: %v", err)
+	}
+	if _, err := ts.CreateNode("system", nil, "Shared", "second", pageNodeKind()); err != nil {
+		t.Fatalf("CreateNode second: %v", err)
+	}
+	draftID, err := ts.CreateNodeWithDraft("system", nil, "Shared", "draft", pageNodeKind(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	sourceID, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	source, err := ts.GetPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source: %v", err)
+	}
+	content := "[[Shared]]"
+	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode source: %v", err)
+	}
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+	first, err := ts.GetPage(*firstID)
+	if err != nil {
+		t.Fatalf("GetPage first: %v", err)
+	}
+	if err := ts.DeleteNode("system", first.ID, false, first.Version()); err != nil {
+		t.Fatalf("DeleteNode first: %v", err)
+	}
+
+	// Stop the delete-side heal after it reads the one-candidate tree but before
+	// it writes that resolution. This reproduces the stale late-heal window
+	// without relying on scheduler timing.
+	store.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			store.mu.Unlock()
+		}
+	}()
+	healStarted := make(chan struct{})
+	healDone := make(chan error, 1)
+	go func() {
+		close(healStarted)
+		healDone <- svc.HealWikiLinksForTitleIfUnambiguous("Shared")
+	}()
+	<-healStarted
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.reconcileMu.TryLock() {
+		svc.reconcileMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("delete heal did not enter reconciliation boundary")
+		}
+		runtime.Gosched()
+	}
+
+	draft := false
+	draftPage, err := ts.GetPage(*draftID)
+	if err != nil {
+		t.Fatalf("GetPage draft: %v", err)
+	}
+	if err := ts.UpdateNodeWithDraft("system", draftPage.ID, draftPage.Title, draftPage.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("publish draft: %v", err)
+	}
+	reconcileDone := make(chan error, 1)
+	reconcileStarted := make(chan struct{})
+	go func() {
+		close(reconcileStarted)
+		reconcileDone <- svc.ReconcileWikiLinksForTitle("Shared")
+	}()
+	<-reconcileStarted
+
+	store.mu.Unlock()
+	locked = false
+	if err := <-healDone; err != nil {
+		t.Fatalf("HealWikiLinksForTitleIfUnambiguous: %v", err)
+	}
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("ReconcileWikiLinksForTitle: %v", err)
+	}
+
+	after, err := svc.GetOutgoingLinksForPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if after.Count != 1 || !after.Outgoings[0].Broken || after.Outgoings[0].ToPageID != "" {
+		t.Fatalf("late delete heal resolved final ambiguous sentinel: %#v", after)
+	}
+}
+
+func TestLinkService_UpdateLinksForPage_SerializesCandidateWriteWithPublishReconcile(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+	keeperID, err := ts.CreateNode("system", nil, "Shared", "keeper", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode keeper: %v", err)
+	}
+	draftID, err := ts.CreateNodeWithDraft("system", nil, "Shared", "draft", pageNodeKind(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	sourceID, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	source, err := ts.GetPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source: %v", err)
+	}
+
+	// Hold the store so the source update keeps the reconciliation boundary
+	// across its candidate read and pending write.
+	store.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			store.mu.Unlock()
+		}
+	}()
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- svc.UpdateLinksForPage(source, "[[Shared]]")
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.reconcileMu.TryLock() {
+		svc.reconcileMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("link update did not enter reconciliation boundary")
+		}
+		runtime.Gosched()
+	}
+
+	draft := false
+	draftPage, err := ts.GetPage(*draftID)
+	if err != nil {
+		t.Fatalf("GetPage draft: %v", err)
+	}
+	if err := ts.UpdateNodeWithDraft("system", draftPage.ID, draftPage.Title, draftPage.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("publish draft: %v", err)
+	}
+	reconcileDone := make(chan error, 1)
+	go func() {
+		reconcileDone <- svc.ReconcileWikiLinksForTitle("Shared")
+	}()
+
+	store.mu.Unlock()
+	locked = false
+	if err := <-updateDone; err != nil {
+		t.Fatalf("UpdateLinksForPage: %v", err)
+	}
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("ReconcileWikiLinksForTitle: %v", err)
+	}
+
+	after, err := svc.GetOutgoingLinksForPage(*sourceID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if after.Count != 1 || !after.Outgoings[0].Broken || after.Outgoings[0].ToPageID != "" {
+		t.Fatalf("stale candidate write resolved final ambiguous sentinel: %#v; keeper=%s", after, *keeperID)
 	}
 }
 

@@ -165,6 +165,9 @@ export default function TreeNodeActionsMenu({
             title,
             slug,
             content: page.content,
+            tags: page.tags ?? [],
+            properties: page.properties ?? {},
+            draft: Boolean(page.draft),
             rewriteLinks,
           })
         } else {

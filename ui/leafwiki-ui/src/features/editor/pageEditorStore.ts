@@ -10,6 +10,7 @@ import {
 } from '@/lib/api/pages'
 import { isPageNotFoundError, mapApiError } from '@/lib/api/errors'
 import { useConfigStore } from '@/stores/config'
+import { useSessionStore } from '@/stores/session'
 import { useTreeStore } from '@/stores/tree'
 import { create } from 'zustand'
 import { useLinkStatusStore } from '../links/linkstatus_store'
@@ -94,11 +95,33 @@ export const isDirtyState = (s: PageEditorState) => {
   )
 }
 
-// Module-level mutex: prevents concurrent auto-saves from stacking.
-// Manual saves (silent=false) bypass this so Ctrl+S is never blocked by an in-flight auto-save.
-let isSavingMutex = false
+// Auto-saves do not stack, while manual saves may still start immediately.
+// Tokens let resetEditorState detach old-session completions without allowing an
+// old finally block to unlock or hide progress owned by a newer session.
+let saveSequence = 0
+let saveGeneration = 0
+const activeSaveTokens = new Set<number>()
+const activeManualSaveTokens = new Set<number>()
 
 let loadController: AbortController | null = null
+
+function currentSessionIdentity() {
+  const user = useSessionStore.getState().user
+  return user ? `${user.id}:${user.role}` : 'anonymous'
+}
+
+function isCurrentEditorContext(
+  generation: number,
+  sessionIdentity: string,
+  pageID: Page['id'],
+  currentPageID: Page['id'] | undefined,
+) {
+  return (
+    generation === saveGeneration &&
+    sessionIdentity === currentSessionIdentity() &&
+    currentPageID === pageID
+  )
+}
 
 export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   error: null,
@@ -157,23 +180,32 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
     }
 
     // Only block concurrent auto-saves; manual saves always proceed
-    if (isSavingMutex && options?.silent) return
-    isSavingMutex = true
+    if (activeSaveTokens.size > 0 && options?.silent) return
+    const saveToken = ++saveSequence
+    const generation = ++saveGeneration
+    const sessionIdentity = currentSessionIdentity()
+    const pageID = page.id
+    const isCurrentSave = () =>
+      isCurrentEditorContext(
+        generation,
+        sessionIdentity,
+        pageID,
+        get().page?.id,
+      )
+    activeSaveTokens.add(saveToken)
 
     const properties = buildEditableProperties(frontmatterFields)
 
     try {
-      if (!options?.silent) useProgressbarStore.getState().setLoading(true)
+      if (!options?.silent) {
+        activeManualSaveTokens.add(saveToken)
+        useProgressbarStore.getState().setLoading(true)
+      }
       set({ frontmatterErrors: {} })
       const titleChanged = page.title !== title
       const slugChanged = page.slug !== slug
       const draftChanged = Boolean(page.draft) !== draft
       const enableLinkRefactor = useConfigStore.getState().enableLinkRefactor
-      const frontmatterChanged =
-        draftChanged ||
-        tagsChanged(tags, page.tags ?? []) ||
-        propertiesChanged(frontmatterFields, page.properties ?? {})
-
       let updatedPage: Page | null = null
 
       if (slugChanged && enableLinkRefactor) {
@@ -182,9 +214,11 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
           title,
           slug,
         })
+        if (!isCurrentSave()) return
         const rewriteLinks = await confirmPageRefactor(preview, {
           allowSkipRewrite: true,
         })
+        if (!isCurrentSave()) return
         if (rewriteLinks === null) {
           return null
         }
@@ -195,21 +229,12 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
           title,
           slug,
           content,
+          tags,
+          properties,
+          draft,
           rewriteLinks,
         })
-
-        if (updatedPage && frontmatterChanged) {
-          updatedPage = await updatePage(
-            updatedPage.id,
-            updatedPage.version,
-            title,
-            slug,
-            content,
-            tags,
-            properties,
-            draft,
-          )
-        }
+        if (!isCurrentSave()) return
       } else {
         updatedPage = await updatePage(
           page.id,
@@ -221,7 +246,10 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
           properties,
           draft,
         )
+        if (!isCurrentSave()) return
       }
+
+      if (!isCurrentSave()) return
 
       const nextTags = updatedPage?.tags ?? tags
       const nextProperties =
@@ -232,7 +260,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       // Keep the local page snapshot canonical after save so metadata-only
       // updates do not remain dirty when the API omits empty collections.
       set((state) => {
-        if (!state.page) return {}
+        if (!isCurrentSave() || !state.page) return {}
 
         if (
           updatedPage?.content === null ||
@@ -266,14 +294,17 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       })
 
       // sync tree: full reload on structural changes, version-only patch otherwise
+      if (!isCurrentSave()) return
       if (titleChanged || slugChanged || draftChanged) {
         await useTreeStore.getState().reloadTree()
+        if (!isCurrentSave()) return
       } else if (updatedPage?.id && updatedPage?.version) {
         useTreeStore
           .getState()
           .patchNodeVersion(updatedPage.id, updatedPage.version)
       }
 
+      if (!isCurrentSave()) return
       const viewerPage = useViewerStore.getState().page
       if (viewerPage?.id && viewerPage.id === updatedPage?.id && updatedPage) {
         useViewerStore.setState({
@@ -284,32 +315,62 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       }
 
       // reload backlinks
+      if (!isCurrentSave()) return
       const editorPageID = get().page?.id
       if (editorPageID) {
         const fetchLinkStatusForPage =
           useLinkStatusStore.getState().fetchLinkStatusForPage
         await fetchLinkStatusForPage(editorPageID)
+        if (!isCurrentSave()) return
       }
-
       return updatedPage
+    } catch (error) {
+      if (isCurrentSave()) throw error
     } finally {
-      isSavingMutex = false
-      if (!options?.silent) useProgressbarStore.getState().setLoading(false)
+      activeSaveTokens.delete(saveToken)
+      if (
+        !options?.silent &&
+        activeManualSaveTokens.delete(saveToken) &&
+        activeManualSaveTokens.size === 0
+      ) {
+        useProgressbarStore.getState().setLoading(false)
+      }
     }
   },
   forceOverwrite: async () => {
     const { page } = get()
     if (!page?.path) return
 
-    const fresh = await getPageByPath(page.path)
+    const generation = saveGeneration
+    const sessionIdentity = currentSessionIdentity()
+    const pageID = page.id
+    const isCurrentOverwrite = () =>
+      isCurrentEditorContext(
+        generation,
+        sessionIdentity,
+        pageID,
+        get().page?.id,
+      )
+
+    let fresh: Page
+    try {
+      fresh = await getPageByPath(page.path)
+    } catch (error) {
+      if (isCurrentOverwrite()) throw error
+      return
+    }
+    if (!isCurrentOverwrite()) return
     set((state) => {
-      if (!state.page) return {}
+      if (!state.page || state.page.id !== pageID) return {}
       state.page.version = fresh.version
       return { page: state.page }
     })
     return get().savePage()
   },
   loadPageData: async (path: string) => {
+    saveGeneration += 1
+    activeSaveTokens.clear()
+    activeManualSaveTokens.clear()
     loadController?.abort()
     loadController = new AbortController()
     const { signal } = loadController
@@ -371,7 +432,15 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   // reads elsewhere, e.g. TreeNodeActionsMenu's rename/delete guards) doesn't
   // keep pointing at the last-edited page indefinitely after the editor closes.
   resetEditorState: () => {
+    saveGeneration += 1
+    activeSaveTokens.clear()
+    const editorOwnedLoading =
+      get().isLoading || activeManualSaveTokens.size > 0
+    activeManualSaveTokens.clear()
     loadController?.abort()
+    if (editorOwnedLoading) {
+      useProgressbarStore.getState().setLoading(false)
+    }
     set({
       error: null,
       isLoading: false,
