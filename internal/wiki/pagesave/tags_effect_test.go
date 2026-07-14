@@ -24,7 +24,7 @@ func setupTagsEffectTest(t *testing.T) (*tree.TreeService, *tags.TagsService, *T
 	t.Cleanup(func() { test_utils.WrapCloseWithErrorCheck(store.Close, t) })
 
 	svc := tags.NewTagsService(store)
-	effect := NewTagsSideEffect(svc, nil, nil)
+	effect := NewTagsSideEffect(svc, treeSvc, nil)
 	return treeSvc, svc, effect
 }
 
@@ -120,6 +120,9 @@ func TestTagsSideEffect_Apply_Delete_RemovesTags(t *testing.T) {
 	page := createPageWithFrontmatter(t, treeSvc, "Delete Tags", "delete-tags", raw)
 
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+	if err := treeSvc.DeleteNode("system", page.ID, false, page.Version()); err != nil {
+		t.Fatalf("DeleteNode: %v", err)
+	}
 
 	effect.Apply(PageSaveEvent{
 		Operation:     PageOperationDelete,
@@ -132,5 +135,65 @@ func TestTagsSideEffect_Apply_Delete_RemovesTags(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("expected tag to be removed after delete, got %v", ids)
+	}
+}
+
+func TestTagsSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
+	treeSvc, tagsSvc, effect := setupTagsEffectTest(t)
+	page := createPageWithFrontmatter(t, treeSvc, "Draft Tags", "draft-tags", "---\ntags:\n  - secret\n---\n\nBody.")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+
+	page = setDraftForTest(t, treeSvc, page, true)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err := tagsSvc.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags draft: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("draft page remained in tag index: %v", ids)
+	}
+
+	page = setDraftForTest(t, treeSvc, page, false)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	ids, err = tagsSvc.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags published: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != page.ID {
+		t.Fatalf("published page was not reindexed: %v", ids)
+	}
+}
+
+func TestTagsSideEffect_Move_ReevaluatesDraftVisibility(t *testing.T) {
+	treeSvc, tagsSvc, effect := setupTagsEffectTest(t)
+	hidden := createPageWithFrontmatter(t, treeSvc, "Hidden Tags", "hidden-tags", "---\ntags:\n  - secret\n---\n\nBody.")
+	visible := createPageWithFrontmatter(t, treeSvc, "Visible Tags", "visible-tags", "---\ntags:\n  - public\n---\n\nBody.")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: hidden})
+	draftParentID, err := treeSvc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", pageKindPtr(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	if err := treeSvc.MoveNode("editor", hidden.ID, *draftParentID, hidden.Version()); err != nil {
+		t.Fatalf("MoveNode into draft: %v", err)
+	}
+	hidden, err = treeSvc.GetPage(hidden.ID)
+	if err != nil {
+		t.Fatalf("GetPage hidden: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationMove, DraftChanged: true, AffectedPages: []*tree.Page{hidden, visible}})
+	ids, err := tagsSvc.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags draft: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("draft page remained in tag index after move: %v", ids)
+	}
+
+	ids, err = tagsSvc.GetPageIDsByTags([]string{"public"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags visible: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != visible.ID {
+		t.Fatalf("visible affected page was not indexed after move: %v", ids)
 	}
 }

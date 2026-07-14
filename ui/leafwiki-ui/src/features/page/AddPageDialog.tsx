@@ -1,8 +1,9 @@
 import BaseDialog, { BaseDialogConfirmButton } from '@/components/BaseDialog'
+import { DraftBadge } from '@/components/DraftBadge'
 import { FormInput } from '@/components/FormInput'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { createPage, NODE_KIND_PAGE } from '@/lib/api/pages'
+import { createPage, isEffectivelyDraft, NODE_KIND_PAGE } from '@/lib/api/pages'
 import { canManageDrafts } from '@/lib/drafts'
 import { handleFieldErrors } from '@/lib/handleFieldErrors'
 import i18next from '@/lib/i18n'
@@ -41,6 +42,8 @@ export function AddPageDialog({
   const userRole = useSessionStore((s) => s.user?.role)
   const showDraft =
     nodeKind === NODE_KIND_PAGE && canManageDrafts(authDisabled, userRole)
+  const parent = useTreeStore((s) => s.getPageById(parentId))
+  const inheritedDraft = isEffectivelyDraft(parent)
   const parentPath = useTreeStore((s) => s.getPathById(parentId) || '')
   const navigate = useNavigate()
   const itemLabel = nodeKind === NODE_KIND_PAGE ? 'page' : 'section'
@@ -228,14 +231,17 @@ export function AddPageDialog({
           allowedHotkeys={DIALOG_INPUT_ALLOWED_HOTKEYS}
         />
         {showDraft && (
-          <label className="page-dialog__draft">
-            <Checkbox
-              checked={draft}
-              onCheckedChange={(checked) => setDraft(checked === true)}
-              data-testid="add-page-draft-checkbox"
-            />
-            Draft
-          </label>
+          <div className="page-dialog__draft">
+            {inheritedDraft && <DraftBadge inherited />}
+            <label className="page-dialog__draft">
+              <Checkbox
+                checked={draft}
+                onCheckedChange={(checked) => setDraft(checked === true)}
+                data-testid="add-page-draft-checkbox"
+              />
+              {inheritedDraft ? 'Keep draft when parent is published' : 'Draft'}
+            </label>
+          </div>
         )}
       </div>
       <span className="dialog__path" data-testid="add-page-path-display">

@@ -197,18 +197,21 @@ func (s *AssetService) DeleteAsset(page *tree.PageNode, filename string) error {
 }
 
 func (s *AssetService) DeleteAllAssetsForPage(page *tree.PageNode) error {
+	if page == nil {
+		return nil
+	}
+	return s.DeleteAllAssetsForPageID(page.ID)
+}
+
+func (s *AssetService) DeleteAllAssetsForPageID(pageID string) error {
+	if err := validateFilename(pageID); err != nil {
+		return fmt.Errorf("invalid page id: %w", err)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	assetDir, err := s.getAssetPagePath(page)
-	if err != nil {
-		// no assets dir -> nothing to delete
-		return nil
-	}
-	if _, err := os.Stat(assetDir); err == nil {
-		return os.RemoveAll(assetDir)
-	}
-	return nil
+	return os.RemoveAll(assetPageDiskPath(s.assetsDir, pageID))
 }
 
 // RenameAsset renames an asset file for a given page.

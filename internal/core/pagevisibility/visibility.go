@@ -7,11 +7,38 @@ import (
 
 // CanView reports whether a page is visible to the current request identity.
 func CanView(node *tree.PageNode, user *auth.User, authDisabled bool) bool {
-	return node != nil && (!node.Draft || CanViewDrafts(user, authDisabled))
+	return node != nil && (!IsInDraftSubtree(node) || CanViewDrafts(user, authDisabled))
 }
 
 func CanViewDrafts(user *auth.User, authDisabled bool) bool {
 	return !authDisabled && user != nil && (user.HasRole(auth.RoleEditor) || user.HasRole(auth.RoleAdmin))
+}
+
+func CanManageDraft(node *tree.PageNode, user *auth.User, authDisabled bool) bool {
+	return node != nil && CanViewDrafts(user, authDisabled)
+}
+
+// CanViewSubtree reports whether every node in the subtree is visible.
+func CanViewSubtree(node *tree.PageNode, user *auth.User, authDisabled bool) bool {
+	if !CanView(node, user, authDisabled) {
+		return false
+	}
+	for _, child := range node.Children {
+		if !CanViewSubtree(child, user, authDisabled) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsInDraftSubtree reports whether the node or any ancestor owns draft state.
+func IsInDraftSubtree(node *tree.PageNode) bool {
+	for current := node; current != nil; current = current.Parent {
+		if current.Draft {
+			return true
+		}
+	}
+	return false
 }
 
 // Prune returns a detached copy containing only nodes visible to the caller.
@@ -45,32 +72,18 @@ func cloneAncestors(node *tree.PageNode) *tree.PageNode {
 	return &parent
 }
 
-// FilterPublishedPageIDs preserves the input order while dropping missing and draft pages.
+// FilterPublishedPageIDs preserves the input order while dropping missing pages
+// and pages in draft subtrees.
 func FilterPublishedPageIDs(treeService *tree.TreeService, pageIDs []string) []string {
-	published := make([]string, 0, len(pageIDs))
 	if treeService == nil {
-		return published
+		return []string{}
 	}
-	for _, id := range pageIDs {
-		node, err := treeService.FindPageByID(id)
-		if err == nil && node != nil && !node.Draft {
-			published = append(published, id)
-		}
-	}
-	return published
+	return treeService.FilterPublishedPageIDs(pageIDs)
 }
 
 func AllPublishedPageIDs(treeService *tree.TreeService) []string {
-	ids := []string{}
 	if treeService == nil {
-		return ids
+		return []string{}
 	}
-	_ = treeService.WalkNodes(func(id string) error {
-		node, err := treeService.FindPageByID(id)
-		if err == nil && node != nil && !node.Draft {
-			ids = append(ids, id)
-		}
-		return nil
-	})
-	return ids
+	return treeService.PublishedPageIDs()
 }

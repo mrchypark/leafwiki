@@ -36,7 +36,7 @@ type PageNode struct {
 	Position int         `json:"position"` // Position is the position of the entry
 	Parent   *PageNode   `json:"-"`
 	Pinned   bool        `json:"pinned,omitempty"` // Pinned marks this node as pinned in the sidebar
-	Draft    bool        `json:"draft,omitempty"`  // Draft pages are visible only to authenticated editors and admins
+	Draft    bool        `json:"draft,omitempty"`  // Own draft state; descendants inherit visibility from draft ancestors
 
 	Kind     NodeKind     `json:"kind"`     // Kind is the kind of the node (page or folder)
 	Metadata PageMetadata `json:"metadata"` // Metadata holds metadata about the page
@@ -102,7 +102,20 @@ func (p *PageNode) Version() string {
 	if p.Metadata.UpdatedAt.IsZero() {
 		return ""
 	}
-	return p.Metadata.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	version := p.Metadata.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	if !p.Draft && p.hasDraftAncestor() {
+		return version + "|inherited-draft"
+	}
+	return version
+}
+
+func (p *PageNode) hasDraftAncestor() bool {
+	for ancestor := p.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		if ancestor.Draft {
+			return true
+		}
+	}
+	return false
 }
 
 // Hash returns a deterministic hash of the node and all descendants.

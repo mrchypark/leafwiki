@@ -162,7 +162,7 @@ describe('TreeNodeActionsMenu', () => {
     expect(applyPageRefactor).not.toHaveBeenCalled()
   })
 
-  it('does not offer structural actions for a draft page', () => {
+  it('offers structural actions for a draft page', () => {
     render(
       <MemoryRouter>
         <TreeNodeActionsMenu node={{ ...node, draft: true }} />
@@ -170,14 +170,15 @@ describe('TreeNodeActionsMenu', () => {
     )
 
     expect(
-      screen.queryByTestId('tree-view-action-button-move'),
-    ).not.toBeInTheDocument()
-    expect(screen.queryByText('Copy Page')).not.toBeInTheDocument()
-    expect(screen.queryByText('Add Section')).not.toBeInTheDocument()
+      screen.getByTestId('tree-view-action-button-move'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Copy Page')).toBeInTheDocument()
+    expect(screen.getByText('Add Page')).toBeInTheDocument()
+    expect(screen.getByText('Add Section')).toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('tree-view-action-button-rename'))
     expect(useDialogsStore.getState().dialogProps).toMatchObject({
-      slugReadOnly: true,
+      slugReadOnly: false,
     })
   })
 })

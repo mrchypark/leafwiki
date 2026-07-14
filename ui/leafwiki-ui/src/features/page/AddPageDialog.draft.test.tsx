@@ -1,6 +1,7 @@
 import { useDialogsStore } from '@/stores/dialogs'
 import { useConfigStore } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
+import { useTreeStore } from '@/stores/tree'
 import { createPage, suggestSlug } from '@/lib/api/pages'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { render, screen, waitFor } from '@testing-library/react'
@@ -58,6 +59,37 @@ describe('AddPageDialog draft creation', () => {
         draft: true,
       }),
     )
+  })
+
+  it('presents inherited visibility as an own-draft choice', () => {
+    useTreeStore.setState({
+      byId: {
+        parent: {
+          id: 'parent',
+          title: 'Private parent',
+          slug: 'private-parent',
+          path: 'private-parent',
+          version: 'v1',
+          children: [],
+          kind: 'section',
+          draft: false,
+          effectiveDraft: true,
+        },
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <AddPageDialog parentId="parent" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Inherited draft')).toBeInTheDocument()
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Keep draft when parent is published',
+      }),
+    ).not.toBeChecked()
   })
 
   it('does not offer draft creation for a section', () => {

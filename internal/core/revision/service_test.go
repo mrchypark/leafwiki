@@ -60,6 +60,191 @@ func writeLiveAsset(t *testing.T, storageDir, pageID, name, content string) {
 	}
 }
 
+func setRevisionTestDraft(t *testing.T, treeService *tree.TreeService, pageID string, draft bool) {
+	t.Helper()
+	page, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if err := treeService.UpdateNodeWithDraft("tester", pageID, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft(%v): %v", draft, err)
+	}
+}
+
+func TestRevisionWriters_SkipDraftAndResumeAfterPublish(t *testing.T) {
+	service, treeService, storageDir := newRevisionTestService(t)
+	pageID := createRevisionTestPage(t, treeService, "Page", "page", "public version one")
+	publicRevision, created, err := service.RecordContentUpdate(pageID, "tester", "public")
+	if err != nil || !created {
+		t.Fatalf("initial public revision: created=%v err=%v", created, err)
+	}
+	setRevisionTestDraft(t, treeService, pageID, true)
+
+	draftContent := "draft-only secret"
+	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(draft): %v", err)
+	}
+	if rev, created, err := service.RecordContentUpdate(pageID, "tester", "draft"); err != nil || created || rev != nil {
+		t.Fatalf("draft content revision = %#v, created=%v, err=%v", rev, created, err)
+	}
+	draftPage, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage(draft): %v", err)
+	}
+	if errs := service.RecordContentUpdates([]*tree.Page{draftPage}, "system", "baseline"); len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("draft batch errors = %#v", errs)
+	}
+	writeLiveAsset(t, storageDir, pageID, "draft.txt", "private asset")
+	if rev, created, err := service.RecordAssetChange(pageID, "tester", "draft asset"); err != nil || created || rev != nil {
+		t.Fatalf("draft asset revision = %#v, created=%v, err=%v", rev, created, err)
+	}
+	if rev, created, err := service.RecordStructureChange(pageID, "tester", "draft structure"); err != nil || created || rev != nil {
+		t.Fatalf("draft structure revision = %#v, created=%v, err=%v", rev, created, err)
+	}
+	if err := service.RestoreRevision(pageID, publicRevision.ID, "tester"); err != nil {
+		t.Fatalf("draft restore: %v", err)
+	}
+	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 1 {
+		t.Fatalf("revisions after draft writers = %#v, err=%v", revisions, err)
+	}
+
+	setRevisionTestDraft(t, treeService, pageID, false)
+	publicContent := "public version two"
+	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &publicContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(public): %v", err)
+	}
+	if _, created, err := service.RecordContentUpdate(pageID, "tester", "published"); err != nil || !created {
+		t.Fatalf("published content revision: created=%v err=%v", created, err)
+	}
+	writeLiveAsset(t, storageDir, pageID, "public.txt", "public asset")
+	if _, created, err := service.RecordAssetChange(pageID, "tester", "public asset"); err != nil || !created {
+		t.Fatalf("published asset revision: created=%v err=%v", created, err)
+	}
+	if _, created, err := service.RecordStructureChange(pageID, "tester", "public structure"); err != nil || !created {
+		t.Fatalf("published structure revision: created=%v err=%v", created, err)
+	}
+	if err := service.RestoreRevision(pageID, publicRevision.ID, "tester"); err != nil {
+		t.Fatalf("published restore: %v", err)
+	}
+	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 5 {
+		t.Fatalf("published revisions = %#v, err=%v", revisions, err)
+	}
+}
+
+func TestRecordContentUpdates_SkipsSuppliedPageFromDraftAncestorAfterPublish(t *testing.T) {
+	service, treeService, _ := newRevisionTestService(t)
+	sectionKind := tree.NodeKindSection
+	sectionID, err := treeService.CreateNode("tester", nil, "Section", "section", &sectionKind)
+	if err != nil {
+		t.Fatalf("CreateNode(section): %v", err)
+	}
+	pageKind := tree.NodeKindPage
+	pageID, err := treeService.CreateNode("tester", sectionID, "Page", "page", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode(page): %v", err)
+	}
+
+	setRevisionTestDraft(t, treeService, *sectionID, true)
+	draftContent := "draft-only secret"
+	if err := treeService.UpdateNode("tester", *pageID, "Page", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(draft): %v", err)
+	}
+	draftPage, err := treeService.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage(draft): %v", err)
+	}
+	setRevisionTestDraft(t, treeService, *sectionID, false)
+
+	errs := service.RecordContentUpdates([]*tree.Page{draftPage}, "tester", "stale draft")
+	if len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("RecordContentUpdates errors = %#v", errs)
+	}
+	if revisions, err := service.ListRevisions(*pageID); err != nil || len(revisions) != 0 {
+		t.Fatalf("revisions = %#v, err=%v", revisions, err)
+	}
+}
+
+func TestRecordContentUpdates_ReturnsVersionConflictWhenPublicPageChangesWhileWaitingForLock(t *testing.T) {
+	service, treeService, _ := newRevisionTestService(t)
+	pageID := createRevisionTestPage(t, treeService, "Page", "page", "first")
+	if _, created, err := service.RecordContentUpdate(pageID, "tester", "baseline"); err != nil || !created {
+		t.Fatalf("RecordContentUpdate(baseline): created=%v err=%v", created, err)
+	}
+	suppliedContent := "supplied public version"
+	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &suppliedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(supplied): %v", err)
+	}
+	page, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+
+	mu := service.pageWriteLock(pageID)
+	mu.Lock()
+	started := make(chan struct{})
+	done := make(chan []error, 1)
+	go func() {
+		close(started)
+		done <- service.RecordContentUpdates([]*tree.Page{page}, "tester", "stale public")
+	}()
+	<-started
+
+	updatedContent := "second"
+	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		mu.Unlock()
+		t.Fatalf("UpdateNode: %v", err)
+	}
+	mu.Unlock()
+
+	select {
+	case errs := <-done:
+		if len(errs) != 1 || !errors.Is(errs[0], tree.ErrVersionConflict) {
+			t.Fatalf("RecordContentUpdates errors = %#v, want ErrVersionConflict", errs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for content revision")
+	}
+	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 1 {
+		t.Fatalf("revisions = %#v, err=%v", revisions, err)
+	}
+	if _, err := os.Stat(service.store.contentBlobPath(pageID, sha256HexBytes([]byte(suppliedContent)))); !os.IsNotExist(err) {
+		t.Fatalf("stale supplied content blob exists or stat failed: %v", err)
+	}
+}
+
+func TestRecordContentUpdates_SkipsWhenPageBecomesDraftWhileWaitingForLock(t *testing.T) {
+	service, treeService, _ := newRevisionTestService(t)
+	pageID := createRevisionTestPage(t, treeService, "Page", "page", "public")
+	page, err := treeService.GetPage(pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+
+	mu := service.pageWriteLock(pageID)
+	mu.Lock()
+	started := make(chan struct{})
+	done := make(chan []error, 1)
+	go func() {
+		close(started)
+		done <- service.RecordContentUpdates([]*tree.Page{page}, "tester", "became draft")
+	}()
+	<-started
+	setRevisionTestDraft(t, treeService, pageID, true)
+	mu.Unlock()
+
+	select {
+	case errs := <-done:
+		if len(errs) != 1 || errs[0] != nil {
+			t.Fatalf("RecordContentUpdates errors = %#v", errs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for content revision")
+	}
+	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 0 {
+		t.Fatalf("revisions = %#v, err=%v", revisions, err)
+	}
+}
+
 func TestRecordContentUpdateHappyPathAndNoop(t *testing.T) {
 	service, treeService, storageDir := newRevisionTestService(t)
 	pageID := createRevisionTestPage(t, treeService, "Page", "page", "hello")

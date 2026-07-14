@@ -1,4 +1,9 @@
-import { NODE_KIND_SECTION, PageNode } from '@/lib/api/pages'
+import {
+  isEffectivelyDraft,
+  isInheritedDraft,
+  NODE_KIND_SECTION,
+  PageNode,
+} from '@/lib/api/pages'
 import { DraftBadge } from '@/components/DraftBadge'
 import { buildViewUrl } from '@/lib/routePath'
 import { useTreeStore } from '@/stores/tree'
@@ -33,7 +38,9 @@ export function PinnedPageItem({ node, onUnpin }: Props) {
       >
         <Icon size={13} className="tree-view__pinned-item-icon" />
         <span className="tree-view__pinned-item-title">{node.title}</span>
-        {node.draft && <DraftBadge />}
+        {isEffectivelyDraft(node) && (
+          <DraftBadge inherited={isInheritedDraft(node)} />
+        )}
       </Link>
       {hovered && (
         <button

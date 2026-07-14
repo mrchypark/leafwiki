@@ -1,6 +1,11 @@
 import { TreeViewActionButton } from '@/features/tree/TreeViewActionButton'
 import { DraftBadge } from '@/components/DraftBadge'
-import { NODE_KIND_SECTION, PageNode } from '@/lib/api/pages'
+import {
+  isEffectivelyDraft,
+  isInheritedDraft,
+  NODE_KIND_SECTION,
+  PageNode,
+} from '@/lib/api/pages'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -51,7 +56,9 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
         >
           {node.title || 'Untitled Page'}
         </span>
-        {node.draft && <DraftBadge />}
+        {isEffectivelyDraft(node) && (
+          <DraftBadge inherited={isInheritedDraft(node)} />
+        )}
       </Link>
     </div>
   )
@@ -100,24 +107,22 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
           {linkText}
           {!readOnlyMode && (isMobile || hovered || isActionsMenuOpen) && (
             <div className={clsx('tree-node__actions', treeActionButtonStyle)}>
-              {!node.draft && (
-                <TreeViewActionButton
-                  actionName="add"
-                  icon={
-                    <FilePlus
-                      size={18}
-                      className={clsx(
-                        'tree-node__action-icon',
-                        isMobile && 'text-brand/70!',
-                      )}
-                    />
-                  }
-                  tooltip="Create new page"
-                  onClick={() =>
-                    openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
-                  }
-                />
-              )}
+              <TreeViewActionButton
+                actionName="add"
+                icon={
+                  <FilePlus
+                    size={18}
+                    className={clsx(
+                      'tree-node__action-icon',
+                      isMobile && 'text-brand/70!',
+                    )}
+                  />
+                }
+                tooltip="Create new page"
+                onClick={() =>
+                  openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
+                }
+              />
               <TreeNodeActionsMenu node={node} />
             </div>
           )}

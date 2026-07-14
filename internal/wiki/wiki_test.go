@@ -76,7 +76,7 @@ func updatePageForTest(t *testing.T, w *Wiki, userID, id, title, slug string, co
 
 	out, err := wikipages.NewUpdatePageUseCase(w.tree, w.slug, w.newPageOrchestrator(), w.log, nil).Execute(
 		context.Background(),
-		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content, Kind: kind},
+		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content},
 	)
 	if err != nil {
 		t.Fatalf("UpdatePage failed: %v", err)
@@ -107,6 +107,51 @@ func TestWiki_DeletePage_Simple(t *testing.T) {
 	deletePageForTest(t, w, "system", page.ID, false)
 	if _, err := w.tree.GetPage(page.ID); err == nil {
 		t.Fatalf("expected deleted page to be gone")
+	}
+}
+
+func TestWiki_BootstrapTagsAndProperties_SkipsDraftPages(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	page := createPageForTest(t, w, "owner", nil, "Draft", "draft", pageNodeKind())
+	raw := "---\ntags:\n  - secret\nstatus: private\n---\n\nBody."
+	if err := w.tree.UpdateNode("owner", page.ID, page.Title, page.Slug, &raw, tree.VersionUnchecked, nil, nil, true); err != nil {
+		t.Fatalf("UpdateNode: %v", err)
+	}
+	page, err := w.tree.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	draft := true
+	if err := w.tree.UpdateNodeWithDraft("owner", page.ID, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft: %v", err)
+	}
+	page, err = w.tree.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage draft: %v", err)
+	}
+	if err := w.tags.IndexPageContent(page.ID, page.RawContent); err != nil {
+		t.Fatalf("IndexPageContent tags: %v", err)
+	}
+	if err := w.props.IndexPageContent(page.ID, page.RawContent); err != nil {
+		t.Fatalf("IndexPageContent properties: %v", err)
+	}
+
+	w.bootstrapTagsAndProperties(context.Background())
+
+	tagIDs, err := w.tags.GetPageIDsByTags([]string{"secret"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags: %v", err)
+	}
+	if len(tagIDs) != 0 {
+		t.Fatalf("draft remained in tag index: %v", tagIDs)
+	}
+	propertyIDs, err := w.props.GetPageIDsByProperty("status", "private")
+	if err != nil {
+		t.Fatalf("GetPageIDsByProperty: %v", err)
+	}
+	if len(propertyIDs) != 0 {
+		t.Fatalf("draft remained in property index: %v", propertyIDs)
 	}
 }
 

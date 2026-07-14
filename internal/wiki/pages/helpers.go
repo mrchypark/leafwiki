@@ -1,6 +1,8 @@
 package pages
 
 import (
+	"strings"
+
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 )
@@ -17,7 +19,14 @@ func sanitizeClientVersion(v string) string {
 
 // collectSubtreeIDs returns all page IDs within a subtree (excluding "root").
 func collectSubtreeIDs(node *tree.PageNode) []string {
+	ids, _ := collectSubtreeIDsAndTitles(node)
+	return ids
+}
+
+func collectSubtreeIDsAndTitles(node *tree.PageNode) ([]string, []string) {
 	var ids []string
+	var titles []string
+	seenTitles := make(map[string]struct{})
 	var walk func(n *tree.PageNode)
 	walk = func(n *tree.PageNode) {
 		if n == nil {
@@ -25,13 +34,20 @@ func collectSubtreeIDs(node *tree.PageNode) []string {
 		}
 		if n.ID != "root" {
 			ids = append(ids, n.ID)
+			key := strings.ToLower(strings.TrimSpace(n.Title))
+			if key != "" {
+				if _, ok := seenTitles[key]; !ok {
+					seenTitles[key] = struct{}{}
+					titles = append(titles, n.Title)
+				}
+			}
 		}
 		for _, c := range n.Children {
 			walk(c)
 		}
 	}
 	walk(node)
-	return ids
+	return ids, titles
 }
 
 // deleteRevisionData removes all revision data for a list of page IDs.

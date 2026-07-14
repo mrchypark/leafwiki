@@ -43,3 +43,57 @@ func TestPrune_RemovesDraftLeafWithoutMutatingTree(t *testing.T) {
 		t.Fatal("Prune mutated or reused the live tree")
 	}
 }
+
+func TestCanView_NonDraftChildInheritsDraftAncestor(t *testing.T) {
+	parent := &tree.PageNode{Draft: true}
+	child := &tree.PageNode{Parent: parent}
+
+	if CanView(child, nil, false) {
+		t.Fatal("anonymous user can view a child of a draft ancestor")
+	}
+	if !CanView(child, &auth.User{Role: auth.RoleEditor}, false) {
+		t.Fatal("editor cannot view a child of a draft ancestor")
+	}
+}
+
+func TestPrune_RemovesEntireDraftSubtreeWithoutMutatingTree(t *testing.T) {
+	root := &tree.PageNode{ID: "root", Slug: "root"}
+	draft := &tree.PageNode{ID: "draft", Slug: "draft", Draft: true, Parent: root}
+	child := &tree.PageNode{ID: "child", Slug: "child", Parent: draft}
+	draft.Children = []*tree.PageNode{child}
+	root.Children = []*tree.PageNode{draft}
+
+	visible := Prune(root, nil, false)
+	if visible == nil || len(visible.Children) != 0 {
+		t.Fatalf("visible tree retained draft subtree: %#v", visible)
+	}
+	if len(root.Children) != 1 || len(draft.Children) != 1 {
+		t.Fatal("Prune mutated the live tree")
+	}
+}
+
+func TestFilterPublishedPageIDs_RemovesDraftDescendants(t *testing.T) {
+	svc := tree.NewTreeService(t.TempDir())
+	if err := svc.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	sectionKind := tree.NodeKindSection
+	pageKind := tree.NodeKindPage
+	draftID, err := svc.CreateNodeWithDraft("editor", nil, "Draft", "draft", &sectionKind, true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftID, "Child", "child", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	publicID, err := svc.CreateNode("editor", nil, "Public", "public", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode public: %v", err)
+	}
+
+	got := FilterPublishedPageIDs(svc, []string{*draftID, *childID, *publicID})
+	if len(got) != 1 || got[0] != *publicID {
+		t.Fatalf("published IDs = %v", got)
+	}
+}

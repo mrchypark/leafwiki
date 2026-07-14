@@ -27,7 +27,10 @@ type TreeService struct {
 	nodesByTitle map[string][]*PageNode
 	childSlugs   map[string]map[string]*PageNode
 
-	mu sync.RWMutex
+	// persistGate serializes filesystem reconstruction with every on-disk tree
+	// mutation. Always acquire it before mu.
+	persistGate chan struct{}
+	mu          sync.RWMutex
 }
 
 const (
@@ -39,6 +42,9 @@ const (
 )
 
 func NewTreeService(storageDir string) *TreeService {
+	persistGate := make(chan struct{}, 1)
+	persistGate <- struct{}{}
+
 	return &TreeService{
 		storageDir:   storageDir,
 		tree:         nil,
@@ -47,14 +53,15 @@ func NewTreeService(storageDir string) *TreeService {
 		nodesByID:    make(map[string]*PageNode),
 		nodesByTitle: make(map[string][]*PageNode),
 		childSlugs:   make(map[string]map[string]*PageNode),
+		persistGate:  persistGate,
 	}
 }
 
 // LoadTree reconstructs the in-memory tree from the filesystem.
 // Legacy tree.json data is only used as a migration source for older schema versions.
 func (t *TreeService) LoadTree() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	t.log.Info("Checking schema version...")
 	schema, err := loadSchema(t.storageDir)
@@ -123,9 +130,39 @@ func (t *TreeService) LoadTree() error {
 	return nil
 }
 
-func (t *TreeService) withLockedTree(fn func() error) error {
+func (t *TreeService) lockPersistedTree() {
+	_ = t.acquirePersistence(context.Background())
 	t.mu.Lock()
-	defer t.mu.Unlock()
+}
+
+func (t *TreeService) unlockPersistedTree() {
+	t.mu.Unlock()
+	t.releasePersistence()
+}
+
+func (t *TreeService) acquirePersistence(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.persistGate:
+		if err := ctx.Err(); err != nil {
+			t.releasePersistence()
+			return err
+		}
+		return nil
+	}
+}
+
+func (t *TreeService) releasePersistence() {
+	t.persistGate <- struct{}{}
+}
+
+func (t *TreeService) withPersistedTree(fn func() error) error {
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	return fn()
 }
@@ -148,19 +185,26 @@ func (t *TreeService) TreeHash() string {
 }
 
 // ReconstructTreeFromFS reconstructs the tree from the filesystem.
-// The slow FS scan runs without holding the write lock so readers can
-// continue serving the current tree concurrently. The lock is acquired
-// only for the fast in-memory swap and index rebuild.
+// Reconstruction serializes with persisted mutations while the slow scan runs,
+// but readers continue using the current in-memory tree until the final swap.
 func (t *TreeService) ReconstructTreeFromFS() error {
 	return t.ReconstructTreeFromFSContext(context.Background())
 }
 
 func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
+	return t.reconstructTreeFromFSContext(ctx, t.store.ReconstructTreeFromFSContext)
+}
+
+func (t *TreeService) reconstructTreeFromFSContext(ctx context.Context, scan func(context.Context) (*PageNode, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := t.acquirePersistence(ctx); err != nil {
+		return err
+	}
+	defer t.releasePersistence()
 
-	newTree, err := t.store.ReconstructTreeFromFSContext(ctx)
+	newTree, err := scan(ctx)
 	if err != nil {
 		t.log.Error("Error reconstructing tree from filesystem", "error", err)
 		return err
@@ -175,6 +219,7 @@ func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	oldTree := t.tree
 	t.tree = newTree
 	t.rebuildIndexesLocked()
@@ -207,7 +252,7 @@ func (t *TreeService) CreateNode(userID string, parentID *string, title string, 
 // CreateNodeWithDraft creates a node and persists its initial draft state.
 func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title string, slug string, nodeKind *NodeKind, draft bool) (*string, error) {
 	var result *string
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{draft: draft})
 		if err != nil {
 			return err
@@ -222,7 +267,7 @@ func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title
 
 func (t *TreeService) RestoreNode(userID, id string, parentID *string, title, slug string, nodeKind NodeKind, content string, metadata PageMetadata) (*Page, error) {
 	var restored *Page
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		kind := nodeKind
 		created, err := t.createNodeLocked(userID, parentID, title, slug, &kind, createNodeOptions{existingID: id})
 		if err != nil {
@@ -260,10 +305,6 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 	if kind != nil {
 		k = *kind
 	}
-	if opts.draft && k != NodeKindPage {
-		return nil, &InvalidOpError{Op: "CreateNodeWithDraft", Reason: "only pages can be drafts"}
-	}
-
 	// Resolve the parent
 	parent := t.tree
 	if parentID != nil && *parentID != "" && *parentID != "root" {
@@ -272,10 +313,6 @@ func (t *TreeService) createNodeLocked(userID string, parentID *string, title st
 			return nil, ErrParentNotFound
 		}
 	}
-	if parent.Draft {
-		return nil, &InvalidOpError{Op: "CreateNode", Reason: "draft pages cannot contain children"}
-	}
-
 	// Check if a child with the same slug already exists
 	if t.findChildBySlugInParentLocked(parent, slug) != nil {
 		return nil, ErrPageAlreadyExists
@@ -599,7 +636,7 @@ func (t *TreeService) findChildBySlugExactInParentLocked(parent *PageNode, slug 
 
 // DeleteNode deletes a node from the tree
 func (t *TreeService) DeleteNode(userID string, id string, recursive bool, expectedVersion string) error {
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -677,7 +714,28 @@ func (t *TreeService) DeleteNode(userID string, id string, recursive bool, expec
 // embedded frontmatter (UpsertContentPreservingFrontmatter).
 // When both are absent, content is a plain body update (UpsertContent).
 func (t *TreeService) UpdateNode(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool) error {
-	return t.withLockedTree(func() error {
+	return t.updateNode(userID, id, title, slug, content, expectedVersion, tags, properties, preserveFrontmatter, nil, nil)
+}
+
+// UpdateNodeWithDraft updates a node and optionally changes its own draft state.
+func (t *TreeService) UpdateNodeWithDraft(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool, draft *bool) error {
+	return t.updateNode(userID, id, title, slug, content, expectedVersion, tags, properties, preserveFrontmatter, draft, nil)
+}
+
+// PathPreconditions reject writes when ancestor changes make a read path stale.
+type PathPreconditions struct {
+	ExpectedSourcePath            string
+	ExpectedDestinationParentPath string
+}
+
+// UpdateNodeWithDraftWithPreconditions applies draft and content atomically
+// only while the source path still matches the caller's snapshot.
+func (t *TreeService) UpdateNodeWithDraftWithPreconditions(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool, draft *bool, preconditions *PathPreconditions) error {
+	return t.updateNode(userID, id, title, slug, content, expectedVersion, tags, properties, preserveFrontmatter, draft, preconditions)
+}
+
+func (t *TreeService) updateNode(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool, draft *bool, preconditions *PathPreconditions) error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -691,16 +749,49 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 		if err := checkNodeVersion(node, expectedVersion); err != nil {
 			return err
 		}
-		if slug != node.Slug && node.ContainsDraft() {
-			return &InvalidOpError{Op: "UpdateNode", Reason: "draft pages cannot change slug"}
+		if preconditions != nil && node.CalculatePath() != preconditions.ExpectedSourcePath {
+			return fmt.Errorf("source path changed: %w", ErrVersionConflict)
 		}
-
 		// Slug must be unique under same parent (when changed)
 		if slug != node.Slug && node.Parent != nil {
 			existing := t.findChildBySlugInParentLocked(node.Parent, slug)
 			if existing != nil && existing.ID != node.ID {
 				return ErrPageAlreadyExists
 			}
+		}
+
+		targetDraft := node.Draft
+		if draft != nil {
+			targetDraft = *draft
+		}
+		oldSlug := node.Slug
+		oldDraft := node.Draft
+		renamed := slug != oldSlug
+		persistDraftBeforeRename := renamed && targetDraft && !oldDraft && content == nil
+		var contentSnapshot *nodeContentSnapshot
+		if content != nil || persistDraftBeforeRename {
+			snapshot, err := t.store.snapshotNodeContent(node)
+			if err != nil {
+				return fmt.Errorf("could not snapshot content before update: %w", err)
+			}
+			contentSnapshot = snapshot
+		}
+		now := time.Now().UTC()
+		staged := *node
+		staged.Title = title
+		staged.Draft = targetDraft
+		staged.Metadata.UpdatedAt = now
+		staged.Metadata.LastAuthorID = userID
+
+		// Hide public content before writing a draft version. Failed rollback stays
+		// fail-closed rather than exposing uncertain persisted state.
+		if targetDraft && !node.Draft {
+			node.Draft = true
+		}
+		contentEntry := *node
+		contentEntry.Draft = targetDraft
+		if node.Draft && !targetDraft {
+			contentEntry.Draft = true
 		}
 
 		// Content update?
@@ -710,19 +801,23 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 			// Priority: preserveFrontmatter wins over tags/properties; callers must not set both.
 			switch {
 			case preserveFrontmatter:
-				upsertErr = t.store.UpsertContentPreservingFrontmatter(node, *content)
+				upsertErr = t.store.UpsertContentPreservingFrontmatter(&contentEntry, *content)
 			case tags != nil || properties != nil:
-				upsertErr = t.store.UpsertContentAndMetadata(node, *content, tags, properties)
+				upsertErr = t.store.UpsertContentAndMetadata(&contentEntry, *content, tags, properties)
 			default:
-				upsertErr = t.store.UpsertContent(node, *content)
+				upsertErr = t.store.UpsertContent(&contentEntry, *content)
 			}
 			if upsertErr != nil {
 				return fmt.Errorf("could not upsert content: %w", upsertErr)
 			}
+		} else if persistDraftBeforeRename {
+			if err := t.store.PersistFrontmatterWithDraft(&contentEntry); err != nil {
+				return fmt.Errorf("could not persist draft before rename: %w", err)
+			}
 		}
 
 		// Rename slug on disk (must happen while node still has old slug)
-		if slug != node.Slug {
+		if renamed {
 			t.log.Info("renaming node slug", "nodeID", node.ID, "oldSlug", node.Slug, "newSlug", slug)
 			if err := t.store.RenameNode(node, slug); err != nil {
 				return fmt.Errorf("could not rename node: %w", err)
@@ -732,32 +827,61 @@ func (t *TreeService) UpdateNode(userID string, id string, title string, slug st
 				t.rebuildChildSlugIndexForParentLocked(node.Parent)
 			}
 		}
+		staged.Slug = slug
 
-		// Update title in tree
-		t.removeTitleIndexForNodeLocked(node)
-		node.Title = title
-		t.addTitleIndexForNodeLocked(node)
-
-		// Update metadata
-		node.Metadata.UpdatedAt = time.Now().UTC()
-		node.Metadata.LastAuthorID = userID
-
-		// Keep frontmatter in sync *if file exists* (important when title changed but content == nil)
-		if err := t.store.SyncFrontmatterIfExists(node); err != nil {
-			return fmt.Errorf("could not sync frontmatter: %w", err)
+		var syncErr error
+		if draft != nil {
+			syncErr = t.store.PersistFrontmatterWithDraft(&staged)
+		} else {
+			syncErr = t.store.SyncFrontmatterIfExists(&staged)
+		}
+		if syncErr != nil {
+			rollbackErr := t.rollbackNodeUpdateLocked(node, oldSlug, oldDraft, contentSnapshot)
+			syncErr = fmt.Errorf("could not sync frontmatter: %w", syncErr)
+			if rollbackErr != nil {
+				return errors.Join(syncErr, fmt.Errorf("rollback node update: %w", rollbackErr))
+			}
+			return syncErr
 		}
 
-		// Save tree
+		t.removeTitleIndexForNodeLocked(node)
+		node.Title = title
+		node.Draft = targetDraft
+		node.Metadata = staged.Metadata
+		t.addTitleIndexForNodeLocked(node)
 		return nil
 	})
-
 }
 
-// SetDraft changes only a leaf page's publication state. The file is written
-// before the live node is changed, so a failed write cannot expose a draft or
-// publish content that was not persisted.
+func (t *TreeService) rollbackNodeUpdateLocked(node *PageNode, oldSlug string, oldDraft bool, contentSnapshot *nodeContentSnapshot) error {
+	var rollbackErr error
+	pathRestored := node.Slug == oldSlug
+	if !pathRestored {
+		if err := t.store.RenameNode(node, oldSlug); err != nil {
+			rollbackErr = fmt.Errorf("restore slug: %w", err)
+		} else {
+			pathRestored = true
+			node.Slug = oldSlug
+			if node.Parent != nil {
+				t.rebuildChildSlugIndexForParentLocked(node.Parent)
+			}
+		}
+	}
+	if pathRestored {
+		if err := t.store.restoreNodeContent(node, contentSnapshot); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	if rollbackErr == nil {
+		node.Draft = oldDraft
+	}
+	return rollbackErr
+}
+
+// SetDraft changes a node's own publication state. Descendants inherit draft
+// visibility through their ancestor chain without rewriting their files.
 func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion string) error {
-	return t.withLockedTree(func() error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -768,9 +892,6 @@ func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion st
 		if err := checkNodeVersion(node, expectedVersion); err != nil {
 			return err
 		}
-		if node.Kind != NodeKindPage {
-			return &InvalidOpError{Op: "SetDraft", Reason: "only pages can be drafts"}
-		}
 		if node.Draft == draft {
 			return nil
 		}
@@ -779,7 +900,7 @@ func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion st
 		staged.Draft = draft
 		staged.Metadata.UpdatedAt = time.Now().UTC()
 		staged.Metadata.LastAuthorID = userID
-		if err := t.store.SyncFrontmatterIfExists(&staged); err != nil {
+		if err := t.store.PersistFrontmatterWithDraft(&staged); err != nil {
 			return fmt.Errorf("could not persist draft state: %w", err)
 		}
 		node.Draft = staged.Draft
@@ -789,7 +910,7 @@ func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion st
 }
 
 func (t *TreeService) ConvertNode(userID string, id string, kind NodeKind, expectedVersion string) error {
-	return t.withLockedTree(func() error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -803,10 +924,6 @@ func (t *TreeService) ConvertNode(userID string, id string, kind NodeKind, expec
 		if err := checkNodeVersion(node, expectedVersion); err != nil {
 			return err
 		}
-		if node.Draft {
-			return &InvalidOpError{Op: "ConvertNode", Reason: "draft pages cannot be converted"}
-		}
-
 		if node.Kind == kind {
 			// No change
 			return nil
@@ -844,6 +961,141 @@ func (t *TreeService) GetTree() *PageNode {
 	defer t.mu.RUnlock()
 
 	return t.tree
+}
+
+// SnapshotTree returns a detached copy of the current tree.
+func (t *TreeService) SnapshotTree() *PageNode {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return clonePageNodeSubtree(t.tree, nil)
+}
+
+// PublishedPageIDs returns every non-root node outside draft subtrees in tree order.
+func (t *TreeService) PublishedPageIDs() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	ids := []string{}
+	var collect func(*PageNode)
+	collect = func(node *PageNode) {
+		if node == nil || node.Draft {
+			return
+		}
+		if node.ID != "root" {
+			ids = append(ids, node.ID)
+		}
+		for _, child := range node.Children {
+			collect(child)
+		}
+	}
+	collect(t.tree)
+	return ids
+}
+
+// FilterPublishedPageIDs keeps IDs that resolve outside draft subtrees.
+// Input order and duplicates are preserved.
+func (t *TreeService) FilterPublishedPageIDs(pageIDs []string) []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	ids := make([]string, 0, len(pageIDs))
+	for _, id := range pageIDs {
+		node := t.getNodeByIDLocked(id)
+		if node == nil || node.ID == "root" || isInDraftSubtree(node) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func isInDraftSubtree(node *PageNode) bool {
+	for current := node; current != nil; current = current.Parent {
+		if current.Draft {
+			return true
+		}
+	}
+	return false
+}
+
+// SnapshotPageNode returns a detached node with a detached ancestor chain.
+// Children are omitted for path and inherited-draft checks.
+func (t *TreeService) SnapshotPageNode(id string) (*PageNode, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if t.tree == nil {
+		return nil, ErrTreeNotLoaded
+	}
+	node := t.getNodeByIDLocked(id)
+	if node == nil {
+		return nil, ErrPageNotFound
+	}
+	clone := *node
+	clone.Parent = clonePageNodeAncestors(node.Parent)
+	clone.Children = nil
+	return &clone, nil
+}
+
+// SnapshotPageSubtree returns a detached subtree with detached ancestors.
+func (t *TreeService) SnapshotPageSubtree(id string) (*PageNode, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if t.tree == nil {
+		return nil, ErrTreeNotLoaded
+	}
+	node := t.getNodeByIDLocked(id)
+	if node == nil {
+		return nil, ErrPageNotFound
+	}
+	return clonePageNodeSubtree(node, clonePageNodeAncestors(node.Parent)), nil
+}
+
+// SnapshotPagesByTitle returns detached title matches with ancestor chains.
+func (t *TreeService) SnapshotPagesByTitle(title string) []*PageNode {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	title = strings.TrimSpace(title)
+	if t.tree == nil || title == "" {
+		return nil
+	}
+	nodes := t.nodesByTitle[strings.ToLower(title)]
+	snapshots := make([]*PageNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		clone := *node
+		clone.Parent = clonePageNodeAncestors(node.Parent)
+		clone.Children = nil
+		snapshots = append(snapshots, &clone)
+	}
+	return snapshots
+}
+
+func clonePageNodeAncestors(node *PageNode) *PageNode {
+	if node == nil {
+		return nil
+	}
+	clone := *node
+	clone.Parent = clonePageNodeAncestors(node.Parent)
+	clone.Children = nil
+	return &clone
+}
+
+func clonePageNodeSubtree(node, parent *PageNode) *PageNode {
+	if node == nil {
+		return nil
+	}
+	clone := *node
+	clone.Parent = parent
+	clone.Children = make([]*PageNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		clone.Children = append(clone.Children, clonePageNodeSubtree(child, &clone))
+	}
+	return &clone
 }
 
 // IsLoaded reports whether the tree has been loaded into memory.
@@ -900,8 +1152,9 @@ func (t *TreeService) collectIDsDFS() []string {
 
 // BulkContentUpdate is a single item for BulkUpdateContent.
 type BulkContentUpdate struct {
-	ID      string
-	Content string
+	ID              string
+	Content         string
+	ExpectedVersion string
 }
 
 // BulkUpdateContent updates content for multiple pages under a single write lock,
@@ -920,8 +1173,8 @@ func (t *TreeService) BulkUpdateContent(userID string, updates []BulkContentUpda
 		oldMetadata PageMetadata
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		for i := range errs {
@@ -937,6 +1190,12 @@ func (t *TreeService) BulkUpdateContent(userID string, updates []BulkContentUpda
 		if node == nil {
 			errs[i] = ErrPageNotFound
 			continue
+		}
+		if u.ExpectedVersion != "" {
+			if err := checkNodeVersion(node, u.ExpectedVersion); err != nil {
+				errs[i] = err
+				continue
+			}
 		}
 		oldMetadata := node.Metadata
 		// Update in-memory metadata before disk write so UpsertContent writes the correct timestamps.
@@ -1023,7 +1282,7 @@ func (t *TreeService) GetPages(ids []string) ([]*Page, []error) {
 			if err != nil {
 				errs[tk.index] = fmt.Errorf(errGetPageContentFailed, err)
 			} else {
-				pages[tk.index] = &Page{PageNode: tk.node, Content: content, RawContent: raw}
+				pages[tk.index] = &Page{PageNode: clonePageNodeAncestors(tk.node), Content: content, RawContent: raw}
 			}
 			mu.Unlock()
 		}(tk)
@@ -1054,7 +1313,7 @@ func (t *TreeService) GetPage(id string) (*Page, error) {
 	}
 
 	return &Page{
-		PageNode:   page,
+		PageNode:   clonePageNodeSubtree(page, clonePageNodeAncestors(page.Parent)),
 		Content:    content,
 		RawContent: raw,
 	}, nil
@@ -1097,9 +1356,10 @@ func (t *TreeService) ResolvePermalinkTarget(id string) (*PermalinkTarget, error
 	}
 
 	return &PermalinkTarget{
-		ID:   node.ID,
-		Slug: node.Slug,
-		Path: strings.TrimPrefix(node.CalculatePath(), "/"),
+		ID:             node.ID,
+		Slug:           node.Slug,
+		Path:           strings.TrimPrefix(node.CalculatePath(), "/"),
+		VisibilityNode: clonePageNodeAncestors(node),
 	}, nil
 }
 
@@ -1133,14 +1393,15 @@ func (t *TreeService) FindPageByRoutePath(routePath string) (*Page, error) {
 		parent = node
 	}
 
-	content, err := t.store.ReadPageContent(node)
+	content, raw, err := t.store.ReadPageAndRaw(node)
 	if err != nil {
 		return nil, fmt.Errorf(errGetPageContentFailed, err)
 	}
 
 	return &Page{
-		PageNode: node,
-		Content:  content,
+		PageNode:   clonePageNodeSubtree(node, clonePageNodeAncestors(node.Parent)),
+		Content:    content,
+		RawContent: raw,
 	}, nil
 }
 
@@ -1214,11 +1475,13 @@ func (t *TreeService) lookupPagePathLocked(p string) (*PathLookup, error) {
 		// Check if the segment exists under the current parent.
 		e := t.findChildBySlugInParentLocked(parent, part)
 		if e != nil {
+			id, kind, title := e.ID, e.Kind, e.Title
 			// Segment exists
 			lookup.Segments[i].Exists = true
-			lookup.Segments[i].ID = &e.ID
-			lookup.Segments[i].Kind = &e.Kind
-			lookup.Segments[i].Title = &e.Title
+			lookup.Segments[i].ID = &id
+			lookup.Segments[i].Kind = &kind
+			lookup.Segments[i].Title = &title
+			lookup.Segments[i].VisibilityNode = clonePageNodeAncestors(e)
 
 			// Move to the next parent
 			parent = e
@@ -1255,8 +1518,13 @@ func (t *TreeService) lookupPagePathLocked(p string) (*PathLookup, error) {
 // It creates any missing segments as needed
 // Returns the final page node and a list of created nodes
 func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string, kind *NodeKind) (*EnsurePathResult, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	return t.EnsurePagePathWithDraft(userID, p, targetTitle, kind, false)
+}
+
+// EnsurePagePathWithDraft persists the final new node's own draft state during creation.
+func (t *TreeService) EnsurePagePathWithDraft(userID string, p string, targetTitle string, kind *NodeKind, draft bool) (*EnsurePathResult, error) {
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return nil, ErrTreeNotLoaded
@@ -1299,7 +1567,9 @@ func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string
 			kindToUse = *kind
 		}
 
-		createdNode, err := t.createNodeLocked(userID, currentID, segTitle, segment.Slug, &kindToUse, createNodeOptions{})
+		createdNode, err := t.createNodeLocked(userID, currentID, segTitle, segment.Slug, &kindToUse, createNodeOptions{
+			draft: draft && i == len(lookup.Segments)-1,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("could not create segment %q: %w", segment.Slug, err)
 		}
@@ -1332,8 +1602,17 @@ func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string
 
 // MoveNode moves a node to another parent (root if parentID is empty/"root")
 func (t *TreeService) MoveNode(userID string, id string, parentID string, expectedVersion string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	return t.moveNode(userID, id, parentID, expectedVersion, nil)
+}
+
+// MoveNodeWithPreconditions rejects a move when source or destination ancestry changed.
+func (t *TreeService) MoveNodeWithPreconditions(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions) error {
+	return t.moveNode(userID, id, parentID, expectedVersion, preconditions)
+}
+
+func (t *TreeService) moveNode(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions) error {
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return ErrTreeNotLoaded
@@ -1347,9 +1626,6 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 
 	if err := checkNodeVersion(node, expectedVersion); err != nil {
 		return err
-	}
-	if node.ContainsDraft() {
-		return &InvalidOpError{Op: "MoveNode", Reason: "draft pages cannot be moved"}
 	}
 
 	oldParent := node.Parent
@@ -1365,10 +1641,14 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 			return fmt.Errorf("new parent not found: %w", ErrParentNotFound)
 		}
 	}
-	if newParent.Draft {
-		return &InvalidOpError{Op: "MoveNode", Reason: "draft pages cannot contain children"}
+	if preconditions != nil {
+		if node.CalculatePath() != preconditions.ExpectedSourcePath {
+			return fmt.Errorf("source path changed: %w", ErrVersionConflict)
+		}
+		if newParent.CalculatePath() != preconditions.ExpectedDestinationParentPath {
+			return fmt.Errorf("destination parent path changed: %w", ErrVersionConflict)
+		}
 	}
-
 	// Same slug collision under new parent
 	if existing := t.findChildBySlugInParentLocked(newParent, node.Slug); existing != nil && existing.ID != node.ID {
 		return fmt.Errorf("child with the same slug already exists: %w", ErrPageAlreadyExists)
@@ -1382,6 +1662,9 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 	// Circular reference guard: node cannot be moved under its own descendants
 	if node.IsChildOf(newParent.ID, true) {
 		return fmt.Errorf("circular reference detected: %w", ErrMovePageCircularReference)
+	}
+	if err := t.store.ValidateMoveNode(node, newParent); err != nil {
+		return fmt.Errorf("could not validate node move: %w", err)
 	}
 
 	newParentWasConverted := false
@@ -1397,6 +1680,21 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 		return fmt.Errorf("destination parent must be a section, got %q", newParent.Kind)
 	}
 
+	previousDraft := node.Draft
+	draftPromoted := !node.Draft && isInDraftSubtree(oldParent) && !isInDraftSubtree(newParent)
+	if draftPromoted {
+		staged := *node
+		staged.Draft = true
+		if err := t.store.PersistFrontmatterWithDraft(&staged); err != nil {
+			rollbackErr := t.rollbackMovePreparationLocked(newParent, newParentWasConverted)
+			if rollbackErr != nil {
+				return errors.Join(fmt.Errorf("could not preserve inherited draft before move: %w", err), fmt.Errorf("rollback move preparation: %w", rollbackErr))
+			}
+			return fmt.Errorf("could not preserve inherited draft before move: %w", err)
+		}
+		node.Draft = true
+	}
+
 	previousOldChildren := append([]*PageNode(nil), oldParent.Children...)
 	previousOldPositions := snapshotChildPositions(oldParent.Children)
 	previousNewChildren := append([]*PageNode(nil), newParent.Children...)
@@ -1405,6 +1703,13 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 	previousMetadata := node.Metadata
 
 	if err := t.store.MoveNode(node, newParent); err != nil {
+		rollbackErr := t.rollbackMovePreparationLocked(newParent, newParentWasConverted)
+		if rollbackErr == nil && draftPromoted {
+			rollbackErr = t.restoreMoveDraftLocked(node, previousDraft)
+		}
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("could not move node on disk: %w", err), fmt.Errorf("rollback move preparation: %w", rollbackErr))
+		}
 		return fmt.Errorf("could not move node on disk: %w", err)
 	}
 
@@ -1428,6 +1733,9 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 
 	if err := t.store.SaveChildOrder(oldParent); err != nil {
 		rollbackErr := t.rollbackMovedNodeLocked(node, oldParent, newParent, previousOldChildren, previousOldPositions, previousNewChildren, previousNewPositions, previousPosition, previousMetadata, newParentWasConverted)
+		if rollbackErr == nil && draftPromoted {
+			rollbackErr = t.restoreMoveDraftLocked(node, previousDraft)
+		}
 		if rollbackErr != nil {
 			return errors.Join(fmt.Errorf("could not persist source child order: %w", err), fmt.Errorf(errRollbackMovedNodeFailed, rollbackErr))
 		}
@@ -1436,6 +1744,9 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 	if newParent != oldParent {
 		if err := t.store.SaveChildOrder(newParent); err != nil {
 			rollbackErr := t.rollbackMovedNodeLocked(node, oldParent, newParent, previousOldChildren, previousOldPositions, previousNewChildren, previousNewPositions, previousPosition, previousMetadata, newParentWasConverted)
+			if rollbackErr == nil && draftPromoted {
+				rollbackErr = t.restoreMoveDraftLocked(node, previousDraft)
+			}
 			if rollbackErr != nil {
 				return errors.Join(fmt.Errorf("could not persist destination child order: %w", err), fmt.Errorf(errRollbackMovedNodeFailed, rollbackErr))
 			}
@@ -1445,12 +1756,36 @@ func (t *TreeService) MoveNode(userID string, id string, parentID string, expect
 
 	if err := t.store.SyncFrontmatterIfExists(node); err != nil {
 		rollbackErr := t.rollbackMovedNodeLocked(node, oldParent, newParent, previousOldChildren, previousOldPositions, previousNewChildren, previousNewPositions, previousPosition, previousMetadata, newParentWasConverted)
+		if rollbackErr == nil && draftPromoted {
+			rollbackErr = t.restoreMoveDraftLocked(node, previousDraft)
+		}
 		if rollbackErr != nil {
 			return errors.Join(fmt.Errorf("could not sync moved node frontmatter: %w", err), fmt.Errorf(errRollbackMovedNodeFailed, rollbackErr))
 		}
 		return fmt.Errorf("could not sync moved node frontmatter: %w", err)
 	}
 
+	return nil
+}
+
+func (t *TreeService) rollbackMovePreparationLocked(newParent *PageNode, newParentWasConverted bool) error {
+	if !newParentWasConverted {
+		return nil
+	}
+	if err := t.store.ConvertNode(newParent, NodeKindPage); err != nil {
+		return fmt.Errorf("convert destination parent back to page: %w", err)
+	}
+	newParent.Kind = NodeKindPage
+	return nil
+}
+
+func (t *TreeService) restoreMoveDraftLocked(node *PageNode, draft bool) error {
+	staged := *node
+	staged.Draft = draft
+	if err := t.store.PersistFrontmatterWithDraft(&staged); err != nil {
+		return fmt.Errorf("restore source draft state: %w", err)
+	}
+	node.Draft = draft
 	return nil
 }
 
@@ -1531,8 +1866,8 @@ func (t *TreeService) rollbackMovedNodeLocked(node *PageNode, oldParent *PageNod
 
 // SetPinned updates the leafwiki_pinned frontmatter field and in-memory Pinned flag.
 func (t *TreeService) SetPinned(id string, version string, pinned bool) (*Page, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return nil, ErrTreeNotLoaded
@@ -1553,12 +1888,20 @@ func (t *TreeService) SetPinned(id string, version string, pinned bool) (*Page, 
 	}
 
 	node.Pinned = pinned
-	return &Page{PageNode: node, Content: content}, nil
+	raw, err := t.store.ReadPageRaw(node)
+	if err != nil {
+		return nil, fmt.Errorf("read pinned page raw content: %w", err)
+	}
+	return &Page{
+		PageNode:   clonePageNodeSubtree(node, clonePageNodeAncestors(node.Parent)),
+		Content:    content,
+		RawContent: raw,
+	}, nil
 }
 
 func (t *TreeService) SortPages(parentID string, orderedIDs []string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return ErrTreeNotLoaded

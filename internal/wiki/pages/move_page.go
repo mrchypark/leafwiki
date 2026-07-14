@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -12,10 +13,11 @@ import (
 
 // MovePageInput is the input for MovePageUseCase.
 type MovePageInput struct {
-	UserID   string
-	ID       string
-	Version  string
-	ParentID string
+	UserID            string
+	ID                string
+	Version           string
+	ParentID          string
+	PathPreconditions *tree.PathPreconditions
 }
 
 // MovePageUseCase moves a page to a new parent, updating links and recording revisions.
@@ -31,9 +33,13 @@ func NewMovePageUseCase(
 	t *tree.TreeService,
 	o *pagesave.PageSaveOrchestrator,
 	log *slog.Logger,
-	metrics *httpmetrics.HTTPMetrics,
+	metrics ...*httpmetrics.HTTPMetrics,
 ) *MovePageUseCase {
-	return &MovePageUseCase{tree: t, orchestrator: o, log: log, metrics: metrics}
+	var m *httpmetrics.HTTPMetrics
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &MovePageUseCase{tree: t, orchestrator: o, log: log, metrics: m}
 }
 
 // Execute moves the page and fires post-save side effects for the whole subtree.
@@ -49,41 +55,32 @@ func (uc *MovePageUseCase) Execute(_ context.Context, in MovePageInput) (err err
 
 	in.Version = sanitizeClientVersion(in.Version)
 
-	var subtreeIDs []string
-	var beforePage *tree.Page
-
-	if uc.tree.IsLoaded() {
-		if node, err := uc.tree.FindPageByID(in.ID); err == nil && node != nil {
-			subtreeIDs = collectSubtreeIDs(node)
-			if p, err := uc.tree.GetPage(in.ID); err == nil {
-				beforePage = p
-			}
-		}
+	beforePage, err := uc.tree.GetPage(in.ID)
+	if err != nil {
+		return err
 	}
+	subtreeIDs, affectedTitles := collectSubtreeIDsAndTitles(beforePage.PageNode)
 	if len(subtreeIDs) == 0 {
 		subtreeIDs = []string{in.ID}
 	}
-	if beforePage == nil {
-		p, err := uc.tree.GetPage(in.ID)
-		if err != nil {
-			return err
-		}
-		beforePage = p
-	}
+	oldPath := beforePage.CalculatePath()
+	wasDraft := pagevisibility.IsInDraftSubtree(beforePage.PageNode)
 
-	var oldPath string
-	if beforePage != nil {
-		oldPath = beforePage.CalculatePath()
+	if err := uc.tree.MoveNodeWithPreconditions(in.UserID, in.ID, in.ParentID, in.Version, in.PathPreconditions); err != nil {
+		return err
 	}
-
-	if err = uc.tree.MoveNode(in.UserID, in.ID, in.ParentID, in.Version); err != nil {
+	afterNode, err := uc.tree.SnapshotPageNode(in.ID)
+	if err != nil {
 		return err
 	}
 
 	event := pagesave.PageSaveEvent{
-		Operation: pagesave.PageOperationMove,
-		UserID:    in.UserID,
-		OldPath:   oldPath,
+		Operation:       pagesave.PageOperationMove,
+		UserID:          in.UserID,
+		OldPath:         oldPath,
+		DraftChanged:    wasDraft != pagevisibility.IsInDraftSubtree(afterNode),
+		AffectedPageIDs: subtreeIDs,
+		AffectedTitles:  affectedTitles,
 	}
 
 	pages, errs := uc.tree.GetPages(subtreeIDs)

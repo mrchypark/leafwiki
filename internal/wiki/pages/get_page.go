@@ -132,10 +132,11 @@ func (uc *ResolvePermalinkUseCase) Execute(_ context.Context, in ResolvePermalin
 
 // WikiLinkMatch is a lightweight page descriptor returned by the by-title API.
 type WikiLinkMatch struct {
-	ID    string        `json:"id"`
-	Title string        `json:"title"`
-	Path  string        `json:"path"`
-	Kind  tree.NodeKind `json:"kind"`
+	ID             string         `json:"id"`
+	Title          string         `json:"title"`
+	Path           string         `json:"path"`
+	Kind           tree.NodeKind  `json:"kind"`
+	VisibilityNode *tree.PageNode `json:"-"`
 }
 
 // FindByTitleOutput is the output of FindByTitleUseCase.
@@ -157,14 +158,15 @@ func NewFindByTitleUseCase(t *tree.TreeService) *FindByTitleUseCase {
 
 // Execute searches the tree for all pages matching the given title.
 func (uc *FindByTitleUseCase) Execute(_ context.Context, title string) *FindByTitleOutput {
-	nodes := uc.tree.FindPagesByTitle(title)
+	nodes := uc.tree.SnapshotPagesByTitle(title)
 	matches := make([]WikiLinkMatch, 0, len(nodes))
 	for _, n := range nodes {
 		matches = append(matches, WikiLinkMatch{
-			ID:    n.ID,
-			Title: n.Title,
-			Path:  n.CalculatePath(),
-			Kind:  n.Kind,
+			ID:             n.ID,
+			Title:          n.Title,
+			Path:           n.CalculatePath(),
+			Kind:           n.Kind,
+			VisibilityNode: n,
 		})
 	}
 	return &FindByTitleOutput{Matches: matches, Count: len(matches)}
@@ -221,9 +223,9 @@ func NewSuggestSlugUseCase(t *tree.TreeService, s *tree.SlugService) *SuggestSlu
 // Execute generates and returns a unique slug suggestion.
 func (uc *SuggestSlugUseCase) Execute(_ context.Context, in SuggestSlugInput) (*SuggestSlugOutput, error) {
 	if in.ParentID == "" || in.ParentID == "root" {
-		return &SuggestSlugOutput{Slug: uc.slug.GenerateUniqueChildSlug(uc.tree.GetTree(), in.CurrentID, in.Title)}, nil
+		return &SuggestSlugOutput{Slug: uc.slug.GenerateUniqueChildSlug(uc.tree.SnapshotTree(), in.CurrentID, in.Title)}, nil
 	}
-	parent, err := uc.tree.FindPageByID(in.ParentID)
+	parent, err := uc.tree.SnapshotPageSubtree(in.ParentID)
 	if err != nil {
 		return nil, err
 	}

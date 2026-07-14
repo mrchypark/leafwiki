@@ -76,6 +76,25 @@ func TestSearchIndexSideEffect_IndexAllPages_IndexesExistingPages(t *testing.T) 
 	}
 }
 
+func TestSearchIndexSideEffect_IndexAllPages_SkipsDraftPages(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	page := createPageWithContent(t, treeSvc, "Draft Page", "draft-page", "private uniquedraftbootstrap content")
+	setDraftForTest(t, treeSvc, page, true)
+
+	if err := effect.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+
+	result, err := index.Search("uniquedraftbootstrap", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatalf("draft page was indexed: %#v", result.Items)
+	}
+}
+
 func TestSearchIndexSideEffect_IndexAllPages_ClearsStaleEntries(t *testing.T) {
 	_, index, effect := setupSearchTest(t)
 
@@ -137,6 +156,115 @@ func TestSearchIndexSideEffect_Apply_Create_IndexesPage(t *testing.T) {
 	}
 }
 
+func TestSearchIndexSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	page := createPageWithContent(t, treeSvc, "Transition Page", "transition", "uniquedrafttransition content")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+
+	page = setDraftForTest(t, treeSvc, page, true)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	result, err := index.Search("uniquedrafttransition", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search draft: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatal("draft page remained in search index")
+	}
+
+	page = setDraftForTest(t, treeSvc, page, false)
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
+	result, err = index.Search("uniquedrafttransition", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search published: %v", err)
+	}
+	if result.Count != 1 || result.Items[0].PageID != page.ID {
+		t.Fatalf("published page was not reindexed: %#v", result.Items)
+	}
+}
+
+func TestSearchIndexSideEffect_MoveIntoDraftRemovesPage(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+	page := createPageWithContent(t, treeSvc, "Moved Search", "moved-search", "uniquemovedvisibility term")
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
+	draftParentID, err := treeSvc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", pageKindPtr(), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft: %v", err)
+	}
+	if err := treeSvc.MoveNode("editor", page.ID, *draftParentID, page.Version()); err != nil {
+		t.Fatalf("MoveNode into draft: %v", err)
+	}
+	page, err = treeSvc.GetPage(page.ID)
+	if err != nil {
+		t.Fatalf("GetPage after move: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationMove, AffectedPages: []*tree.Page{page}})
+
+	result, err := index.Search("uniquemovedvisibility", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatalf("page moved into draft remained searchable: %#v", result.Items)
+	}
+}
+
+func TestSearchIndexSideEffect_Apply_DraftToggleReindexesSubtree(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+	parent := createPageWithContent(t, treeSvc, "Parent", "parent-draft", "parentvisibilityterm")
+	kind := tree.NodeKindPage
+	childID, err := treeSvc.CreateNode("system", &parent.ID, "Child", "child", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	child, err := treeSvc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	content := "childvisibilityterm"
+	if err := treeSvc.UpdateNode("system", child.ID, child.Title, child.Slug, &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode child: %v", err)
+	}
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage updated child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: parent})
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: child})
+
+	parent = setDraftForTest(t, treeSvc, parent, true)
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage draft child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
+	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
+		result, err := index.Search(term, nil, 0, 10)
+		if err != nil {
+			t.Fatalf("Search draft %q: %v", term, err)
+		}
+		if result.Count != 0 {
+			t.Fatalf("draft subtree term %q remained indexed", term)
+		}
+	}
+
+	parent = setDraftForTest(t, treeSvc, parent, false)
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage published child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: parent, DraftChanged: true, AffectedPages: []*tree.Page{parent, child}})
+	for _, term := range []string{"parentvisibilityterm", "childvisibilityterm"} {
+		result, err := index.Search(term, nil, 0, 10)
+		if err != nil {
+			t.Fatalf("Search published %q: %v", term, err)
+		}
+		if result.Count != 1 {
+			t.Fatalf("published subtree term %q was not reindexed", term)
+		}
+	}
+}
+
 func TestSearchIndexSideEffect_Apply_Update_ReplacesContentAfterBootstrap(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 
@@ -185,6 +313,62 @@ func TestSearchIndexSideEffect_Apply_Update_ReplacesContentAfterBootstrap(t *tes
 	}
 }
 
+func TestSearchIndexSideEffect_UpdateReindexesDescendantPathsWhenSectionSlugChanges(t *testing.T) {
+	treeSvc, index, effect := setupSearchTest(t)
+
+	kind := tree.NodeKindSection
+	sectionID, err := treeSvc.CreateNode("system", nil, "Docs", "docs", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	kind = tree.NodeKindPage
+	childID, err := treeSvc.CreateNode("system", sectionID, "Child", "child", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+	child, err := treeSvc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	content := "descendantsearchtoken"
+	if err := treeSvc.UpdateNode("system", child.ID, child.Title, child.Slug, &content, child.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode child: %v", err)
+	}
+	if err := effect.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages: %v", err)
+	}
+
+	section, err := treeSvc.GetPage(*sectionID)
+	if err != nil {
+		t.Fatalf("GetPage section: %v", err)
+	}
+	if err := treeSvc.UpdateNode("system", section.ID, section.Title, "guides", nil, section.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode section slug: %v", err)
+	}
+	section, err = treeSvc.GetPage(section.ID)
+	if err != nil {
+		t.Fatalf("GetPage renamed section: %v", err)
+	}
+	child, err = treeSvc.GetPage(child.ID)
+	if err != nil {
+		t.Fatalf("GetPage renamed child: %v", err)
+	}
+	effect.Apply(PageSaveEvent{
+		Operation:     PageOperationUpdate,
+		After:         section,
+		SlugChanged:   true,
+		AffectedPages: []*tree.Page{section, child},
+	})
+
+	result, err := index.Search("descendantsearchtoken", nil, 0, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Count != 1 || result.Items[0].Path != "guides/child" {
+		t.Fatalf("descendant search path was not refreshed: %#v", result.Items)
+	}
+}
+
 func TestSearchIndexSideEffect_Apply_Delete_RemovesFromIndex(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 
@@ -200,6 +384,9 @@ func TestSearchIndexSideEffect_Apply_Delete_RemovesFromIndex(t *testing.T) {
 	}
 	if before.Count == 0 {
 		t.Fatal("expected page to be indexed before deletion")
+	}
+	if err := treeSvc.DeleteNode("system", page.ID, false, page.Version()); err != nil {
+		t.Fatalf("DeleteNode: %v", err)
 	}
 
 	effect.Apply(PageSaveEvent{
@@ -274,6 +461,9 @@ func TestSearchIndexSideEffect_Apply_Delete_Recursive_RemovesAllPagesFromIndex(t
 	parentFinal, err := treeSvc.GetPage(parent.ID)
 	if err != nil {
 		t.Fatalf("GetPage parentFinal: %v", err)
+	}
+	if err := treeSvc.DeleteNode("system", parentFinal.ID, true, parentFinal.Version()); err != nil {
+		t.Fatalf("DeleteNode recursive: %v", err)
 	}
 	effect.Apply(PageSaveEvent{
 		Operation:     PageOperationDelete,

@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	"github.com/perber/wiki/internal/search"
@@ -13,16 +15,21 @@ import (
 // SearchIndexSideEffect updates the search index after every page mutation.
 type SearchIndexSideEffect struct {
 	index   *search.SQLiteIndex
-	tree    *tree.TreeService // only used by IndexAllPages for the initial walk
+	tree    *tree.TreeService
 	log     *slog.Logger
 	metrics *httpmetrics.HTTPMetrics
+	mu      sync.Mutex
 }
 
-func NewSearchIndexSideEffect(index *search.SQLiteIndex, treeService *tree.TreeService, log *slog.Logger, metrics *httpmetrics.HTTPMetrics) *SearchIndexSideEffect {
+func NewSearchIndexSideEffect(index *search.SQLiteIndex, treeService *tree.TreeService, log *slog.Logger, metrics ...*httpmetrics.HTTPMetrics) *SearchIndexSideEffect {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &SearchIndexSideEffect{index: index, tree: treeService, log: log, metrics: metrics}
+	var m *httpmetrics.HTTPMetrics
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &SearchIndexSideEffect{index: index, tree: treeService, log: log, metrics: m}
 }
 
 func (e *SearchIndexSideEffect) Name() string {
@@ -33,23 +40,24 @@ func (e *SearchIndexSideEffect) Apply(event PageSaveEvent) {
 	if e.index == nil {
 		return
 	}
-
-	switch event.Operation {
-	case PageOperationCreate, PageOperationUpdate, PageOperationRestore:
-		if event.After != nil {
-			e.indexPage(event.After, event.Operation)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, state := range loadProjectionPages(e.tree, projectionPageIDs(event, true)) {
+		if state.err != nil {
+			e.log.Warn("failed to load current page for search index", "pageID", state.id, "error", state.err)
+			e.recordFailure(event.Operation)
+			continue
 		}
-
-	case PageOperationMove:
-		for _, page := range event.AffectedPages {
-			e.indexPage(page, event.Operation)
-		}
-
-	case PageOperationDelete:
-		for _, page := range event.AffectedPages {
-			if err := e.index.RemovePage(page.ID); err != nil {
-				e.log.Warn("failed to remove page from search index", "pageID", page.ID, "error", err)
+		if state.remove {
+			if err := e.index.RemovePage(state.id); err != nil {
+				e.log.Warn("failed to remove page from search index", "pageID", state.id, "error", err)
+				e.recordFailure(event.Operation)
 			}
+			continue
+		}
+		if err := e.writeToIndex(state.page, state.page.RawContent); err != nil {
+			e.log.Warn("failed to reconcile search index", "pageID", state.id, "error", err)
+			e.recordFailure(event.Operation)
 		}
 	}
 }
@@ -64,6 +72,8 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 	if e.index == nil {
 		return nil
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -91,28 +101,25 @@ func (e *SearchIndexSideEffect) IndexAllPagesContext(ctx context.Context) error 
 			e.log.Warn("skipping page during search bootstrap", "pageID", ids[i], "error", errs[i])
 			continue
 		}
-		e.writeToIndex(page, page.RawContent, "")
+		if pagevisibility.IsInDraftSubtree(page.PageNode) {
+			continue
+		}
+		if err := e.writeToIndex(page, page.RawContent); err != nil {
+			e.log.Warn("failed to update search index during bootstrap", "pageID", page.ID, "error", err)
+		}
 	}
 	return nil
 }
 
-func (e *SearchIndexSideEffect) indexPage(page *tree.Page, operation PageOperationType) {
-	if page == nil {
-		return
-	}
-	e.writeToIndex(page, page.RawContent, operation)
-}
-
-func (e *SearchIndexSideEffect) writeToIndex(page *tree.Page, content string, operation PageOperationType) {
+func (e *SearchIndexSideEffect) writeToIndex(page *tree.Page, content string) error {
 	path := strings.TrimPrefix(page.CalculatePath(), "/")
 	filePath := path
 	if filePath != "" {
 		filePath += ".md"
 	}
-	if err := e.index.IndexPage(path, filePath, page.ID, page.Title, page.Kind, content); err != nil {
-		e.log.Warn("failed to update search index for page", "pageID", page.ID, "error", err)
-		if operation != "" {
-			e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
-		}
-	}
+	return e.index.IndexPage(path, filePath, page.ID, page.Title, page.Kind, content)
+}
+
+func (e *SearchIndexSideEffect) recordFailure(operation PageOperationType) {
+	e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
 }

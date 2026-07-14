@@ -95,6 +95,22 @@ export const isDirtyState = (s: PageEditorState) => {
   )
 }
 
+export function isPendingEffectivelyDraft(
+  page: Page | null,
+  draft: boolean,
+): boolean {
+  return draft || Boolean(page?.ancestorDraft)
+}
+
+function normalizePageDraftStatus(page: Page): Page {
+  return {
+    ...page,
+    draft: Boolean(page.draft),
+    effectiveDraft: Boolean(page.effectiveDraft ?? page.draft),
+    ancestorDraft: Boolean(page.ancestorDraft),
+  }
+}
+
 // Module-level mutex: prevents concurrent auto-saves from stacking.
 // Manual saves (silent=false) bypass this so Ctrl+S is never blocked by an in-flight auto-save.
 let isSavingMutex = false
@@ -187,11 +203,8 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         tagsChanged(tags, page.tags ?? []) ||
         propertiesChanged(frontmatterFields, page.properties ?? {})
 
-      if (slugChanged && (wasDraft || draftChanged)) {
-        throw new Error('Publish this page before changing its slug.')
-      }
-
       const applyServerPage = (serverPage: Page) => {
+        const normalizedPage = normalizePageDraftStatus(serverPage)
         set((state) => {
           if (
             state.initialPage !== initialPage ||
@@ -203,13 +216,31 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
           return {
             page: {
               ...state.page,
-              ...serverPage,
+              ...normalizedPage,
               content: serverPage.content ?? state.page.content,
               tags: serverPage.tags ?? state.page.tags,
               properties: serverPage.properties ?? state.page.properties,
             },
           }
         })
+      }
+
+      let rewriteLinks = false
+      if (slugChanged && enableLinkRefactor) {
+        const preview = await previewPageRefactor(page.id, {
+          kind: 'rename',
+          title,
+          slug,
+        })
+        if (!isCurrentSave()) return
+        const confirmedRewriteLinks = await confirmPageRefactor(preview, {
+          allowSkipRewrite: true,
+        })
+        if (!isCurrentSave()) return
+        if (confirmedRewriteLinks === null) {
+          return null
+        }
+        rewriteLinks = confirmedRewriteLinks
       }
 
       let workingPage = page
@@ -224,20 +255,6 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       let updatedPage: Page | null = null
 
       if (slugChanged && enableLinkRefactor) {
-        const preview = await previewPageRefactor(workingPage.id, {
-          kind: 'rename',
-          title,
-          slug,
-        })
-        if (!isCurrentSave()) return
-        const rewriteLinks = await confirmPageRefactor(preview, {
-          allowSkipRewrite: true,
-        })
-        if (!isCurrentSave()) return
-        if (rewriteLinks === null) {
-          return null
-        }
-
         updatedPage = await applyPageRefactor(workingPage.id, {
           kind: 'rename',
           version: workingPage.version,
@@ -364,7 +381,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
     const { page, initialPage } = get()
     if (!page?.path) return
 
-    const fresh = await getPageByPath(page.path)
+    const fresh = normalizePageDraftStatus(await getPageByPath(page.path))
     if (get().initialPage !== initialPage || get().page?.id !== page.id) return
     set((state) => {
       if (state.initialPage !== initialPage || state.page?.id !== page.id) {
@@ -372,6 +389,8 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       }
       state.page.version = fresh.version
       state.page.draft = fresh.draft
+      state.page.effectiveDraft = fresh.effectiveDraft
+      state.page.ancestorDraft = fresh.ancestorDraft
       return { page: state.page }
     })
     return get().savePage()
@@ -391,7 +410,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       frontmatterErrors: {},
     })
     try {
-      const page = await getPageByPath(path, signal)
+      const page = normalizePageDraftStatus(await getPageByPath(path, signal))
       const fields: EditorFrontmatterField[] = Object.entries(
         page.properties ?? {},
       ).map(([key, value]) => ({

@@ -244,34 +244,30 @@ export default function TreeNodeActionsMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent>
-        {!node.draft && (
-          <>
-            <DropdownMenuItem
-              className="cursor-pointer"
-              onClick={() => {
-                openDialog(DIALOG_ADD_PAGE, {
-                  parentId: nodeId,
-                  nodeKind: NODE_KIND_PAGE,
-                })
-              }}
-            >
-              <FilePlus size={18} className="tree-node__action-icon" /> Add Page
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="cursor-pointer"
-              onClick={() => {
-                openDialog(DIALOG_ADD_PAGE, {
-                  parentId: nodeId,
-                  nodeKind: NODE_KIND_SECTION,
-                })
-              }}
-            >
-              <FolderPlus size={18} className="tree-node__action-icon" /> Add
-              Section
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => {
+            openDialog(DIALOG_ADD_PAGE, {
+              parentId: nodeId,
+              nodeKind: NODE_KIND_PAGE,
+            })
+          }}
+        >
+          <FilePlus size={18} className="tree-node__action-icon" /> Add Page
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => {
+            openDialog(DIALOG_ADD_PAGE, {
+              parentId: nodeId,
+              nodeKind: NODE_KIND_SECTION,
+            })
+          }}
+        >
+          <FolderPlus size={18} className="tree-node__action-icon" /> Add
+          Section
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem
           className="cursor-pointer"
           onClick={() => {
@@ -292,14 +288,14 @@ export default function TreeNodeActionsMenu({
               title: node.title,
               slug: node.slug,
               onChange: handleRenamePage,
-              slugReadOnly: Boolean(node.draft),
+              slugReadOnly: false,
             })
           }}
         >
           <Pencil size={18} className="tree-node__action-icon" /> Rename{' '}
           {nodeKind === NODE_KIND_PAGE ? 'Page' : 'Section'}
         </DropdownMenuItem>
-        {nodeKind === NODE_KIND_PAGE && !node.draft && (
+        {nodeKind === NODE_KIND_PAGE && (
           <DropdownMenuItem
             className="cursor-pointer"
             onClick={() => {
@@ -319,16 +315,14 @@ export default function TreeNodeActionsMenu({
             {nodeKind === NODE_KIND_SECTION ? 'Section' : 'Page'} Children
           </DropdownMenuItem>
         )}
-        {!node.draft && (
-          <DropdownMenuItem
-            className="cursor-pointer"
-            data-testid="tree-view-action-button-move"
-            onClick={() => openDialog(DIALOG_MOVE_PAGE, { pageId: node.id })}
-          >
-            <Move size={18} className="tree-node__action-icon" /> Move{' '}
-            {nodeKind === NODE_KIND_PAGE ? 'Page' : 'Section'}
-          </DropdownMenuItem>
-        )}
+        <DropdownMenuItem
+          className="cursor-pointer"
+          data-testid="tree-view-action-button-move"
+          onClick={() => openDialog(DIALOG_MOVE_PAGE, { pageId: node.id })}
+        >
+          <Move size={18} className="tree-node__action-icon" /> Move{' '}
+          {nodeKind === NODE_KIND_PAGE ? 'Page' : 'Section'}
+        </DropdownMenuItem>
         {nodeKind === NODE_KIND_SECTION && !hasChildren && (
           <DropdownMenuItem
             className="cursor-pointer"

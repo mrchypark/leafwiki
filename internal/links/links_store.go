@@ -2,6 +2,7 @@ package links
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -119,25 +120,86 @@ func (s *LinksStore) DeleteOutgoingLinks(fromPageID string) error {
 }
 
 // MarkIncomingLinksBroken marks links pointing to the given page as broken,
-// but keeps them (because the source markdown still contains them).
-func (s *LinksStore) MarkIncomingLinksBroken(toPageID string) error {
+// but keeps them (because the source markdown still contains them). It returns
+// the affected paths so callers can resolve them against the current tree.
+func (s *LinksStore) MarkIncomingLinksBroken(toPageID string) ([]string, error) {
+	return s.InvalidateLinksForPages([]string{toPageID}, nil)
+}
+
+// InvalidateLinksForPages breaks incoming links for all affected identities
+// and removes outgoing links for pages that disappeared or became drafts.
+func (s *LinksStore) InvalidateLinksForPages(toPageIDs, removeOutgoingPageIDs []string) ([]string, error) {
+	if len(toPageIDs) == 0 && len(removeOutgoingPageIDs) == 0 {
+		return nil, nil
+	}
+	toPageIDsJSON, err := json.Marshal(toPageIDs)
+	if err != nil {
+		return nil, err
+	}
+	removeOutgoingPageIDsJSON, err := json.Marshal(removeOutgoingPageIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
-		UPDATE links
-		SET to_page_id = NULL,
-		    broken    = 1
-		WHERE to_page_id = ?
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	rollback := func(err error) ([]string, error) {
+		return nil, errors.Join(err, tx.Rollback())
+	}
+
+	rows, err := tx.Query(`
+		SELECT DISTINCT to_path
+		FROM links
+		WHERE to_page_id IN (SELECT DISTINCT value FROM json_each(?))
 		  AND broken = 0
-	`, toPageID)
+	`, string(toPageIDsJSON))
+	if err != nil {
+		return rollback(err)
+	}
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			_ = rows.Close()
+			return rollback(err)
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return rollback(err)
+	}
+	if err := rows.Close(); err != nil {
+		return rollback(err)
+	}
 
-	return err
+	if _, err := tx.Exec(`
+		UPDATE links
+		SET to_page_id = NULL,
+		    broken    = 1
+		WHERE to_page_id IN (SELECT DISTINCT value FROM json_each(?))
+		  AND broken = 0
+	`, string(toPageIDsJSON)); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM links
+		WHERE from_page_id IN (SELECT DISTINCT value FROM json_each(?))
+	`, string(removeOutgoingPageIDsJSON)); err != nil {
+		return rollback(err)
+	}
+
+	return paths, tx.Commit()
 }
 
-// MarkLinksBrokenForPath marks links that point to an exact path as broken.
-// Useful for delete/rename in strict mode.
-func (s *LinksStore) MarkLinksBrokenForPath(toPath string) error {
+// MarkWikiLinksBrokenForTitle resets resolved [[Title]] records to sentinels so
+// they can be resolved again after the set of published same-title pages changes.
+func (s *LinksStore) MarkWikiLinksBrokenForTitle(title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -145,30 +207,9 @@ func (s *LinksStore) MarkLinksBrokenForPath(toPath string) error {
 		UPDATE links
 		SET to_page_id = NULL,
 		    broken    = 1
-		WHERE to_path = ?
-		  AND broken  = 0
-	`, toPath)
-
-	return err
-}
-
-// MarkLinksBrokenForPrefix marks links whose to_path is under the given prefix as broken.
-// Boundary-safe: matches either the prefix itself, or prefix + "/...".
-func (s *LinksStore) MarkLinksBrokenForPrefix(oldPrefix string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec(`
-		UPDATE links
-		SET to_page_id = NULL,
-		    broken    = 1
-		WHERE broken = 0
-		  AND (
-		    to_path = ?
-		    OR to_path LIKE ? || '/%'
-		  )
-	`, oldPrefix, oldPrefix)
-
+		WHERE LOWER(to_path) = ?
+		  AND broken = 0
+	`, strings.ToLower(wikilinkSentinelPrefix+title))
 	return err
 }
 

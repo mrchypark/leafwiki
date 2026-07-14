@@ -7,8 +7,11 @@ import { useTreeStore } from '@/stores/tree'
 import { Pencil } from 'lucide-react'
 import { DraftBadge } from '@/components/DraftBadge'
 import { TooltipWrapper } from '../../components/TooltipWrapper'
-import { usePageEditorStore } from './pageEditorStore'
-import { isDirtyState } from './pageEditorStore'
+import {
+  isDirtyState,
+  isPendingEffectivelyDraft,
+  usePageEditorStore,
+} from './pageEditorStore'
 
 export function EditorTitleBar() {
   const isMobile = useIsMobile()
@@ -43,7 +46,7 @@ export function EditorTitleBar() {
         setTitle(title)
         setSlug(slug)
       },
-      slugReadOnly: Boolean(page.draft) || draft,
+      slugReadOnly: false,
     })
   }
 
@@ -55,6 +58,8 @@ export function EditorTitleBar() {
     return null
   }
 
+  const effectiveDraft = isPendingEffectivelyDraft(page, draft)
+
   return (
     <div className="editor-title-bar">
       <button
@@ -64,7 +69,7 @@ export function EditorTitleBar() {
       >
         <TooltipWrapper label={title} side="top" align="start">
           {title && <span className="editor-title-bar__title">{title}</span>}
-          {page.draft && <DraftBadge />}
+          {effectiveDraft && <DraftBadge inherited={!draft} />}
           <Pencil size={16} className="editor-title-bar__icon" />
           {dirty && !isMobile && (
             <span className="editor-title-bar__dirty-indicator">(Changes)</span>

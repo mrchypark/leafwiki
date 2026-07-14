@@ -524,6 +524,8 @@ For most setups, prefer `--public-access` for read-only public access and the vi
 - Default bind: `127.0.0.1` (binary) / `0.0.0.0` (Docker image)
 - Default data dir: `./data` (binary) / `/app/data` (container)
 - Defaults are intentionally conservative — a fresh install does not become network-exposed by accident
+- Before enabling hierarchical drafts or marking a section as draft, stop LeafWiki and make a complete backup of the content/data directory.
+- After a wiki has used hierarchical or section drafts, **do not downgrade LeafWiki**. Older binaries do not understand draft state inherited from sections and may ignore or clear that ancestor state when loading or saving content, which can expose draft descendants. Restore the backup instead of opening the data with an older version.
 
 ---
 

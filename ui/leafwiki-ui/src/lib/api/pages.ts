@@ -29,6 +29,8 @@ export type PageNode = {
   kind: 'page' | 'section'
   pinned?: boolean
   draft?: boolean
+  effectiveDraft?: boolean
+  ancestorDraft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -43,7 +45,19 @@ export interface Page {
   version: string
   kind: 'page' | 'section'
   draft?: boolean
+  effectiveDraft?: boolean
+  ancestorDraft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
+}
+
+type DraftStatus = Pick<Page, 'draft' | 'effectiveDraft'>
+
+export function isEffectivelyDraft(page?: DraftStatus | null): boolean {
+  return Boolean(page?.effectiveDraft ?? page?.draft)
+}
+
+export function isInheritedDraft(page?: DraftStatus | null): boolean {
+  return isEffectivelyDraft(page) && !page?.draft
 }
 
 export type PermalinkTarget = {

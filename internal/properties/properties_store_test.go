@@ -1,6 +1,7 @@
 package properties
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -8,6 +9,45 @@ import (
 
 	"github.com/perber/wiki/internal/test_utils"
 )
+
+func TestPropertiesStore_GetAllPropertyKeysForPageIDs_AggregatesOnlyAllowedPages(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.SetPropertiesForPage("public-1", props("shared", "one", "alpha", "one"))
+	_ = store.SetPropertiesForPage("public-2", props("shared", "two"))
+	_ = store.SetPropertiesForPage("draft", props("shared", "secret", "hidden", "secret"))
+
+	keys, err := store.GetAllPropertyKeysForPageIDs("", 50, []string{"public-1", "public-2"})
+	if err != nil {
+		t.Fatalf("GetAllPropertyKeysForPageIDs: %v", err)
+	}
+	want := []PropertyKeyCount{{Key: "shared", Count: 2}, {Key: "alpha", Count: 1}}
+	if len(keys) != len(want) {
+		t.Fatalf("keys = %#v, want %#v", keys, want)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("keys[%d] = %#v, want %#v", i, keys[i], want[i])
+		}
+	}
+}
+
+func TestPropertiesStore_GetAllPropertyKeysForPageIDs_UsesSingleBindForLargeAllowlist(t *testing.T) {
+	store := newTestStore(t)
+	pageIDs := make([]string, 1200)
+	for i := range pageIDs {
+		pageIDs[i] = fmt.Sprintf("page-%04d", i)
+	}
+	_ = store.SetPropertiesForPage(pageIDs[len(pageIDs)-1], props("included", "yes"))
+	_ = store.SetPropertiesForPage("draft", props("excluded", "yes"))
+
+	keys, err := store.GetAllPropertyKeysForPageIDs("", 50, pageIDs)
+	if err != nil {
+		t.Fatalf("GetAllPropertyKeysForPageIDs: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != (PropertyKeyCount{Key: "included", Count: 1}) {
+		t.Fatalf("keys = %#v", keys)
+	}
+}
 
 func newTestStore(t *testing.T) *PropertiesStore {
 	t.Helper()
