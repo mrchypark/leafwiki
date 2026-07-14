@@ -1,5 +1,4 @@
 import Page404 from '@/components/Page404'
-import { isEffectivelyDraft } from '@/lib/api/pages'
 import { mapApiError, asApiLocalizedError } from '@/lib/api/errors'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
 import { buildBrowserEditUrl } from '@/lib/routePath'
@@ -14,8 +13,11 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import MarkdownEditor, { MarkdownEditorRef } from './MarkdownEditor'
 import { PageFrontmatterPanel } from './PageFrontmatterPanel'
-import { usePageEditorStore } from './pageEditorStore'
-import { isDirtyState } from './pageEditorStore'
+import {
+  isDirtyState,
+  isPendingEffectivelyDraft,
+  usePageEditorStore,
+} from './pageEditorStore'
 import { useAutoSave } from './useAutoSave'
 import useNavigationGuard from './useNavigationGuard'
 import { useToolbarActions } from './useToolbarActions'
@@ -216,7 +218,7 @@ export default function PageEditor() {
             <PageFrontmatterPanel
               draft={draft}
               effectiveDraft={
-                page ? isEffectivelyDraft({ ...page, draft }) : draft
+                page ? isPendingEffectivelyDraft(page, draft) : draft
               }
               tags={tags}
               fields={frontmatterFields}

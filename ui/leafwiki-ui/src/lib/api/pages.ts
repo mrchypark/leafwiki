@@ -30,6 +30,7 @@ export type PageNode = {
   pinned?: boolean
   draft?: boolean
   effectiveDraft?: boolean
+  ancestorDraft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -45,6 +46,7 @@ export interface Page {
   kind: 'page' | 'section'
   draft?: boolean
   effectiveDraft?: boolean
+  ancestorDraft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
