@@ -31,7 +31,10 @@ export const createLeafWikiRouter = (
         element: authDisabled ? (
           <Navigate to="/" replace />
         ) : loginUrl ? (
-          <ExternalRedirect to={loginUrl} />
+          <ExternalRedirect
+            to={loginUrl}
+            returnTo={basename ? `${basename}/` : '/'}
+          />
         ) : (
           <LoginForm />
         ),
