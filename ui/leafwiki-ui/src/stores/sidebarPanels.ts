@@ -19,8 +19,9 @@ export const useSidebarPanelsStore = create<SidebarPanelsStore>()(
     {
       name: 'leafwiki-sidebar-panels', // localStorage key
       merge: (persistedState, currentState) => {
-        const openSections = (persistedState as Partial<SidebarPanelsStore>)
-          .openSections
+        const openSections = (
+          persistedState as Partial<SidebarPanelsStore> | null | undefined
+        )?.openSections
 
         return {
           ...currentState,
