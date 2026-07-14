@@ -2,6 +2,9 @@ package pages
 
 import (
 	"testing"
+
+	"github.com/perber/wiki/internal/core/tree"
+	"github.com/perber/wiki/internal/http/dto"
 )
 
 func TestFlattenMetadataEntry_FlatString(t *testing.T) {
@@ -142,4 +145,34 @@ func TestFlattenMetadataEntry_DepthLimitDoesNotPanic(t *testing.T) {
 	result := map[string]string{}
 	// Must not panic; depth guard terminates recursion before stack overflow
 	flattenMetadataEntry("root", inner, result)
+}
+
+func TestEnrichPageMetadata_PinnedPageRetainsTagsAndProperties(t *testing.T) {
+	service := tree.NewTreeService(t.TempDir())
+	if err := service.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	kind := tree.NodeKindPage
+	pageID, err := service.CreateNode("editor", nil, "Page", "page", &kind)
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	raw := "---\ntags:\n  - retained\nstatus: active\n---\nBody"
+	if err := service.UpdateNode("editor", *pageID, "Page", "page", &raw, tree.VersionUnchecked, nil, nil, true); err != nil {
+		t.Fatalf("UpdateNode: %v", err)
+	}
+	page, err := service.GetPage(*pageID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	pinned, err := service.SetPinned(*pageID, page.Version(), true)
+	if err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+
+	response := dto.ToAPIPage(pinned, nil)
+	(&Routes{}).enrichPageMetadata(response, pinned.RawContent)
+	if len(response.Tags) != 1 || response.Tags[0] != "retained" || response.Properties["status"] != "active" {
+		t.Fatalf("pin response metadata = tags:%v properties:%v", response.Tags, response.Properties)
+	}
 }

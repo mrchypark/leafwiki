@@ -5,13 +5,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PageFrontmatterPanel } from './PageFrontmatterPanel'
 
 function renderPanel(
-  pageKind: 'page' | 'section' = 'page',
   onDraftChange = vi.fn(),
+  draft = false,
+  effectiveDraft = draft,
 ) {
   render(
     <PageFrontmatterPanel
-      pageKind={pageKind}
-      draft={false}
+      draft={draft}
+      effectiveDraft={effectiveDraft}
       tags={[]}
       fields={[]}
       errors={{}}
@@ -46,12 +47,32 @@ describe('PageFrontmatterPanel draft control', () => {
     expect(onDraftChange).toHaveBeenCalledWith(true)
   })
 
+  it('presents inherited visibility as an own-draft choice', () => {
+    const onDraftChange = renderPanel(vi.fn(), false, true)
+
+    expect(screen.getByText(/Inherited draft/)).toBeInTheDocument()
+    const checkbox = screen.getByRole('checkbox', {
+      name: 'Keep draft when parent is published',
+    })
+    expect(checkbox).not.toBeChecked()
+
+    fireEvent.click(checkbox)
+
+    expect(onDraftChange).toHaveBeenCalledWith(true)
+  })
+
+  it('keeps a direct draft selected while it is also inherited', () => {
+    renderPanel(vi.fn(), true, true)
+
+    expect(screen.getByRole('checkbox', { name: 'Draft' })).toBeChecked()
+    expect(screen.queryByText(/Inherited draft/)).toBeNull()
+  })
+
   it.each([
-    ['viewer', false, 'page'],
-    ['anonymous', false, 'page'],
-    ['public editor', true, 'page'],
-    ['section', false, 'section'],
-  ] as const)('hides the control for %s', (_label, authDisabled, pageKind) => {
+    ['viewer', false],
+    ['anonymous', false],
+    ['public editor', true],
+  ] as const)('hides the control for %s', (_label, authDisabled) => {
     useConfigStore.setState({ authDisabled })
     if (_label === 'viewer') {
       useSessionStore.setState({
@@ -66,7 +87,7 @@ describe('PageFrontmatterPanel draft control', () => {
       useSessionStore.setState({ user: null })
     }
 
-    renderPanel(pageKind)
+    renderPanel()
 
     expect(screen.queryByRole('checkbox', { name: 'Draft' })).toBeNull()
   })

@@ -187,10 +187,6 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         tagsChanged(tags, page.tags ?? []) ||
         propertiesChanged(frontmatterFields, page.properties ?? {})
 
-      if (slugChanged && (wasDraft || draftChanged)) {
-        throw new Error('Publish this page before changing its slug.')
-      }
-
       const applyServerPage = (serverPage: Page) => {
         set((state) => {
           if (
@@ -212,6 +208,24 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         })
       }
 
+      let rewriteLinks = false
+      if (slugChanged && enableLinkRefactor) {
+        const preview = await previewPageRefactor(page.id, {
+          kind: 'rename',
+          title,
+          slug,
+        })
+        if (!isCurrentSave()) return
+        const confirmedRewriteLinks = await confirmPageRefactor(preview, {
+          allowSkipRewrite: true,
+        })
+        if (!isCurrentSave()) return
+        if (confirmedRewriteLinks === null) {
+          return null
+        }
+        rewriteLinks = confirmedRewriteLinks
+      }
+
       let workingPage = page
       if (draftChanged && draft) {
         workingPage = await updatePageDraft(page.id, page.version, true)
@@ -224,20 +238,6 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       let updatedPage: Page | null = null
 
       if (slugChanged && enableLinkRefactor) {
-        const preview = await previewPageRefactor(workingPage.id, {
-          kind: 'rename',
-          title,
-          slug,
-        })
-        if (!isCurrentSave()) return
-        const rewriteLinks = await confirmPageRefactor(preview, {
-          allowSkipRewrite: true,
-        })
-        if (!isCurrentSave()) return
-        if (rewriteLinks === null) {
-          return null
-        }
-
         updatedPage = await applyPageRefactor(workingPage.id, {
           kind: 'rename',
           version: workingPage.version,
@@ -372,6 +372,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       }
       state.page.version = fresh.version
       state.page.draft = fresh.draft
+      state.page.effectiveDraft = fresh.effectiveDraft
       return { page: state.page }
     })
     return get().savePage()

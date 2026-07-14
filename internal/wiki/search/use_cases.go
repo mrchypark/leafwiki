@@ -53,11 +53,11 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 	if len(in.Tags) > 0 {
 		pageIDs = []string{}
 		if uc.tags != nil {
-			var err error
-			pageIDs, err = uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
+			matchedPageIDs, err := uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
 			if err != nil {
 				return nil, err
 			}
+			pageIDs = append(pageIDs, matchedPageIDs...)
 		}
 	}
 
@@ -101,7 +101,7 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 
 	items := make([]coresearch.SearchResultItem, 0, len(pageIDs))
 	for _, pageID := range pageIDs {
-		node, err := uc.tree.FindPageByID(pageID)
+		node, err := uc.tree.SnapshotPageNode(pageID)
 		if err != nil || node == nil {
 			continue
 		}

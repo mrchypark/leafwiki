@@ -1,18 +1,35 @@
 package tree
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/perber/wiki/internal/core/markdown"
 	"github.com/perber/wiki/internal/core/treemigration"
 )
+
+type gatedErrContext struct {
+	context.Context
+	once    sync.Once
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (c *gatedErrContext) Err() error {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	return c.Context.Err()
+}
 
 // --- helpers ---
 
@@ -337,16 +354,25 @@ func TestTreeService_CreateDraftPage_ReloadsDraftFromFilesystem(t *testing.T) {
 	}
 }
 
-func TestTreeService_CreateDraftSection_IsRejected(t *testing.T) {
-	svc, _ := newLoadedService(t)
+func TestTreeService_CreateDraftSection_ReloadsDraftFromFilesystem(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
 
-	_, err := svc.CreateNodeWithDraft("editor", nil, "Draft section", "draft-section", ptrKind(NodeKindSection), true)
-	if !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("CreateNodeWithDraft() error = %v, want ErrInvalidOperation", err)
+	id, err := svc.CreateNodeWithDraft("editor", nil, "Draft section", "draft-section", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft() error = %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	section, err := reloaded.GetPage(*id)
+	if err != nil || !section.Draft {
+		t.Fatalf("reloaded section draft = %v, error = %v", section != nil && section.Draft, err)
 	}
 }
 
-func TestTreeService_LoadTree_DoesNotTreatSectionFrontmatterAsDraft(t *testing.T) {
+func TestTreeService_LoadTree_PreservesSectionDraftFrontmatter(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustWriteFile(t, filepath.Join(tmpDir, "root", "docs", "index.md"), `---
 leafwiki_id: docs
@@ -368,68 +394,160 @@ Docs`, 0o644)
 	if err != nil {
 		t.Fatalf("GetPage() error = %v", err)
 	}
-	if section.Draft {
-		t.Fatal("section loaded as draft")
+	if !section.Draft {
+		t.Fatal("section did not load as draft")
 	}
 	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "docs", "index.md"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	if strings.Contains(string(raw), "draft:") {
-		t.Fatalf("section draft frontmatter was not removed: %q", raw)
+	if !strings.Contains(string(raw), "draft: true") {
+		t.Fatalf("section draft frontmatter was not preserved: %q", raw)
 	}
 }
 
-func TestTreeService_SetDraft_RoundtripsAndBlocksDraftStructureChanges(t *testing.T) {
+func TestTreeService_CreateChildUnderDraftPage_PreservesDraftAfterReload(t *testing.T) {
 	svc, tmpDir := newLoadedService(t)
-	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
+	parentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft parent", "draft-parent", ptrKind(NodeKindPage), true)
 	if err != nil {
-		t.Fatalf("CreateNode() error = %v", err)
+		t.Fatalf("CreateNodeWithDraft() error = %v", err)
 	}
-	page, err := svc.GetPage(*id)
+	childID, err := svc.CreateNode("editor", parentID, "Child", "child", ptrKind(NodeKindPage))
 	if err != nil {
-		t.Fatalf("GetPage() error = %v", err)
+		t.Fatalf("CreateNode(child) error = %v", err)
 	}
 
-	if err := svc.SetDraft("editor", *id, true, page.Version()); err != nil {
-		t.Fatalf("SetDraft(true) error = %v", err)
-	}
-	draft, err := svc.GetPage(*id)
-	if err != nil {
-		t.Fatalf("GetPage(draft) error = %v", err)
-	}
-	if !draft.Draft {
-		t.Fatal("page did not become a draft")
-	}
-
-	content := "edited while draft"
-	if err := svc.UpdateNode("editor", *id, draft.Title, draft.Slug, &content, draft.Version(), nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode(content while draft) error = %v", err)
-	}
-	draft, _ = svc.GetPage(*id)
-	if err := svc.UpdateNode("editor", *id, draft.Title, "renamed", nil, draft.Version(), nil, nil, false); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("UpdateNode(slug while draft) error = %v, want ErrInvalidOperation", err)
-	}
-	if err := svc.MoveNode("editor", *id, "root", draft.Version()); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("MoveNode(draft) error = %v, want ErrInvalidOperation", err)
-	}
-	if err := svc.ConvertNode("editor", *id, NodeKindSection, draft.Version()); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("ConvertNode(draft) error = %v, want ErrInvalidOperation", err)
-	}
-
-	if err := svc.SetDraft("editor", *id, false, draft.Version()); err != nil {
-		t.Fatalf("SetDraft(false) error = %v", err)
-	}
 	reloaded := NewTreeService(tmpDir)
 	if err := reloaded.LoadTree(); err != nil {
 		t.Fatalf("LoadTree() error = %v", err)
 	}
-	published, err := reloaded.GetPage(*id)
+	parent, err := reloaded.GetPage(*parentID)
 	if err != nil {
-		t.Fatalf("GetPage(reloaded) error = %v", err)
+		t.Fatalf("GetPage(parent) error = %v", err)
 	}
-	if published.Draft || published.Content != content {
-		t.Fatalf("published page = {draft:%v content:%q}", published.Draft, published.Content)
+	child, err := reloaded.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage(child) error = %v", err)
+	}
+	if parent.Kind != NodeKindSection || !parent.Draft {
+		t.Fatalf("parent = {kind:%q draft:%v}, want draft section", parent.Kind, parent.Draft)
+	}
+	if child.Draft || child.Parent == nil || child.Parent.ID != parent.ID {
+		t.Fatalf("child own draft/parent = %v/%v", child.Draft, child.Parent)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "draft-parent", "index.md"))
+	if err != nil || !strings.Contains(string(raw), "draft: true") {
+		t.Fatalf("parent draft frontmatter missing: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestTreeService_SetDraft_ParentPublishRevealsOnlyChildrenWithoutOwnDraft(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	parentID, err := svc.CreateNode("editor", nil, "Parent", "parent", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode(parent) error = %v", err)
+	}
+	publicChildID, err := svc.CreateNode("editor", parentID, "Public child", "public-child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode(public child) error = %v", err)
+	}
+	draftChildID, err := svc.CreateNodeWithDraft("editor", parentID, "Draft child", "draft-child", ptrKind(NodeKindPage), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft(draft child) error = %v", err)
+	}
+	parent, _ := svc.GetPage(*parentID)
+	if err := svc.SetDraft("editor", *parentID, true, parent.Version()); err != nil {
+		t.Fatalf("SetDraft(parent true) error = %v", err)
+	}
+	parent, _ = svc.GetPage(*parentID)
+	if err := svc.SetDraft("editor", *parentID, false, parent.Version()); err != nil {
+		t.Fatalf("SetDraft(parent false) error = %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	parent, _ = reloaded.GetPage(*parentID)
+	publicChild, _ := reloaded.GetPage(*publicChildID)
+	draftChild, _ := reloaded.GetPage(*draftChildID)
+	if parent.Draft || publicChild.Draft || !draftChild.Draft {
+		t.Fatalf("own draft states = parent:%v publicChild:%v draftChild:%v", parent.Draft, publicChild.Draft, draftChild.Draft)
+	}
+}
+
+func TestTreeService_UpdateNode_RejectsChildVersionCapturedBeforeInheritedDraftChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		parentDraft bool
+		nextDraft   bool
+	}{
+		{name: "parent publishes", parentDraft: true, nextDraft: false},
+		{name: "parent becomes draft", parentDraft: false, nextDraft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newLoadedService(t)
+			parentID, err := svc.CreateNodeWithDraft("editor", nil, "Parent", "parent", ptrKind(NodeKindSection), tc.parentDraft)
+			if err != nil {
+				t.Fatalf("CreateNodeWithDraft(parent) error = %v", err)
+			}
+			childID, err := svc.CreateNode("editor", parentID, "Child", "child", ptrKind(NodeKindPage))
+			if err != nil {
+				t.Fatalf("CreateNode(child) error = %v", err)
+			}
+			childBefore, err := svc.GetPage(*childID)
+			if err != nil {
+				t.Fatalf("GetPage(child before) error = %v", err)
+			}
+			staleVersion := childBefore.Version()
+			parent, err := svc.GetPage(*parentID)
+			if err != nil {
+				t.Fatalf("GetPage(parent) error = %v", err)
+			}
+
+			if err := svc.SetDraft("editor", *parentID, tc.nextDraft, parent.Version()); err != nil {
+				t.Fatalf("SetDraft(parent) error = %v", err)
+			}
+			childAfter, err := svc.GetPage(*childID)
+			if err != nil {
+				t.Fatalf("GetPage(child after) error = %v", err)
+			}
+			if childAfter.Metadata.UpdatedAt != childBefore.Metadata.UpdatedAt {
+				t.Fatalf("ancestor draft change rewrote child UpdatedAt: before=%v after=%v", childBefore.Metadata.UpdatedAt, childAfter.Metadata.UpdatedAt)
+			}
+			if childAfter.Version() == staleVersion {
+				t.Fatalf("child version did not capture inherited draft change: %q", staleVersion)
+			}
+
+			updatedContent := "stale edit"
+			err = svc.UpdateNode("editor", *childID, childAfter.Title, childAfter.Slug, &updatedContent, staleVersion, nil, nil, false)
+			if !errors.Is(err, ErrVersionConflict) {
+				t.Fatalf("UpdateNode(stale child) error = %v, want ErrVersionConflict", err)
+			}
+		})
+	}
+}
+
+func TestTreeService_UpdateNodeWithDraft_PersistsSectionContentAndOwnDraft(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Section", "section", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode(section) error = %v", err)
+	}
+	section, _ := svc.GetPage(*id)
+	content := "private section content"
+	draft := true
+	if err := svc.UpdateNodeWithDraft("editor", *id, section.Title, section.Slug, &content, section.Version(), nil, nil, false, &draft); err != nil {
+		t.Fatalf("UpdateNodeWithDraft() error = %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	updated, err := reloaded.GetPage(*id)
+	if err != nil || !updated.Draft || updated.Content != content {
+		t.Fatalf("updated section = %#v, error = %v", updated, err)
 	}
 }
 
@@ -472,7 +590,7 @@ func TestTreeService_SetDraft_DoesNotChangeLiveVisibilityWhenPersistenceFails(t 
 	}
 }
 
-func TestTreeService_DraftDescendantPreventsSubtreePathChanges(t *testing.T) {
+func TestTreeService_DraftDescendantDoesNotPreventSubtreePathChanges(t *testing.T) {
 	svc, _ := newLoadedService(t)
 	sectionID, err := svc.CreateNode("editor", nil, "Section", "section", ptrKind(NodeKindSection))
 	if err != nil {
@@ -481,20 +599,25 @@ func TestTreeService_DraftDescendantPreventsSubtreePathChanges(t *testing.T) {
 	if _, err := svc.CreateNodeWithDraft("editor", sectionID, "Draft", "draft", ptrKind(NodeKindPage), true); err != nil {
 		t.Fatalf("CreateNodeWithDraft() error = %v", err)
 	}
+	destinationID, err := svc.CreateNode("editor", nil, "Destination", "destination", ptrKind(NodeKindSection))
+	if err != nil {
+		t.Fatalf("CreateNode(destination) error = %v", err)
+	}
 	section, err := svc.GetPage(*sectionID)
 	if err != nil {
 		t.Fatalf("GetPage(section) error = %v", err)
 	}
 
-	if err := svc.UpdateNode("editor", section.ID, section.Title, "renamed", nil, section.Version(), nil, nil, false); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("UpdateNode(section slug) error = %v, want ErrInvalidOperation", err)
+	if err := svc.UpdateNode("editor", section.ID, section.Title, "renamed", nil, section.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode(section slug) error = %v", err)
 	}
-	if err := svc.MoveNode("editor", section.ID, "root", section.Version()); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("MoveNode(section) error = %v, want ErrInvalidOperation", err)
+	section, _ = svc.GetPage(*sectionID)
+	if err := svc.MoveNode("editor", section.ID, *destinationID, section.Version()); err != nil {
+		t.Fatalf("MoveNode(section) error = %v", err)
 	}
 }
 
-func TestTreeService_MovePublishedPageToDraftParentPreservesLeafInvariant(t *testing.T) {
+func TestTreeService_MovePublishedPageToDraftParentInheritsDraft(t *testing.T) {
 	svc, storageDir := newLoadedService(t)
 	draftID, err := svc.CreateNodeWithDraft("editor", nil, "Draft", "draft", ptrKind(NodeKindPage), true)
 	if err != nil {
@@ -509,12 +632,12 @@ func TestTreeService_MovePublishedPageToDraftParentPreservesLeafInvariant(t *tes
 		t.Fatalf("GetPage(published) error = %v", err)
 	}
 
-	if err := svc.MoveNode("editor", *publishedID, *draftID, published.Version()); !errors.Is(err, ErrInvalidOperation) {
-		t.Fatalf("MoveNode() error = %v, want ErrInvalidOperation", err)
+	if err := svc.MoveNode("editor", *publishedID, *draftID, published.Version()); err != nil {
+		t.Fatalf("MoveNode() error = %v", err)
 	}
-	mustStat(t, filepath.Join(storageDir, "root", "draft.md"))
-	mustStat(t, filepath.Join(storageDir, "root", "published.md"))
-	mustNotExist(t, filepath.Join(storageDir, "root", "draft", "published.md"))
+	mustStat(t, filepath.Join(storageDir, "root", "draft", "index.md"))
+	mustStat(t, filepath.Join(storageDir, "root", "draft", "published.md"))
+	mustNotExist(t, filepath.Join(storageDir, "root", "published.md"))
 
 	reloaded := NewTreeService(storageDir)
 	if err := reloaded.LoadTree(); err != nil {
@@ -528,7 +651,7 @@ func TestTreeService_MovePublishedPageToDraftParentPreservesLeafInvariant(t *tes
 	if err != nil {
 		t.Fatalf("GetPage(published after reload) error = %v", err)
 	}
-	if !draft.Draft || draft.Kind != NodeKindPage || published.Parent == nil || published.Parent.ID != "root" {
+	if !draft.Draft || draft.Kind != NodeKindSection || published.Draft || published.Parent == nil || published.Parent.ID != draft.ID {
 		t.Fatalf("reloaded state = {draft:%v kind:%q publishedParent:%v}", draft.Draft, draft.Kind, published.Parent)
 	}
 }
@@ -1228,6 +1351,67 @@ func TestTreeService_MoveNode_PersistsMovedNodeMetadataToFrontmatter(t *testing.
 	}
 	if !reloadedNode.Metadata.UpdatedAt.Equal(persistedUpdatedAt) {
 		t.Fatalf("expected reloaded metadata to match persisted frontmatter, fm=%s reloaded=%s (before=%s)", persistedUpdatedAt, reloadedNode.Metadata.UpdatedAt, beforeUpdatedAt)
+	}
+}
+
+func TestTreeService_MoveNode_LeavingInheritedDraftPersistsOwnDraft(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft(parent) error = %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftParentID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	child, _ := svc.GetPage(*childID)
+	if child.Draft {
+		t.Fatal("child unexpectedly has an own draft before move")
+	}
+
+	if err := svc.MoveNode("editor", *childID, "root", child.Version()); err != nil {
+		t.Fatalf("MoveNode() error = %v", err)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	moved, err := reloaded.GetPage(*childID)
+	if err != nil || !moved.Draft || moved.Parent == nil || moved.Parent.ID != "root" {
+		t.Fatalf("moved child = %#v, error = %v", moved, err)
+	}
+}
+
+func TestTreeService_MoveNode_FailureRollsBackPromotedOwnDraft(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft(parent) error = %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftParentID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	child, _ := svc.GetPage(*childID)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "root", "child.md"), []byte("collision"), 0o644); err != nil {
+		t.Fatalf("WriteFile(collision) error = %v", err)
+	}
+	if err := svc.MoveNode("editor", *childID, "root", child.Version()); err == nil {
+		t.Fatal("MoveNode() unexpectedly succeeded")
+	}
+
+	unchanged, err := svc.GetPage(*childID)
+	if err != nil || unchanged.Draft || unchanged.Parent == nil || unchanged.Parent.ID != *draftParentID {
+		t.Fatalf("child changed after failed move: %#v, error = %v", unchanged, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "root", "draft-parent", "child.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(source) error = %v", err)
+	}
+	if strings.Contains(string(raw), "draft: true") {
+		t.Fatalf("failed move left own draft persisted: %q", raw)
 	}
 }
 
@@ -2541,6 +2725,58 @@ func TestTreeService_ReconstructTreeFromFS_UpdatesSchemaVersion(t *testing.T) {
 
 	// Startup reconstruction should no longer create a tree.json snapshot.
 	mustNotExist(t, filepath.Join(tmpDir, "tree.json"))
+}
+
+func TestTreeService_ReconstructTreeFromFS_SerializesConcurrentDraftWrite(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	page, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+
+	releaseReconstruct := make(chan struct{})
+	ctx := &gatedErrContext{
+		Context: context.Background(),
+		entered: make(chan struct{}),
+		release: releaseReconstruct,
+	}
+	reconstructDone := make(chan error, 1)
+	go func() {
+		reconstructDone <- svc.ReconstructTreeFromFSContext(ctx)
+	}()
+	<-ctx.entered
+	if svc.mu.TryLock() {
+		svc.mu.Unlock()
+		t.Fatal("filesystem reconstruction did not hold the tree write lock while scanning")
+	}
+
+	draftWriteStarted := make(chan struct{})
+	draftWriteDone := make(chan error, 1)
+	go func() {
+		close(draftWriteStarted)
+		draftWriteDone <- svc.SetDraft("editor", *id, true, page.Version())
+	}()
+	<-draftWriteStarted
+
+	close(releaseReconstruct)
+	if err := <-reconstructDone; err != nil {
+		t.Fatalf("ReconstructTreeFromFSContext() error = %v", err)
+	}
+	if err := <-draftWriteDone; err != nil {
+		t.Fatalf("SetDraft() error = %v", err)
+	}
+
+	updated, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage(after concurrent operations) error = %v", err)
+	}
+	if !updated.Draft {
+		t.Fatal("concurrent SetDraft(true) was lost after filesystem reconstruction")
+	}
 }
 
 // --- G) ReconstructTreeFromFS ---

@@ -94,16 +94,25 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 func (r *Routes) requireVisiblePage(authDisabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		node, err := r.tree.FindPageByID(strings.TrimSpace(c.Param("id")))
+		if r.tree == nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		node, err := r.tree.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
 		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
 		if !authDisabled {
 			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
 		}
 		c.Next()
 	}
+}
+
+func (r *Routes) requirePageVisibility(authDisabled bool) gin.HandlerFunc {
+	return r.requireVisiblePage(authDisabled)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────

@@ -141,40 +141,37 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	authGroup.PUT("/pages/:id/sort", authmw.RequireEditorOrAdmin(), r.handleSort)
 	authGroup.PUT("/pages/:id/pin", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handlePin)
 	authGroup.POST("/pages/ensure", authmw.RequireEditorOrAdmin(), r.handleEnsurePath)
-	authGroup.POST("/pages/convert/:id", authmw.RequireEditorOrAdmin(), r.requirePublishedPage(), r.handleConvert)
+	authGroup.POST("/pages/convert/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleConvert)
 	authGroup.POST("/pages/copy/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleCopy)
 	if opts.EnableLinkRefactor {
-		authGroup.POST("/pages/:id/refactor/preview", authmw.RequireEditorOrAdmin(), r.requirePublishedPage(), r.handleRefactorPreview)
-		authGroup.POST("/pages/:id/refactor/apply", authmw.RequireEditorOrAdmin(), r.requirePublishedPage(), r.handleRefactorApply)
+		authGroup.POST("/pages/:id/refactor/preview", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleRefactorPreview)
+		authGroup.POST("/pages/:id/refactor/apply", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleRefactorApply)
 	}
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 func (r *Routes) handleGetTree(c *gin.Context) {
-	r.disableVisibilityCache(c)
-	root := pagevisibility.Prune(r.treeService.GetTree(), authmw.TryGetUser(c), r.authDisabled)
-	depthStr := strings.TrimSpace(c.Query("depth"))
-	if depthStr == "" {
-		c.JSON(http.StatusOK, dto.ToAPINode(root, "", r.userResolver))
-		return
-	}
-	depth, err := strconv.Atoi(depthStr)
-	if err != nil {
-		depth = -1
+	r.setVisibilityCacheHeader(c)
+	root := pagevisibility.Prune(r.treeService.SnapshotTree(), authmw.TryGetUser(c), r.authDisabled)
+	depth := -1
+	if depthStr := strings.TrimSpace(c.Query("depth")); depthStr != "" {
+		if parsed, err := strconv.Atoi(depthStr); err == nil {
+			depth = parsed
+		}
 	}
 	c.JSON(http.StatusOK, dto.ToAPINodeWithDepth(root, "", r.userResolver, depth))
 }
 
 func (r *Routes) handleGetPage(c *gin.Context) {
-	r.disableVisibilityCache(c)
+	r.setVisibilityCacheHeader(c)
 	id := strings.TrimSpace(c.Param("id"))
 	out, err := r.getPage.Execute(c.Request.Context(), GetPageInput{ID: id})
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	if !r.canView(c, out.Page.PageNode) {
+	if !pagevisibility.CanView(out.Page.PageNode, authmw.TryGetUser(c), r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -182,7 +179,7 @@ func (r *Routes) handleGetPage(c *gin.Context) {
 }
 
 func (r *Routes) handleGetByPath(c *gin.Context) {
-	r.disableVisibilityCache(c)
+	r.setVisibilityCacheHeader(c)
 	routePath := strings.TrimSpace(c.Query("path"))
 	if routePath == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingPath, "Missing path", "missing path")
@@ -193,7 +190,7 @@ func (r *Routes) handleGetByPath(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	if !r.canView(c, out.Page.PageNode) {
+	if !pagevisibility.CanView(out.Page.PageNode, authmw.TryGetUser(c), r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -205,7 +202,7 @@ func (r *Routes) handleGetByPath(c *gin.Context) {
 }
 
 func (r *Routes) handleFindByTitle(c *gin.Context) {
-	r.disableVisibilityCache(c)
+	r.setVisibilityCacheHeader(c)
 	title := strings.TrimSpace(c.Query("title"))
 	if title == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingTitle, "Missing title query parameter", "missing title")
@@ -214,8 +211,7 @@ func (r *Routes) handleFindByTitle(c *gin.Context) {
 	out := r.findByTitle.Execute(c.Request.Context(), title)
 	visible := out.Matches[:0]
 	for _, match := range out.Matches {
-		node, err := r.treeService.FindPageByID(match.ID)
-		if err == nil && r.canView(c, node) {
+		if pagevisibility.CanView(match.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
 			visible = append(visible, match)
 		}
 	}
@@ -225,7 +221,7 @@ func (r *Routes) handleFindByTitle(c *gin.Context) {
 }
 
 func (r *Routes) handleLookupPath(c *gin.Context) {
-	r.disableVisibilityCache(c)
+	r.setVisibilityCacheHeader(c)
 	path := strings.TrimSpace(c.Query("path"))
 	out, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: path})
 	if err != nil {
@@ -236,8 +232,7 @@ func (r *Routes) handleLookupPath(c *gin.Context) {
 		if segment.ID == nil {
 			continue
 		}
-		node, err := r.treeService.FindPageByID(*segment.ID)
-		if err != nil || !r.canView(c, node) {
+		if !pagevisibility.CanView(segment.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
 			respondWithPageError(c, tree.ErrPageNotFound)
 			return
 		}
@@ -246,7 +241,7 @@ func (r *Routes) handleLookupPath(c *gin.Context) {
 }
 
 func (r *Routes) handleResolvePermalink(c *gin.Context) {
-	r.disableVisibilityCache(c)
+	r.setVisibilityCacheHeader(c)
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingID, "Page ID is required", "page id is required")
@@ -257,8 +252,7 @@ func (r *Routes) handleResolvePermalink(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	node, err := r.treeService.FindPageByID(out.Target.ID)
-	if err != nil || !r.canView(c, node) {
+	if !pagevisibility.CanView(out.Target.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
@@ -272,10 +266,7 @@ func (r *Routes) handleSuggestSlug(c *gin.Context) {
 		return
 	}
 	for _, id := range []string{strings.TrimSpace(c.Query("parentId")), strings.TrimSpace(c.Query("currentId"))} {
-		if id == "" || id == "root" {
-			continue
-		}
-		if !r.requireVisibleID(c, id) {
+		if id != "" && id != "root" && !r.requireVisibleNode(c, id) {
 			return
 		}
 	}
@@ -307,13 +298,17 @@ func (r *Routes) handleCreate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleID(c, *req.ParentID) {
+	if req.Draft && r.authDisabled {
+		respondWithDraftUnavailable(c)
+		return
+	}
+	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	kind := kindFromString(req.Kind)
 	out, err := r.createPage.Execute(c.Request.Context(), CreatePageInput{
-		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind,
-		Draft: req.Draft, DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
+		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind, Draft: req.Draft,
+		DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
 	})
 	if err != nil {
 		respondWithPageError(c, err)
@@ -356,6 +351,7 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		Content    *string           `json:"content"`
 		Tags       []string          `json:"tags"`
 		Properties map[string]string `json:"properties"`
+		Draft      *bool             `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -372,6 +368,15 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	if user == nil {
 		return
 	}
+	node, err := r.treeService.SnapshotPageSubtree(id)
+	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return
+	}
+	if req.Draft != nil && *req.Draft != node.Draft && !pagevisibility.CanManageDraft(node, user, r.authDisabled) {
+		respondWithDraftUnavailable(c)
+		return
+	}
 
 	// Normalize tags to lowercase so the on-disk file is always consistent with
 	// what the search index stores. Preserve nil so callers can distinguish
@@ -381,11 +386,11 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		normalizedTags = normalizeTagInputs(req.Tags)
 	}
 
-	kind := tree.NodeKindPage
 	out, err := r.updatePage.Execute(c.Request.Context(), UpdatePageInput{
 		UserID: user.ID, ID: id, Version: req.Version, Title: req.Title, Slug: req.Slug,
-		Content: req.Content, Kind: &kind,
-		Tags: normalizedTags, Properties: req.Properties,
+		Content: req.Content,
+		Tags:    normalizedTags, Properties: req.Properties,
+		Draft: req.Draft, DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
 	})
 	if err != nil {
 		respondWithPageError(c, err)
@@ -394,12 +399,69 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	r.respondPage(c, http.StatusOK, out.Page)
 }
 
+func (r *Routes) canView(c *gin.Context, id string) bool {
+	node, err := r.treeService.SnapshotPageNode(id)
+	return err == nil && pagevisibility.CanView(node, authmw.TryGetUser(c), r.authDisabled)
+}
+
+func (r *Routes) setVisibilityCacheHeader(c *gin.Context) {
+	if !r.authDisabled {
+		c.Header("Cache-Control", "private, no-store")
+	}
+}
+
+func (r *Routes) requireVisibleSubtree(c *gin.Context, id string) bool {
+	node, err := r.treeService.SnapshotPageSubtree(id)
+	if err != nil || !pagevisibility.CanViewSubtree(node, authmw.TryGetUser(c), r.authDisabled) {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return false
+	}
+	return true
+}
+
+func (r *Routes) requireVisibleNode(c *gin.Context, id string) bool {
+	if !r.canView(c, id) {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return false
+	}
+	return true
+}
+
+func (r *Routes) requireVisiblePage() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !r.requireVisibleNode(c, strings.TrimSpace(c.Param("id"))) {
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func (r *Routes) requireVisibleID(c *gin.Context, id string) bool {
+	return r.requireVisibleNode(c, id)
+}
+
+func (r *Routes) requirePublishedPage() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		node, err := r.treeService.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
+		if err != nil || pagevisibility.IsInDraftSubtree(node) {
+			respondWithPageError(c, tree.ErrPageNotFound)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 func (r *Routes) handleDelete(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	recursive := c.DefaultQuery("recursive", "false") == "true"
 	version := c.Query("version")
 	user := authmw.MustGetUser(c)
 	if user == nil {
+		return
+	}
+	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.deletePage.Execute(c.Request.Context(), DeletePageInput{
@@ -421,16 +483,11 @@ func (r *Routes) handleMove(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidPayload, "Invalid payload", "invalid payload")
 		return
 	}
-	node, err := r.treeService.FindPageByID(id)
-	if err != nil || node.Draft {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
 		return
 	}
-	if req.ParentID != "" && req.ParentID != "root" && !r.requireVisibleID(c, req.ParentID) {
+	if !r.requireVisibleSubtree(c, id) || req.ParentID != "" && req.ParentID != "root" && !r.requireVisibleSubtree(c, req.ParentID) {
 		return
 	}
 	if err := r.movePage.Execute(c.Request.Context(), MovePageInput{
@@ -451,11 +508,11 @@ func (r *Routes) handleSort(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	for _, id := range append([]string{parentID}, req.OrderedIDs...) {
-		if id == "root" {
-			continue
-		}
-		if !r.requireVisibleID(c, id) {
+	if parentID != "" && parentID != "root" && !r.requireVisibleSubtree(c, parentID) {
+		return
+	}
+	for _, id := range req.OrderedIDs {
+		if !r.requireVisibleSubtree(c, id) {
 			return
 		}
 	}
@@ -478,6 +535,9 @@ func (r *Routes) handlePin(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
+	if !r.requireVisibleSubtree(c, id) {
+		return
+	}
 	out, err := r.pinPage.Execute(c.Request.Context(), PinPageInput{
 		ID:      id,
 		Version: req.Version,
@@ -495,6 +555,7 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 		Path  string  `json:"path" binding:"required"`
 		Title string  `json:"title" binding:"required"`
 		Kind  *string `json:"kind"`
+		Draft bool    `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -504,22 +565,35 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	lookup, err := r.treeService.LookupPagePath(req.Path)
+	if req.Draft && r.authDisabled {
+		respondWithDraftUnavailable(c)
+		return
+	}
+	lookup, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: req.Path})
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	for _, segment := range lookup.Segments {
-		if segment.ID != nil && !r.requireVisibleID(c, *segment.ID) {
+	for _, segment := range lookup.Lookup.Segments {
+		if segment.ID == nil {
+			continue
+		}
+		if !r.canView(c, *segment.ID) {
+			respondWithPageError(c, tree.ErrPageNotFound)
 			return
 		}
 	}
 	kind := kindFromString(req.Kind)
 	out, err := r.ensurePath.Execute(c.Request.Context(), EnsurePathInput{
-		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind,
+		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind, Draft: req.Draft,
 	})
 	if err != nil {
 		respondWithPageError(c, err)
+		return
+	}
+	node, err := r.treeService.SnapshotPageSubtree(out.Page.ID)
+	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
+		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
 	r.respondPage(c, http.StatusOK, out.Page)
@@ -541,6 +615,9 @@ func (r *Routes) handleConvert(c *gin.Context) {
 	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
+		return
+	}
+	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.convertPage.Execute(c.Request.Context(), ConvertPageInput{
@@ -567,7 +644,7 @@ func (r *Routes) handleCopy(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleID(c, *req.ParentID) {
+	if !r.requireVisibleSubtree(c, sourceID) || req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	out, err := r.copyPage.Execute(c.Request.Context(), CopyPageInput{
@@ -594,7 +671,7 @@ func (r *Routes) handleRefactorPreview(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleID(c, *req.NewParentID) {
+	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
 		return
 	}
 	out, err := r.previewRefactor.Execute(c.Request.Context(), RefactorPreviewInput{
@@ -611,13 +688,16 @@ func (r *Routes) handleRefactorPreview(c *gin.Context) {
 func (r *Routes) handleRefactorApply(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	var req struct {
-		Version      string  `json:"version" binding:"required"`
-		Kind         string  `json:"kind" binding:"required"`
-		Title        string  `json:"title"`
-		Slug         string  `json:"slug"`
-		Content      *string `json:"content"`
-		NewParentID  *string `json:"parentId"`
-		RewriteLinks bool    `json:"rewriteLinks"`
+		Version      string            `json:"version" binding:"required"`
+		Kind         string            `json:"kind" binding:"required"`
+		Title        string            `json:"title"`
+		Slug         string            `json:"slug"`
+		Content      *string           `json:"content"`
+		Tags         []string          `json:"tags"`
+		Properties   map[string]string `json:"properties"`
+		Draft        *bool             `json:"draft"`
+		NewParentID  *string           `json:"parentId"`
+		RewriteLinks bool              `json:"rewriteLinks"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -630,9 +710,25 @@ func (r *Routes) handleRefactorApply(c *gin.Context) {
 	if user == nil {
 		return
 	}
+	if err := validatePageMetadataInput(req.Tags, req.Properties); err != nil {
+		respondWithPageError(c, err)
+		return
+	}
+	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
+		return
+	}
+	if req.Draft != nil && *req.Draft && r.authDisabled {
+		respondWithDraftUnavailable(c)
+		return
+	}
+	normalizedTags := req.Tags
+	if req.Tags != nil {
+		normalizedTags = normalizeTagInputs(req.Tags)
+	}
 	page, err := r.applyRefactor.Execute(c.Request.Context(), RefactorApplyInput{
-		Version: req.Version,
-		UserID:  user.ID,
+		Version: req.Version, UserID: user.ID,
+		Tags: normalizedTags, Properties: req.Properties, Draft: req.Draft,
+		DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
 		RefactorPreviewInput: RefactorPreviewInput{
 			PageID: id, Kind: req.Kind, Title: req.Title, Slug: req.Slug,
 			Content: req.Content, NewParentID: req.NewParentID,
@@ -647,80 +743,24 @@ func (r *Routes) handleRefactorApply(c *gin.Context) {
 }
 
 func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
-	visible := pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
-	if visible == nil {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	apiPage := dto.ToAPIPage(&tree.Page{PageNode: visible, Content: page.Content}, r.userResolver)
-	r.enrichPageMetadata(apiPage)
-	c.JSON(status, apiPage)
+	r.respondPageWithDepth(c, status, page, -1)
 }
 
 func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
-	visible := pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
-	if visible == nil {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	apiPage := dto.ToAPIPageWithDepth(&tree.Page{PageNode: visible, Content: page.Content}, r.userResolver, depth)
-	r.enrichPageMetadata(apiPage)
+	visible := *page
+	visible.PageNode = pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
+	apiPage := dto.ToAPIPageWithDepth(&visible, r.userResolver, depth)
+	r.enrichPageMetadata(apiPage, visible.RawContent)
 	c.JSON(status, apiPage)
 }
 
-func (r *Routes) canView(c *gin.Context, node *tree.PageNode) bool {
-	return pagevisibility.CanView(node, authmw.TryGetUser(c), r.authDisabled)
-}
-
-func (r *Routes) disableVisibilityCache(c *gin.Context) {
-	if !r.authDisabled {
-		c.Header("Cache-Control", "private, no-store")
-	}
-}
-
-func (r *Routes) requireVisiblePage() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !r.requireVisibleID(c, strings.TrimSpace(c.Param("id"))) {
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
-func (r *Routes) requireVisibleID(c *gin.Context, id string) bool {
-	node, err := r.treeService.FindPageByID(strings.TrimSpace(id))
-	if err == nil && r.canView(c, node) {
-		return true
-	}
-	respondWithPageError(c, tree.ErrPageNotFound)
-	return false
-}
-
-func (r *Routes) requirePublishedPage() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		node, err := r.treeService.FindPageByID(strings.TrimSpace(c.Param("id")))
-		if err != nil || node.Draft {
-			respondWithPageError(c, tree.ErrPageNotFound)
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
-func (r *Routes) enrichPageMetadata(page *dto.Page) {
+func (r *Routes) enrichPageMetadata(page *dto.Page, raw string) {
 	if page == nil {
 		return
 	}
 
 	page.Tags = []string{}
 	page.Properties = map[string]string{}
-
-	raw, err := r.treeService.ReadPageRaw(page.ID)
-	if err != nil {
-		return
-	}
 
 	fm, _, has, err := markdown.ParseFrontmatter(raw)
 	if err != nil || !has || len(fm.ExtraFields) == 0 {

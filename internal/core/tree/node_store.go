@@ -64,6 +64,12 @@ type NodeStore struct {
 	slugger    *SlugService
 }
 
+type nodeContentSnapshot struct {
+	exists bool
+	raw    []byte
+	mode   os.FileMode
+}
+
 const (
 	reconstructSystemUserID    = "system"
 	orderFilename              = ".order.json"
@@ -130,7 +136,7 @@ func (f *NodeStore) syncManagedFrontmatter(mdFile *markdown.MarkdownFile, entry 
 		strings.TrimSpace(entry.Metadata.CreatorID),
 		strings.TrimSpace(entry.Metadata.LastAuthorID),
 	)
-	mdFile.SetDraft(entry.Kind != NodeKindSection && entry.Draft)
+	mdFile.SetDraft(entry.Draft)
 }
 
 func (f *NodeStore) ensureSectionIndex(entry *PageNode) (string, error) {
@@ -345,6 +351,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			var sectionMdFile *markdown.MarkdownFile
 			needsWriteback := false
 			sectionPinned := false
+			sectionDraft := false
 			if fileExists(indexPath) {
 				mdFile, err := markdown.LoadMarkdownFile(indexPath)
 				if err != nil {
@@ -361,11 +368,12 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 					if fm.LeafWikiID != "" {
 						id = fm.LeafWikiID
 					}
-					if fm.LeafWikiID == "" || fm.LeafWikiUpdatedAt == "" || fm.LeafWikiCreatedAt == "" || fm.Draft {
+					if fm.LeafWikiID == "" || fm.LeafWikiUpdatedAt == "" || fm.LeafWikiCreatedAt == "" {
 						sectionMdFile = mdFile
 						needsWriteback = true
 					}
 					sectionPinned = fm.LeafWikiPinned
+					sectionDraft = fm.Draft
 				}
 			}
 
@@ -379,6 +387,7 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 				Kind:     NodeKindSection,
 				Metadata: metadata,
 				Pinned:   sectionPinned,
+				Draft:    sectionDraft,
 			}
 			if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filepath.Join(currentPath, name)); err != nil {
 				return err
@@ -822,34 +831,24 @@ func (f *NodeStore) UpsertContentAndMetadata(
 	return nil
 }
 
-// MoveNode moves a page to a other node
-func (f *NodeStore) MoveNode(entry *PageNode, parentEntry *PageNode) error {
+// ValidateMoveNode checks source and destination disk state without changing it.
+// The destination may still be a page because TreeService auto-converts it
+// after this preflight succeeds.
+func (f *NodeStore) ValidateMoveNode(entry *PageNode, parentEntry *PageNode) error {
 	if entry == nil {
-		return &InvalidOpError{Op: "MoveNode", Reason: errEntryRequired}
+		return &InvalidOpError{Op: "ValidateMoveNode", Reason: errEntryRequired}
 	}
 	if parentEntry == nil {
-		return &InvalidOpError{Op: "MoveNode", Reason: errParentEntryRequired}
+		return &InvalidOpError{Op: "ValidateMoveNode", Reason: errParentEntryRequired}
 	}
 	if entry.ID == "root" {
-		return &InvalidOpError{Op: "MoveNode", Reason: "cannot move root"}
+		return &InvalidOpError{Op: "ValidateMoveNode", Reason: "cannot move root"}
 	}
 
-	// Option A: children only under sections (defensive guard)
-	if parentEntry.Kind != NodeKindSection {
-		return &InvalidOpError{Op: "MoveNode", Reason: fmt.Sprintf("parent entry must be a section, got %q", parentEntry.Kind)}
-	}
-
-	// Parent directory path from tree
 	parentDir, err := f.dirPathForNode(parentEntry)
 	if err != nil {
 		return err
 	}
-
-	if err := os.MkdirAll(parentDir, 0o755); err != nil {
-		return fmt.Errorf(errEnsureParentFailed, err)
-	}
-
-	// Current base path from tree (still at old location; TreeService updates Parent after success)
 	oldBase, err := f.dirPathForNode(entry)
 	if err != nil {
 		return err
@@ -867,10 +866,8 @@ func (f *NodeStore) MoveNode(entry *PageNode, parentEntry *PageNode) error {
 		return &PageAlreadyExistsError{Path: destBase}
 	}
 
-	// STRICT: follow tree.Kind exactly (no disk fallbacks)
 	switch entry.Kind {
 	case NodeKindSection:
-		// src must be a directory
 		info, err := os.Stat(oldDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -883,13 +880,7 @@ func (f *NodeStore) MoveNode(entry *PageNode, parentEntry *PageNode) error {
 			f.log.Warn("move drift: expected folder but found file", "nodeID", entry.ID, "expectedDir", oldDir)
 			return &DriftError{NodeID: entry.ID, Kind: entry.Kind, Path: oldDir, Reason: errExpectedFolderFoundFile}
 		}
-
-		if err := os.Rename(oldDir, destDir); err != nil {
-			return fmt.Errorf("could not move folder: %w", err)
-		}
-
 	case NodeKindPage:
-		// src must be a file
 		info, err := os.Stat(oldFile)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -902,15 +893,50 @@ func (f *NodeStore) MoveNode(entry *PageNode, parentEntry *PageNode) error {
 			f.log.Warn("move drift: expected file but found folder", "nodeID", entry.ID, "expectedFile", oldFile)
 			return &DriftError{NodeID: entry.ID, Kind: entry.Kind, Path: oldFile, Reason: errExpectedFileFoundFolder}
 		}
+	default:
+		return &InvalidOpError{Op: "ValidateMoveNode", Reason: fmt.Sprintf(errUnknownNodeKind, entry.Kind)}
+	}
 
-		if err := os.Rename(oldFile, destFile); err != nil {
+	return nil
+}
+
+// MoveNode moves a node to another section.
+func (f *NodeStore) MoveNode(entry *PageNode, parentEntry *PageNode) error {
+	if parentEntry == nil {
+		return &InvalidOpError{Op: "MoveNode", Reason: errParentEntryRequired}
+	}
+	if parentEntry.Kind != NodeKindSection {
+		return &InvalidOpError{Op: "MoveNode", Reason: fmt.Sprintf("parent entry must be a section, got %q", parentEntry.Kind)}
+	}
+	if err := f.ValidateMoveNode(entry, parentEntry); err != nil {
+		return err
+	}
+
+	parentDir, err := f.dirPathForNode(parentEntry)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		return fmt.Errorf(errEnsureParentFailed, err)
+	}
+	oldBase, err := f.dirPathForNode(entry)
+	if err != nil {
+		return err
+	}
+	destBase := filepath.Join(parentDir, entry.Slug)
+
+	switch entry.Kind {
+	case NodeKindSection:
+		if err := os.Rename(oldBase, destBase); err != nil {
+			return fmt.Errorf("could not move folder: %w", err)
+		}
+	case NodeKindPage:
+		if err := os.Rename(oldBase+".md", destBase+".md"); err != nil {
 			return fmt.Errorf("could not move file: %w", err)
 		}
-
 	default:
 		return &InvalidOpError{Op: "MoveNode", Reason: fmt.Sprintf(errUnknownNodeKind, entry.Kind)}
 	}
-
 	return nil
 }
 
@@ -1095,6 +1121,58 @@ func (f *NodeStore) ReadPageRaw(entry *PageNode) (string, error) {
 	return string(raw), nil
 }
 
+func (f *NodeStore) snapshotNodeContent(entry *PageNode) (*nodeContentSnapshot, error) {
+	filePath, err := f.contentPathForNodeRead(entry)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &nodeContentSnapshot{}, nil
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("expected content file but found directory: %s", filePath)
+	}
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return &nodeContentSnapshot{exists: true, raw: raw, mode: info.Mode()}, nil
+}
+
+func (f *NodeStore) restoreNodeContent(entry *PageNode, snapshot *nodeContentSnapshot) error {
+	if snapshot == nil {
+		return nil
+	}
+	filePath, err := f.contentPathForNodeRead(entry)
+	if err != nil {
+		return err
+	}
+	if !snapshot.exists {
+		info, err := os.Stat(filePath)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return fmt.Errorf("refusing to remove content directory: %s", filePath)
+		}
+		if err := os.Remove(filePath); err != nil {
+			return fmt.Errorf("remove newly created content file: %w", err)
+		}
+		return nil
+	}
+	if err := shared.WriteFileAtomic(filePath, snapshot.raw, snapshot.mode); err != nil {
+		return fmt.Errorf("restore content file: %w", err)
+	}
+	return nil
+}
+
 // ReadPageAndRaw returns both the stripped content and the raw markdown string
 // (including frontmatter) from a single disk read.
 func (f *NodeStore) ReadPageAndRaw(entry *PageNode) (content, raw string, err error) {
@@ -1169,6 +1247,37 @@ func (f *NodeStore) SyncFrontmatterIfExists(entry *PageNode) error {
 		return fmt.Errorf("write markdown file: %w", err)
 	}
 	return nil
+}
+
+// PersistFrontmatterWithDraft persists explicit own draft state. Sections with
+// a missing index materialize one so the state survives reconstruction.
+func (f *NodeStore) PersistFrontmatterWithDraft(entry *PageNode) error {
+	if entry == nil {
+		return &InvalidOpError{Op: "PersistFrontmatterWithDraft", Reason: errEntryRequired}
+	}
+	filePath, err := f.contentPathForNodeRead(entry)
+	if err != nil {
+		return err
+	}
+	if fileExists(filePath) || entry.Kind != NodeKindSection {
+		return f.SyncFrontmatterIfExists(entry)
+	}
+	dirPath, err := f.dirPathForNode(entry)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &DriftError{NodeID: entry.ID, Kind: entry.Kind, Path: dirPath, Reason: errExpectedFolderMissing}
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return &DriftError{NodeID: entry.ID, Kind: entry.Kind, Path: dirPath, Reason: errExpectedFolderFoundFile}
+	}
+	_, err = f.ensureSectionIndex(entry)
+	return err
 }
 
 func (f *NodeStore) dirPathForNode(entry *PageNode) (string, error) {

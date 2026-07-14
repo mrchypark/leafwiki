@@ -57,7 +57,8 @@ func (uc *GetPropertyKeysUseCase) Execute(_ context.Context, in GetPropertyKeysI
 		limit = 200
 	}
 
-	keys, err := uc.svc.GetAllPropertyKeysForPageIDs(strings.ToLower(strings.TrimSpace(in.Filter)), limit, pagevisibility.AllPublishedPageIDs(uc.tree))
+	filter := strings.ToLower(strings.TrimSpace(in.Filter))
+	keys, err := uc.svc.GetAllPropertyKeysForPageIDs(filter, limit, pagevisibility.AllPublishedPageIDs(uc.tree))
 	if err != nil {
 		return nil, err
 	}
@@ -112,8 +113,8 @@ func (uc *GetPagesByPropertyUseCase) Execute(_ context.Context, in GetPagesByPro
 
 	pages := make([]*dto.PropertyPage, 0, len(pageIDs))
 	for _, id := range pageIDs {
-		node, err := uc.treeService.FindPageByID(id)
-		if err != nil || node == nil {
+		node, err := uc.treeService.SnapshotPageNode(id)
+		if err != nil || node == nil || pagevisibility.IsInDraftSubtree(node) {
 			continue
 		}
 		pages = append(pages, dto.ToPropertyPage(node, propsPerPage[id], uc.userResolver))

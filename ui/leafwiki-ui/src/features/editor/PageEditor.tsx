@@ -1,4 +1,5 @@
 import Page404 from '@/components/Page404'
+import { isEffectivelyDraft } from '@/lib/api/pages'
 import { mapApiError, asApiLocalizedError } from '@/lib/api/errors'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
 import { buildBrowserEditUrl } from '@/lib/routePath'
@@ -36,6 +37,7 @@ export default function PageEditor() {
   const setFrontmatterFields = usePageEditorStore((s) => s.setFrontmatterFields)
   const loadPageData = usePageEditorStore((s) => s.loadPageData)
   const initialPage = usePageEditorStore((s) => s.initialPage) // contains the initial page data when loaded
+  const page = usePageEditorStore((s) => s.page)
   const tags = usePageEditorStore((s) => s.tags)
   const draft = usePageEditorStore((s) => s.draft)
   const frontmatterFields = usePageEditorStore((s) => s.frontmatterFields)
@@ -212,8 +214,10 @@ export default function PageEditor() {
         {initialPage && (
           <>
             <PageFrontmatterPanel
-              pageKind={initialPage.kind}
               draft={draft}
+              effectiveDraft={
+                page ? isEffectivelyDraft({ ...page, draft }) : draft
+              }
               tags={tags}
               fields={frontmatterFields}
               errors={frontmatterErrors}

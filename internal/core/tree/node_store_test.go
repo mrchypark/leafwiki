@@ -1295,6 +1295,25 @@ func TestNodeStore_ConvertNode_PageToSection_MovesToIndex(t *testing.T) {
 	}
 }
 
+func TestNodeStore_ConvertNode_PageToSection_PreservesDraft(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	root := &PageNode{ID: "root", Slug: "root", Title: "root", Kind: NodeKindSection}
+	entry := &PageNode{ID: "p1", Slug: "p", Title: "P", Kind: NodeKindPage, Parent: root, Draft: true}
+	if err := store.CreatePage(root, entry); err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+	if err := store.ConvertNode(entry, NodeKindSection); err != nil {
+		t.Fatalf("ConvertNode(page->section): %v", err)
+	}
+
+	raw := string(mustRead(t, filepath.Join(tmp, "root", "p", "index.md")))
+	if !strings.Contains(raw, "draft: true") {
+		t.Fatalf("converted section lost draft frontmatter: %q", raw)
+	}
+}
+
 func TestNodeStore_ConvertNode_PageToSection_PreservesExistingMetadataAndBody(t *testing.T) {
 	tmp := t.TempDir()
 	store := NewNodeStore(tmp)

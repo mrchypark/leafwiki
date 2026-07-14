@@ -81,6 +81,33 @@ func TestGetPagesByTagsUseCase_ReturnsMatchingPages(t *testing.T) {
 	}
 }
 
+func TestTagUseCases_FilterStaleDraftRowsAndCounts(t *testing.T) {
+	pagesUC, svc, ts := setupUseCases(t)
+	publicID := createAndIndexPage(t, ts, svc, "Public", "public", []string{"shared"}, "public")
+	draftID := createAndIndexPage(t, ts, svc, "Draft", "draft", []string{"shared", "secret"}, "private")
+	draft, err := ts.FindPageByID(draftID)
+	if err != nil {
+		t.Fatalf("FindPageByID: %v", err)
+	}
+	draft.Draft = true
+
+	pages, err := pagesUC.Execute(context.Background(), GetPagesByTagsInput{Tags: []string{"shared"}})
+	if err != nil {
+		t.Fatalf("GetPages Execute: %v", err)
+	}
+	if len(pages.Pages) != 1 || pages.Pages[0].ID != publicID {
+		t.Fatalf("stale draft leaked from pages: %#v", pages.Pages)
+	}
+
+	tags, err := NewGetTagsUseCase(svc, ts).Execute(context.Background(), GetTagsInput{Limit: 50})
+	if err != nil {
+		t.Fatalf("GetTags Execute: %v", err)
+	}
+	if len(tags.Tags) != 1 || tags.Tags[0].Tag != "shared" || tags.Tags[0].Count != 1 {
+		t.Fatalf("stale draft affected tag counts: %#v", tags.Tags)
+	}
+}
+
 func TestGetPagesByTagsUseCase_ExcerptComesFromDB_NoDiskRead(t *testing.T) {
 	uc, svc, ts := setupUseCases(t)
 

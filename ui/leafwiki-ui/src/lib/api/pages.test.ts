@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchWithAuth } from './auth'
-import { createPage, updatePageDraft } from './pages'
+import {
+  createPage,
+  isEffectivelyDraft,
+  isInheritedDraft,
+  updatePageDraft,
+} from './pages'
 
 vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }))
 
@@ -41,5 +46,19 @@ describe('draft page API', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version: 'v1', draft: false }),
     })
+  })
+})
+
+describe('draft status compatibility', () => {
+  it('uses the legacy draft field when effectiveDraft is absent', () => {
+    expect(isEffectivelyDraft({ draft: true })).toBe(true)
+    expect(isInheritedDraft({ draft: true })).toBe(false)
+  })
+
+  it('distinguishes inherited-only drafts', () => {
+    const page = { draft: false, effectiveDraft: true }
+
+    expect(isEffectivelyDraft(page)).toBe(true)
+    expect(isInheritedDraft(page)).toBe(true)
   })
 })

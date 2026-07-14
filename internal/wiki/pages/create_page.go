@@ -43,9 +43,13 @@ func NewCreatePageUseCase(
 	s *tree.SlugService,
 	o *pagesave.PageSaveOrchestrator,
 	log *slog.Logger,
-	metrics *httpmetrics.HTTPMetrics,
+	metrics ...*httpmetrics.HTTPMetrics,
 ) *CreatePageUseCase {
-	return &CreatePageUseCase{tree: t, slug: s, orchestrator: o, log: log, metrics: metrics}
+	var m *httpmetrics.HTTPMetrics
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &CreatePageUseCase{tree: t, slug: s, orchestrator: o, log: log, metrics: m}
 }
 
 // Execute validates input, creates the page node, and fires post-save side effects.
@@ -68,9 +72,6 @@ func (uc *CreatePageUseCase) Execute(_ context.Context, in CreatePageInput) (out
 	}
 	if in.Draft && !in.DraftAllowed {
 		ve.Add("draft", "Drafts require authentication")
-	}
-	if in.Draft && in.Kind != nil && *in.Kind != tree.NodeKindPage {
-		ve.Add("draft", "Only pages can be drafts")
 	}
 	if err := uc.slug.IsValidSlug(in.Slug); err != nil {
 		ve.Add("slug", err.Error())

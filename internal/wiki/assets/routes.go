@@ -92,6 +92,10 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 
 func (r *Routes) requireAssetPageVisible(authDisabled, static bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if r.tree == nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
 		id := strings.TrimSpace(c.Param("id"))
 		if static {
 			path := strings.TrimPrefix(c.Param("filepath"), "/")
@@ -102,16 +106,27 @@ func (r *Routes) requireAssetPageVisible(authDisabled, static bool) gin.HandlerF
 				id = ""
 			}
 		}
-		node, err := r.tree.FindPageByID(id)
+		node, err := r.tree.SnapshotPageNode(id)
 		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
+		// Asset URLs stay stable when a published page becomes a draft. Do not let
+		// an authenticated wiki cache a formerly public response past that change.
 		if !authDisabled {
 			c.Header("Cache-Control", "private, no-store")
+			c.Header("Pragma", "no-cache")
 		}
 		c.Next()
 	}
+}
+
+func (r *Routes) requireStaticAssetVisibility(authDisabled bool) gin.HandlerFunc {
+	return r.requireAssetPageVisible(authDisabled, true)
+}
+
+func (r *Routes) requireDraftManagement(authDisabled bool) gin.HandlerFunc {
+	return r.requireAssetPageVisible(authDisabled, false)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────

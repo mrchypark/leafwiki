@@ -10,7 +10,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { canManageDrafts } from '@/lib/drafts'
-import type { Page } from '@/lib/api/pages'
 import { useConfigStore } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
@@ -20,8 +19,8 @@ import { EditorFrontmatterField } from './frontmatter'
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
-  pageKind: Page['kind']
   draft: boolean
+  effectiveDraft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
   errors: Record<string, string>
@@ -52,8 +51,8 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
-  pageKind,
   draft,
+  effectiveDraft,
   tags,
   fields,
   errors,
@@ -64,8 +63,8 @@ export function PageFrontmatterPanel({
 }: PageFrontmatterPanelProps) {
   const authDisabled = useConfigStore((state) => state.authDisabled)
   const userRole = useSessionStore((state) => state.user?.role)
-  const showDraft =
-    pageKind === 'page' && canManageDrafts(authDisabled, userRole)
+  const showDraft = canManageDrafts(authDisabled, userRole)
+  const inheritedDraft = effectiveDraft && !draft
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {
@@ -138,7 +137,9 @@ export function PageFrontmatterPanel({
   const hasErrors = Object.keys(errors).length > 0
 
   const summaryParts = [
-    ...(showDraft ? [draft ? 'Draft' : 'Published'] : []),
+    ...(showDraft
+      ? [draft ? 'Draft' : inheritedDraft ? 'Inherited draft' : 'Published']
+      : []),
     normalizedTags.length === 1 ? '1 tag' : `${normalizedTags.length} tags`,
     editableFields.length === 1
       ? '1 property'
@@ -191,7 +192,11 @@ export function PageFrontmatterPanel({
                         onDraftChange(checked === true)
                       }
                     />
-                    <Label htmlFor="page-frontmatter-draft">Draft</Label>
+                    <Label htmlFor="page-frontmatter-draft">
+                      {inheritedDraft
+                        ? 'Keep draft when parent is published'
+                        : 'Draft'}
+                    </Label>
                   </div>
                 </div>
               )}

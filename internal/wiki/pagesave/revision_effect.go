@@ -3,6 +3,7 @@ package pagesave
 import (
 	"log/slog"
 
+	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/revision"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 )
@@ -15,11 +16,15 @@ type RevisionSideEffect struct {
 }
 
 // NewRevisionSideEffect creates a RevisionSideEffect.
-func NewRevisionSideEffect(svc *revision.Service, log *slog.Logger, metrics *httpmetrics.HTTPMetrics) *RevisionSideEffect {
+func NewRevisionSideEffect(svc *revision.Service, log *slog.Logger, metrics ...*httpmetrics.HTTPMetrics) *RevisionSideEffect {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RevisionSideEffect{svc: svc, log: log, metrics: metrics}
+	var m *httpmetrics.HTTPMetrics
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &RevisionSideEffect{svc: svc, log: log, metrics: m}
 }
 
 func (e *RevisionSideEffect) Name() string {
@@ -27,11 +32,7 @@ func (e *RevisionSideEffect) Name() string {
 }
 
 func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
-	if e.svc == nil || event.After != nil && event.After.Draft {
-		return
-	}
-	if event.Before != nil && event.Before.Draft && event.After != nil && !event.After.Draft {
-		e.recordPublishedBaseline(event.After.ID, event.UserID)
+	if e.svc == nil || event.ReconciliationOnly {
 		return
 	}
 	switch event.Operation {
@@ -41,13 +42,26 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 		}
 
 	case PageOperationUpdate:
+		becamePublic := event.Before != nil && pagevisibility.IsInDraftSubtree(event.Before.PageNode) && event.After != nil && !pagevisibility.IsInDraftSubtree(event.After.PageNode)
+		if event.DraftChanged || becamePublic {
+			// Draft saves never enter public history. When a draft becomes public,
+			// capture each newly visible page exactly once as its published baseline.
+			summary := event.Summary
+			if summary == "" && becamePublic {
+				summary = "page published"
+			}
+			for _, pageID := range revisionAffectedPageIDs(event) {
+				e.recordPublishedBaseline(pageID, event.UserID, summary, event.Operation)
+			}
+			return
+		}
 		if event.SlugChanged {
-			for _, p := range event.AffectedPages {
-				if event.ContentChanged && p.ID == event.After.ID {
+			for _, pageID := range revisionAffectedPageIDs(event) {
+				if event.ContentChanged && event.After != nil && pageID == event.After.ID {
 					// Root page with content change: record content revision instead.
 					continue
 				}
-				e.recordStructure(p.ID, event.UserID, event.Operation)
+				e.recordStructure(pageID, event.UserID, event.Operation)
 			}
 		} else if event.TitleChanged && !event.ContentChanged {
 			if event.After != nil {
@@ -59,8 +73,8 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 		}
 
 	case PageOperationMove:
-		for _, p := range event.AffectedPages {
-			e.recordStructure(p.ID, event.UserID, event.Operation)
+		for _, pageID := range revisionAffectedPageIDs(event) {
+			e.recordStructure(pageID, event.UserID, event.Operation)
 		}
 
 	case PageOperationDelete:
@@ -71,6 +85,35 @@ func (e *RevisionSideEffect) Apply(event PageSaveEvent) {
 	}
 }
 
+func revisionAffectedPageIDs(event PageSaveEvent) []string {
+	ids := event.AffectedPageIDs
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(event.AffectedPages)+1)
+		for _, page := range event.AffectedPages {
+			if page != nil {
+				ids = append(ids, page.ID)
+			}
+		}
+		if event.After != nil {
+			ids = append(ids, event.After.ID)
+		}
+	}
+
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, pageID := range ids {
+		if pageID == "" {
+			continue
+		}
+		if _, ok := seen[pageID]; ok {
+			continue
+		}
+		seen[pageID] = struct{}{}
+		unique = append(unique, pageID)
+	}
+	return unique
+}
+
 func (e *RevisionSideEffect) recordContent(pageID, userID, summary string, operation PageOperationType) {
 	if _, _, err := e.svc.RecordContentUpdate(pageID, userID, summary); err != nil {
 		e.log.Warn("failed to record content revision", "pageID", pageID, "error", err)
@@ -78,10 +121,10 @@ func (e *RevisionSideEffect) recordContent(pageID, userID, summary string, opera
 	}
 }
 
-func (e *RevisionSideEffect) recordPublishedBaseline(pageID, userID string) {
-	if _, err := e.svc.RecordPublishedBaseline(pageID, userID, "page published"); err != nil {
+func (e *RevisionSideEffect) recordPublishedBaseline(pageID, userID, summary string, operation PageOperationType) {
+	if _, err := e.svc.RecordPublishedBaseline(pageID, userID, summary); err != nil {
 		e.log.Warn("failed to record published baseline", "pageID", pageID, "error", err)
-		e.metrics.IncPageSaveSideEffectFailure(string(PageOperationUpdate), e.Name())
+		e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
 	}
 }
 

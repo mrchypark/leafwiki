@@ -43,67 +43,76 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 	if uc.links == nil {
 		return nil, ErrLinkServiceUnavailable
 	}
-	page, err := uc.tree.GetPage(in.PageID)
+	node, err := uc.tree.SnapshotPageNode(in.PageID)
 	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
-			return nil, linkPageNotFound(err)
+			return nil, linkPageNotFoundError(err)
 		}
 		return nil, err
 	}
-	if !pagevisibility.CanView(page.PageNode, in.User, in.AuthDisabled) {
-		return nil, linkPageNotFound(nil)
-	}
-	if page.Draft {
+	if pagevisibility.IsInDraftSubtree(node) {
+		if !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
+			return nil, linkPageNotFoundError(nil)
+		}
 		return &GetLinkStatusOutput{Status: &corelinks.LinkStatusResult{
-			Backlinks: []corelinks.BacklinkResultItem{}, BrokenIncoming: []corelinks.BacklinkResultItem{},
-			Outgoings: []corelinks.OutgoingResultItem{}, BrokenOutgoings: []corelinks.OutgoingResultItem{},
+			Backlinks:       []corelinks.BacklinkResultItem{},
+			BrokenIncoming:  []corelinks.BacklinkResultItem{},
+			Outgoings:       []corelinks.OutgoingResultItem{},
+			BrokenOutgoings: []corelinks.OutgoingResultItem{},
 		}}, nil
 	}
-	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
+	status, err := uc.links.GetLinkStatusForPage(in.PageID, node.CalculatePath())
 	if err != nil {
 		return nil, err
 	}
-	filterPublishedLinks(status, uc.tree)
+	filterLinkStatus(status, uc.tree)
 	return &GetLinkStatusOutput{Status: status}, nil
 }
 
-func linkPageNotFound(err error) error {
-	return sharederrors.NewLocalizedError(ErrCodeLinkPageNotFound, "Page not found", "page not found", err)
+func linkPageNotFoundError(err error) error {
+	return sharederrors.NewLocalizedError(
+		ErrCodeLinkPageNotFound,
+		"Page not found",
+		"page not found",
+		err,
+	)
 }
 
-func filterPublishedLinks(status *corelinks.LinkStatusResult, treeService *tree.TreeService) {
+func filterLinkStatus(status *corelinks.LinkStatusResult, treeService *tree.TreeService) {
 	if status == nil {
 		return
 	}
-	allowed := make(map[string]struct{})
-	for _, id := range pagevisibility.AllPublishedPageIDs(treeService) {
-		allowed[id] = struct{}{}
+	published := make(map[string]struct{})
+	for _, pageID := range pagevisibility.AllPublishedPageIDs(treeService) {
+		published[pageID] = struct{}{}
 	}
-	status.Backlinks = filterBacklinks(status.Backlinks, allowed)
-	status.BrokenIncoming = filterBacklinks(status.BrokenIncoming, allowed)
-	status.Outgoings = filterOutgoings(status.Outgoings, allowed)
-	status.BrokenOutgoings = filterOutgoings(status.BrokenOutgoings, allowed)
+	status.Backlinks = filterPublicBacklinks(status.Backlinks, published)
+	status.BrokenIncoming = filterPublicBacklinks(status.BrokenIncoming, published)
+	status.Outgoings = filterPublicOutgoings(status.Outgoings, published)
+	status.BrokenOutgoings = filterPublicOutgoings(status.BrokenOutgoings, published)
 	status.Counts = corelinks.LinkStatusCounts{
-		Backlinks: len(status.Backlinks), BrokenIncoming: len(status.BrokenIncoming),
-		Outgoings: len(status.Outgoings), BrokenOutgoings: len(status.BrokenOutgoings),
+		Backlinks:       len(status.Backlinks),
+		BrokenIncoming:  len(status.BrokenIncoming),
+		Outgoings:       len(status.Outgoings),
+		BrokenOutgoings: len(status.BrokenOutgoings),
 	}
 }
 
-func filterBacklinks(items []corelinks.BacklinkResultItem, allowed map[string]struct{}) []corelinks.BacklinkResultItem {
-	visible := items[:0]
+func filterPublicBacklinks(items []corelinks.BacklinkResultItem, published map[string]struct{}) []corelinks.BacklinkResultItem {
+	visible := make([]corelinks.BacklinkResultItem, 0, len(items))
 	for _, item := range items {
-		if _, ok := allowed[item.FromPageID]; ok {
+		if _, ok := published[item.FromPageID]; ok {
 			visible = append(visible, item)
 		}
 	}
 	return visible
 }
 
-func filterOutgoings(items []corelinks.OutgoingResultItem, allowed map[string]struct{}) []corelinks.OutgoingResultItem {
-	visible := items[:0]
+func filterPublicOutgoings(items []corelinks.OutgoingResultItem, published map[string]struct{}) []corelinks.OutgoingResultItem {
+	visible := make([]corelinks.OutgoingResultItem, 0, len(items))
 	for _, item := range items {
 		if item.ToPageID != "" {
-			if _, ok := allowed[item.ToPageID]; !ok {
+			if _, ok := published[item.ToPageID]; !ok {
 				continue
 			}
 		}
