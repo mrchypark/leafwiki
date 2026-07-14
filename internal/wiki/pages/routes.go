@@ -441,18 +441,6 @@ func (r *Routes) requireVisibleID(c *gin.Context, id string) bool {
 	return r.requireVisibleNode(c, id)
 }
 
-func (r *Routes) requirePublishedPage() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		node, err := r.treeService.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
-		if err != nil || pagevisibility.IsInDraftSubtree(node) {
-			respondWithPageError(c, tree.ErrPageNotFound)
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
 func (r *Routes) handleDelete(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	recursive := c.DefaultQuery("recursive", "false") == "true"
@@ -749,6 +737,10 @@ func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
 func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
 	visible := *page
 	visible.PageNode = pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
+	if visible.PageNode == nil {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return
+	}
 	apiPage := dto.ToAPIPageWithDepth(&visible, r.userResolver, depth)
 	r.enrichPageMetadata(apiPage, visible.RawContent)
 	c.JSON(status, apiPage)

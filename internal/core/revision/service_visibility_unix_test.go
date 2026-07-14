@@ -70,7 +70,7 @@ func TestRecordAssetChange_SkipsSnapshotWhenAncestorBecomesDraftDuringCapture(t 
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for asset scan")
 	}
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 
 	setRevisionTestDraft(t, treeService, *sectionID, true)
 	secret := []byte("draft-only asset")
@@ -148,7 +148,7 @@ func TestRecordAssetChange_ReturnsVersionConflictWhenPublicLineageChangesDuringC
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for asset scan")
 	}
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 
 	updatedContent := "new public content"
 	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {

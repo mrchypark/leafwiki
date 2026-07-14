@@ -499,10 +499,6 @@ func TestLinkIndexSideEffect_MoveIntoDraft_ReconcilesUnchangedDescendantTitles(t
 	if err != nil {
 		t.Fatalf("CreateNode child: %v", err)
 	}
-	child, err := ts.GetPage(*childID)
-	if err != nil {
-		t.Fatalf("GetPage child: %v", err)
-	}
 	keeper := createPageWithContent(t, ts, "Shared", "keeper", "keeper")
 	source := createPageWithContent(t, ts, "Source", "source", "[[Shared]]")
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: source})
@@ -519,7 +515,7 @@ func TestLinkIndexSideEffect_MoveIntoDraft_ReconcilesUnchangedDescendantTitles(t
 	if err != nil {
 		t.Fatalf("GetPage section after move: %v", err)
 	}
-	child, err = ts.GetPage(*childID)
+	child, err := ts.GetPage(*childID)
 	if err != nil {
 		t.Fatalf("GetPage child after draft: %v", err)
 	}

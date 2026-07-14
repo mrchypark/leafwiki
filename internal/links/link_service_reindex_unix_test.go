@@ -62,7 +62,7 @@ func TestLinkService_IndexAllPagesContext_SerializesIncrementalLinkUpdate(t *tes
 	if writer.err != nil {
 		t.Fatalf("OpenFile FIFO writer: %v", writer.err)
 	}
-	defer writer.file.Close()
+	defer func() { _ = writer.file.Close() }()
 
 	if svc.reconcileMu.TryLock() {
 		svc.reconcileMu.Unlock()
@@ -148,7 +148,7 @@ func TestLinkService_IndexAllPagesContext_SerializesDraftDeletionAfterReindex(t 
 	if writer.err != nil {
 		t.Fatalf("OpenFile FIFO writer: %v", writer.err)
 	}
-	defer writer.file.Close()
+	defer func() { _ = writer.file.Close() }()
 
 	deleteStarted := make(chan struct{})
 	deleteDone := make(chan error, 1)

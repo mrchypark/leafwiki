@@ -80,7 +80,7 @@ func TestSearchIndexSideEffect_IndexAllPages_SkipsDraftPages(t *testing.T) {
 	treeSvc, index, effect := setupSearchTest(t)
 
 	page := createPageWithContent(t, treeSvc, "Draft Page", "draft-page", "private uniquedraftbootstrap content")
-	page = setDraftForTest(t, treeSvc, page, true)
+	setDraftForTest(t, treeSvc, page, true)
 
 	if err := effect.IndexAllPages(); err != nil {
 		t.Fatalf("IndexAllPages: %v", err)

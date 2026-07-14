@@ -40,14 +40,20 @@ func TestToAPINode_ReportsDirectAndInheritedDraftSeparately(t *testing.T) {
 	draftParent := &tree.PageNode{ID: "parent", Slug: "parent", Draft: true, Parent: root}
 	inheritedChild := &tree.PageNode{ID: "child", Slug: "child", Parent: draftParent}
 	directChild := &tree.PageNode{ID: "direct", Slug: "direct", Draft: true, Parent: inheritedChild}
+	publicDraft := &tree.PageNode{ID: "public-draft", Slug: "public-draft", Draft: true, Parent: root}
 
 	inherited := ToAPINode(inheritedChild, "parent", nil)
-	if inherited.Draft || !inherited.EffectiveDraft {
-		t.Fatalf("inherited draft flags = draft %v, effectiveDraft %v", inherited.Draft, inherited.EffectiveDraft)
+	if inherited.Draft || !inherited.EffectiveDraft || !inherited.AncestorDraft {
+		t.Fatalf("inherited draft flags = draft %v, effectiveDraft %v, ancestorDraft %v", inherited.Draft, inherited.EffectiveDraft, inherited.AncestorDraft)
 	}
 
 	direct := ToAPINode(directChild, "parent/child", nil)
-	if !direct.Draft || !direct.EffectiveDraft {
-		t.Fatalf("direct draft flags = draft %v, effectiveDraft %v", direct.Draft, direct.EffectiveDraft)
+	if !direct.Draft || !direct.EffectiveDraft || !direct.AncestorDraft {
+		t.Fatalf("direct inherited draft flags = draft %v, effectiveDraft %v, ancestorDraft %v", direct.Draft, direct.EffectiveDraft, direct.AncestorDraft)
+	}
+
+	directPublic := ToAPINode(publicDraft, "", nil)
+	if !directPublic.Draft || !directPublic.EffectiveDraft || directPublic.AncestorDraft {
+		t.Fatalf("direct public draft flags = draft %v, effectiveDraft %v, ancestorDraft %v", directPublic.Draft, directPublic.EffectiveDraft, directPublic.AncestorDraft)
 	}
 }

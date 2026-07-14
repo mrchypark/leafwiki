@@ -37,6 +37,7 @@ type Node struct {
 	Pinned         bool          `json:"pinned,omitempty"`
 	Draft          bool          `json:"draft,omitempty"`
 	EffectiveDraft bool          `json:"effectiveDraft,omitempty"`
+	AncestorDraft  bool          `json:"ancestorDraft,omitempty"`
 }
 
 // Page is the HTTP representation of a full page (node + content).
@@ -51,7 +52,7 @@ type Page struct {
 // ToAPIPage converts a tree.Page to its HTTP representation.
 func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 	return &Page{
-		Node:       ToAPINode(p.PageNode, BuildPathFromNode(p.PageNode.Parent), userResolver),
+		Node:       ToAPINode(p.PageNode, BuildPathFromNode(p.Parent), userResolver),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},
@@ -62,7 +63,7 @@ func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 // ToAPIPageWithDepth converts a tree.Page with a depth-limited node tree.
 func ToAPIPageWithDepth(p *tree.Page, userResolver *auth.UserResolver, depth int) *Page {
 	return &Page{
-		Node:       ToAPINodeWithDepth(p.PageNode, BuildPathFromNode(p.PageNode.Parent), userResolver, depth),
+		Node:       ToAPINodeWithDepth(p.PageNode, BuildPathFromNode(p.Parent), userResolver, depth),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},
@@ -108,6 +109,7 @@ func ToAPINode(node *tree.PageNode, parentPath string, userResolver *auth.UserRe
 		Pinned:         node.Pinned,
 		Draft:          node.Draft,
 		EffectiveDraft: pagevisibility.IsInDraftSubtree(node),
+		AncestorDraft:  pagevisibility.IsInDraftSubtree(node.Parent),
 		Metadata: NodeMetadata{
 			CreatedAt:    node.Metadata.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:    node.Metadata.UpdatedAt.Format(time.RFC3339),

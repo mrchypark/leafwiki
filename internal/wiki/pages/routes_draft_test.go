@@ -60,6 +60,27 @@ func TestGetPageRoute_DraftIsVisibleOnlyToAuthenticatedEditors(t *testing.T) {
 	}
 }
 
+func TestPageResponse_ReturnsNotFoundWhenPageIsInvisible(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	routes := &Routes{authDisabled: true}
+	page := &tree.Page{PageNode: &tree.PageNode{ID: "draft", Slug: "draft", Draft: true}}
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.GET("/pages/:id", func(c *gin.Context) {
+		routes.respondPage(c, http.StatusOK, page)
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/pages/draft", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"page_not_found"`) {
+		t.Fatalf("body = %s, want page_not_found error", recorder.Body.String())
+	}
+}
+
 func TestSetDraftRoute_RejectsMissingDraftField(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
