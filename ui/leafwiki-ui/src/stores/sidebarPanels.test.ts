@@ -33,4 +33,29 @@ describe('useSidebarPanelsStore', () => {
       'favorites',
     ])
   })
+
+  it('rehydration restores the default sections when persisted sections are invalid', async () => {
+    localStorage.setItem(
+      'leafwiki-sidebar-panels',
+      JSON.stringify({ state: { openSections: null }, version: 0 }),
+    )
+
+    await useSidebarPanelsStore.persist.rehydrate()
+
+    expect(useSidebarPanelsStore.getState().openSections).toEqual([
+      'pinned',
+      'pages',
+    ])
+  })
+
+  it('rehydration preserves an empty persisted section list', async () => {
+    localStorage.setItem(
+      'leafwiki-sidebar-panels',
+      JSON.stringify({ state: { openSections: [] }, version: 0 }),
+    )
+
+    await useSidebarPanelsStore.persist.rehydrate()
+
+    expect(useSidebarPanelsStore.getState().openSections).toEqual([])
+  })
 })
