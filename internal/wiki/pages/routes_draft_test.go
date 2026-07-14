@@ -600,6 +600,62 @@ func TestConvertRoute_DoesNotRevealOrConvertSectionWithHiddenDraftChild(t *testi
 	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
 }
 
+func TestSortRoute_AuthDisabledReordersVisibleRootChildrenWithoutTouchingHiddenDescendant(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	parent, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Public parent", "public-parent")
+	pageKind := tree.NodeKindPage
+	siblingID, err := treeService.CreateNode("editor", nil, "Public sibling", "public-sibling", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode sibling: %v", err)
+	}
+	routes := &Routes{
+		treeService: treeService,
+		sortPages:   NewSortPagesUseCase(treeService),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"orderedIds":["` + *siblingID + `","` + parent.ID + `"]}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/root/sort", body)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	wantOrder := []string{*siblingID, parent.ID}
+	if got := snapshotChildIDs(t, treeService, "root"); !slices.Equal(got, wantOrder) {
+		t.Fatalf("root child order = %v, want %v", got, wantOrder)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+}
+
+func TestSortRoute_AuthDisabledRejectsHiddenDraftRootChildWithoutChangingOrder(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	pageKind := tree.NodeKindPage
+	publicID, err := treeService.CreateNode("editor", nil, "Public page", "public-page", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode public page: %v", err)
+	}
+	draftID, err := treeService.CreateNodeWithDraft("editor", nil, "Hidden draft", "hidden-draft", &pageKind, true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft hidden draft: %v", err)
+	}
+	beforeOrder := snapshotChildIDs(t, treeService, "root")
+	routes := &Routes{
+		treeService: treeService,
+		sortPages:   NewSortPagesUseCase(treeService),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"orderedIds":["` + *draftID + `","` + *publicID + `"]}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/root/sort", body)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if got := snapshotChildIDs(t, treeService, "root"); !slices.Equal(got, beforeOrder) {
+		t.Fatalf("root child order = %v, want %v", got, beforeOrder)
+	}
+}
+
 func createVisibleSectionWithHiddenDraftChild(t *testing.T, treeService *tree.TreeService, title, slug string) (*tree.Page, *tree.Page) {
 	t.Helper()
 	sectionKind := tree.NodeKindSection

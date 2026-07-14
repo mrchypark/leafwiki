@@ -502,7 +502,7 @@ func (r *Routes) handleSort(c *gin.Context) {
 		return
 	}
 	for _, id := range req.OrderedIDs {
-		if !r.requireVisibleSubtree(c, id) {
+		if !r.requireVisibleNode(c, id) {
 			return
 		}
 	}
