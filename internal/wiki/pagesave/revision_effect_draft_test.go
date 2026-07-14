@@ -23,7 +23,7 @@ func TestRevisionSideEffect_RecordsFirstRevisionWhenDraftIsPublished(t *testing.
 		t.Fatalf("GetPage draft: %v", err)
 	}
 	revisions := revision.NewService(dir, treeService, nil, revision.ServiceOptions{})
-	effect := NewRevisionSideEffect(revisions, nil)
+	effect := NewRevisionSideEffect(revisions, nil, nil)
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, UserID: "editor", After: draft})
 	if latest, err := revisions.GetLatestRevision(*id); err != nil || latest != nil {
 		t.Fatalf("draft latest revision = %#v, err = %v", latest, err)
