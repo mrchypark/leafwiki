@@ -26,20 +26,22 @@ async function dispatchLayoutShortcut(
   eventInit: {
     key: string;
     code: string;
-    ctrlKey?: boolean;
+    modKey?: boolean;
     altKey?: boolean;
     shiftKey?: boolean;
   },
 ) {
   await page.evaluate((keyboardEventInit) => {
     const target = document.activeElement instanceof HTMLElement ? document.activeElement : window;
+    const isMacOS = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
     const event = new KeyboardEvent('keydown', {
       key: keyboardEventInit.key,
       code: keyboardEventInit.code,
       bubbles: true,
       cancelable: true,
-      ctrlKey: keyboardEventInit.ctrlKey ?? false,
+      ctrlKey: keyboardEventInit.modKey === true && !isMacOS,
+      metaKey: keyboardEventInit.modKey === true && isMacOS,
       altKey: keyboardEventInit.altKey ?? false,
       shiftKey: keyboardEventInit.shiftKey ?? false,
     });
@@ -215,11 +217,24 @@ async function createPageWithMetadata(
 
 async function scrollMainContentTo(page: import('@playwright/test').Page, top: number) {
   const scrollContainer = page.locator('#scroll-container');
-  await scrollContainer.evaluate((element, scrollTop) => {
+  await expect
+    .poll(() =>
+      scrollContainer.evaluate(
+        (element) => element instanceof HTMLElement && element.scrollHeight > element.clientHeight,
+      ),
+    )
+    .toBe(true);
+  await scrollContainer.evaluate(async (element, scrollTop) => {
     if (!(element instanceof HTMLElement)) {
       throw new Error('Expected scroll container');
     }
-    element.scrollTo({ top: scrollTop, behavior: 'auto' });
+
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        element.scrollTo({ top: scrollTop, behavior: 'auto' });
+        resolve();
+      });
+    });
   }, top);
 }
 
@@ -836,7 +851,7 @@ async function expectEditAndSaveShortcutWorks(
   await dispatchLayoutShortcut(page, {
     key: shortcutKeys.editKey,
     code: 'KeyE',
-    ctrlKey: true,
+    modKey: true,
   });
   await page.locator('.cm-editor').waitFor({ state: 'visible' });
 
@@ -846,7 +861,7 @@ async function expectEditAndSaveShortcutWorks(
   await dispatchLayoutShortcut(page, {
     key: shortcutKeys.saveKey,
     code: 'KeyS',
-    ctrlKey: true,
+    modKey: true,
   });
   await page.getByText('Page saved successfully').waitFor({ state: 'visible' });
 
@@ -870,7 +885,7 @@ async function expectEditorFormattingShortcutsWork(
   await dispatchLayoutShortcut(page, {
     key: shortcutKeys.boldKey,
     code: 'KeyB',
-    ctrlKey: true,
+    modKey: true,
   });
   await page.keyboard.type('Bold Text');
   await page.keyboard.press('ArrowRight');
@@ -881,7 +896,7 @@ async function expectEditorFormattingShortcutsWork(
   await dispatchLayoutShortcut(page, {
     key: shortcutKeys.italicKey,
     code: 'KeyI',
-    ctrlKey: true,
+    modKey: true,
   });
   await page.keyboard.type('Italic Text');
   await page.keyboard.press('ArrowRight');
@@ -891,7 +906,7 @@ async function expectEditorFormattingShortcutsWork(
   await dispatchLayoutShortcut(page, {
     key: '1',
     code: 'Digit1',
-    ctrlKey: true,
+    modKey: true,
     altKey: true,
   });
 
@@ -1588,7 +1603,7 @@ Content.`;
     await dispatchLayoutShortcut(page, {
       key: 'o',
       code: 'KeyO',
-      ctrlKey: true,
+      modKey: true,
       shiftKey: true,
     });
     await expect(tocExpandButton).toBeVisible();
@@ -1597,7 +1612,7 @@ Content.`;
     await dispatchLayoutShortcut(page, {
       key: 'o',
       code: 'KeyO',
-      ctrlKey: true,
+      modKey: true,
       shiftKey: true,
     });
     await expect(tocCollapseButton).toBeVisible();
@@ -1732,14 +1747,10 @@ This paragraph creates a footnote reference.[^leafwiki]
 
     const viewPage = new ViewPage(page);
     await viewPage.goto(`/${sourceSlug}`);
+    await expect(page.locator('article > h1')).toContainText(sourceTitle);
 
     const scrollContainer = page.locator('#scroll-container');
-    await scrollContainer.evaluate((element) => {
-      if (!(element instanceof HTMLElement)) {
-        throw new Error('Expected scroll container');
-      }
-      element.scrollTo({ top: 800, behavior: 'auto' });
-    });
+    await scrollMainContentTo(page, 800);
 
     await expect
       .poll(() =>
@@ -1788,14 +1799,10 @@ This paragraph creates a footnote reference.[^leafwiki]
     const treeView = new TreeView(page);
 
     await viewPage.goto(`/${sourceSlug}`);
+    await expect(page.locator('article > h1')).toContainText(sourceTitle);
 
     const scrollContainer = page.locator('#scroll-container');
-    await scrollContainer.evaluate((element) => {
-      if (!(element instanceof HTMLElement)) {
-        throw new Error('Expected scroll container');
-      }
-      element.scrollTo({ top: 900, behavior: 'auto' });
-    });
+    await scrollMainContentTo(page, 900);
 
     await expect
       .poll(() =>
@@ -1807,12 +1814,7 @@ This paragraph creates a footnote reference.[^leafwiki]
 
     await treeView.clickPageByTitle(targetTitle);
 
-    await scrollContainer.evaluate((element) => {
-      if (!(element instanceof HTMLElement)) {
-        throw new Error('Expected scroll container');
-      }
-      element.scrollTo({ top: 700, behavior: 'auto' });
-    });
+    await scrollMainContentTo(page, 700);
 
     await expect
       .poll(() =>
@@ -1856,14 +1858,10 @@ This paragraph creates a footnote reference.[^leafwiki]
 
     const viewPage = new ViewPage(page);
     await viewPage.goto(`/${sourceSlug}`);
+    await expect(page.locator('article > h1')).toContainText(sourceTitle);
 
     const scrollContainer = page.locator('#scroll-container');
-    await scrollContainer.evaluate((element) => {
-      if (!(element instanceof HTMLElement)) {
-        throw new Error('Expected scroll container');
-      }
-      element.scrollTo({ top: 850, behavior: 'auto' });
-    });
+    await scrollMainContentTo(page, 850);
 
     await expect
       .poll(() =>

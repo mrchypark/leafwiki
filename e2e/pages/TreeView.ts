@@ -152,7 +152,7 @@ export default class TreeView {
       const expectedPath = new URL(href, 'http://localhost').pathname;
       await expect.poll(() => new URL(this.page.url()).pathname).toBe(expectedPath);
     }
-    await this.page.locator('article').waitFor({ state: 'visible' });
+    await expect(this.page.locator('article > h1')).toContainText(title);
   }
 
   async expandNodeByTitle(title: string) {
