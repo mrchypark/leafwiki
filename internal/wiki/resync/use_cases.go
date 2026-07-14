@@ -22,6 +22,7 @@ func (uc *TriggerResyncUseCase) Execute(_ context.Context) error {
 	if !uc.job.Start() {
 		return ErrResyncAlreadyRunning
 	}
+	uc.metrics.ObserveResyncTriggerAccepted()
 	uc.trigger()
 	return nil
 }

@@ -31,14 +31,14 @@ export function SidebarAccordionSection({
       className={cn('sidebar-accordion-section', className)}
     >
       <AccordionPrimitive.Header className="sidebar-accordion-section__header">
-        <div className="sidebar-accordion-section__title">
+        <span className="sidebar-accordion-section__title">
           {icon}
           <span>{title}</span>
           {typeof count === 'number' && (
             <span className="sidebar-accordion-section__count">{count}</span>
           )}
-        </div>
-        <div className="sidebar-accordion-section__actions">
+        </span>
+        <span className="sidebar-accordion-section__actions">
           {actions}
           <AccordionPrimitive.Trigger asChild>
             <button
@@ -49,7 +49,7 @@ export function SidebarAccordionSection({
               <ChevronDown size={14} />
             </button>
           </AccordionPrimitive.Trigger>
-        </div>
+        </span>
       </AccordionPrimitive.Header>
       <AccordionPrimitive.Content className="sidebar-accordion-section__panel data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-hidden">
         <div className="sidebar-accordion-section__content">{children}</div>

@@ -250,7 +250,41 @@ describe('UserToolbar', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Login' }))
 
-      expect(window.location.href).toBe('https://idp.example.com/login')
+      const expectedReturnTo = encodeURIComponent(`${originalLocation.origin}/`)
+      expect(window.location.href).toBe(
+        `https://idp.example.com/login?redirect_uri=${expectedReturnTo}`,
+      )
+    })
+
+    it('preserves the current path when redirecting to the configured login URL', () => {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: {
+          ...originalLocation,
+          href: '',
+          pathname: '/some/protected/page',
+          search: '?tab=details',
+          hash: '#history',
+        },
+      })
+      useConfigStore.setState({
+        loginUrl: 'https://idp.example.com/login',
+      })
+
+      render(
+        <MemoryRouter>
+          <UserToolbar />
+        </MemoryRouter>,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Login' }))
+
+      const expectedReturnTo = encodeURIComponent(
+        `${originalLocation.origin}/some/protected/page?tab=details#history`,
+      )
+      expect(window.location.href).toBe(
+        `https://idp.example.com/login?redirect_uri=${expectedReturnTo}`,
+      )
     })
   })
 

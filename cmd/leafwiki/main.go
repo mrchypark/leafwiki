@@ -549,7 +549,7 @@ func runServer(
 	}
 
 	if unixSocket == "" {
-		listenAddr := host + ":" + port
+		listenAddr := net.JoinHostPort(host, port)
 		slog.Default().Info("Starting LeafWiki", "address", listenAddr, "data_dir", dataDir)
 		listener, err := net.Listen("tcp", listenAddr)
 		if err != nil {
@@ -580,7 +580,7 @@ func runServer(
 }
 
 func startMetricsServer(metrics *httpmetrics.HTTPMetrics, host, port string) (func(), string, error) {
-	listenAddr := host + ":" + port
+	listenAddr := net.JoinHostPort(host, port)
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", err

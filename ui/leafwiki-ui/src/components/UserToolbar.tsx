@@ -82,7 +82,14 @@ export default function UserToolbar() {
         <Button
           size="sm"
           onClick={() =>
-            loginUrl ? redirectToExternal(loginUrl) : navigate('/login')
+            loginUrl
+              ? redirectToExternal(
+                  loginUrl,
+                  window.location.pathname +
+                    window.location.search +
+                    window.location.hash,
+                )
+              : navigate('/login')
           }
         >
           {t('login.loginButton')}
