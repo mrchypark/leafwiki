@@ -361,19 +361,21 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		respondWithPageError(c, err)
 		return
 	}
-	if !r.requireVisibleID(c, id) {
-		return
-	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
 		return
 	}
 	node, err := r.treeService.SnapshotPageSubtree(id)
-	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
+	if err != nil || !pagevisibility.CanView(node, user, r.authDisabled) {
 		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
-	if req.Draft != nil && *req.Draft != node.Draft && !pagevisibility.CanManageDraft(node, user, r.authDisabled) {
+	draftChanging := req.Draft != nil && *req.Draft != node.Draft
+	if req.Slug != node.Slug && !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
+		respondWithPageError(c, tree.ErrPageNotFound)
+		return
+	}
+	if draftChanging && !pagevisibility.CanManageDraft(node, user, r.authDisabled) {
 		respondWithDraftUnavailable(c)
 		return
 	}
@@ -632,7 +634,7 @@ func (r *Routes) handleCopy(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleSubtree(c, sourceID) || req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
+	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
 		return
 	}
 	out, err := r.copyPage.Execute(c.Request.Context(), CopyPageInput{

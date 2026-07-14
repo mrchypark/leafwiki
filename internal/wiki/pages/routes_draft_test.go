@@ -4,11 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
@@ -323,6 +325,326 @@ func TestSetDraftRoute_AuthDisabledSameFalseIsIdempotentButStillChecksVersion(t 
 	if recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/"+*pageID+"/draft", body); recorder.Code != http.StatusConflict {
 		t.Fatalf("stale same-false status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
 	}
+}
+
+func TestUpdateRoute_UpdatesVisibleParentContentWhenHiddenDraftChildExists(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	parent, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Public parent", "public-parent")
+	routes := &Routes{
+		treeService: treeService,
+		updatePage: NewUpdatePageUseCase(
+			treeService,
+			tree.NewSlugService(),
+			pagesave.NewPageSaveOrchestrator(nil),
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"version":"` + parent.Version() + `","title":"Public parent","slug":"public-parent","content":"updated public content"}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/"+parent.ID, body)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	updatedParent, err := treeService.GetPage(parent.ID)
+	if err != nil {
+		t.Fatalf("GetPage parent: %v", err)
+	}
+	if updatedParent.Content != "updated public content" {
+		t.Fatalf("parent content = %q, want updated public content", updatedParent.Content)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+	if strings.Contains(recorder.Body.String(), child.ID) || strings.Contains(recorder.Body.String(), child.Title) {
+		t.Fatalf("response exposed hidden draft child: %s", recorder.Body.String())
+	}
+}
+
+func TestUpdateRoute_RejectsSlugChangeThatWouldMoveHiddenDraftChild(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	parent, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Public parent", "public-parent")
+	routes := &Routes{
+		treeService: treeService,
+		updatePage: NewUpdatePageUseCase(
+			treeService,
+			tree.NewSlugService(),
+			pagesave.NewPageSaveOrchestrator(nil),
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"version":"` + parent.Version() + `","title":"Public parent","slug":"renamed-parent"}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/"+parent.ID, body)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	unchangedParent, err := treeService.GetPage(parent.ID)
+	if err != nil {
+		t.Fatalf("GetPage parent: %v", err)
+	}
+	if unchangedParent.Slug != "public-parent" {
+		t.Fatalf("parent slug = %q, want public-parent", unchangedParent.Slug)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+}
+
+func TestUpdateRoute_ReturnsDraftUnavailableForDraftTransitionRegardlessOfHiddenChildren(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		hiddenChild bool
+	}{
+		{name: "without hidden child"},
+		{name: "with hidden child", hiddenChild: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			treeService := newLoadedRouteTree(t)
+			sectionKind := tree.NodeKindSection
+			parentID, err := treeService.CreateNode("editor", nil, "Public parent", "public-parent", &sectionKind)
+			if err != nil {
+				t.Fatalf("CreateNode parent: %v", err)
+			}
+			parent, err := treeService.GetPage(*parentID)
+			if err != nil {
+				t.Fatalf("GetPage parent: %v", err)
+			}
+			var child *tree.Page
+			if tc.hiddenChild {
+				pageKind := tree.NodeKindPage
+				childID, err := treeService.CreateNodeWithDraft("editor", parentID, "Hidden child", "hidden-child", &pageKind, true)
+				if err != nil {
+					t.Fatalf("CreateNodeWithDraft child: %v", err)
+				}
+				child, err = treeService.GetPage(*childID)
+				if err != nil {
+					t.Fatalf("GetPage child: %v", err)
+				}
+			}
+			routes := &Routes{
+				treeService: treeService,
+				updatePage: NewUpdatePageUseCase(
+					treeService,
+					tree.NewSlugService(),
+					pagesave.NewPageSaveOrchestrator(nil),
+					slog.Default(),
+				),
+			}
+			router := registerDraftMutationRoutes(t, routes, nil, true)
+			body := `{"version":"` + parent.Version() + `","title":"Public parent","slug":"public-parent","draft":true}`
+
+			recorder := performDraftMutationRequest(router, http.MethodPut, "/api/pages/"+parent.ID, body)
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), `"code":"`+ErrCodePageDraftUnavailable+`"`) {
+				t.Fatalf("body = %s, want %s", recorder.Body.String(), ErrCodePageDraftUnavailable)
+			}
+			unchangedParent, err := treeService.GetPage(parent.ID)
+			if err != nil {
+				t.Fatalf("GetPage parent: %v", err)
+			}
+			if unchangedParent.Draft {
+				t.Fatal("parent became draft despite unavailable draft transition")
+			}
+			if child != nil {
+				assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+			}
+		})
+	}
+}
+
+func TestCopyRoute_CopiesVisibleSourceWithoutCopyingItsHiddenDraftChild(t *testing.T) {
+	storageDir := t.TempDir()
+	treeService := tree.NewTreeService(storageDir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	source, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Visible source", "visible-source")
+	sourceContent := "visible source content"
+	if err := treeService.UpdateNode("editor", source.ID, source.Title, source.Slug, &sourceContent, source.Version(), nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode source: %v", err)
+	}
+	sectionKind := tree.NodeKindSection
+	targetID, err := treeService.CreateNode("editor", nil, "Clean target", "clean-target", &sectionKind)
+	if err != nil {
+		t.Fatalf("CreateNode target: %v", err)
+	}
+	slugService := tree.NewSlugService()
+	routes := &Routes{
+		treeService: treeService,
+		copyPage: NewCopyPageUseCase(
+			treeService,
+			slugService,
+			pagesave.NewPageSaveOrchestrator(nil),
+			assets.NewAssetService(storageDir, slugService),
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"targetParentId":"` + *targetID + `","title":"Copied page","slug":"copied-page"}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPost, "/api/pages/copy/"+source.ID, body)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	copied, err := treeService.FindPageByRoutePath("clean-target/copied-page")
+	if err != nil {
+		t.Fatalf("FindPageByRoutePath copied page: %v", err)
+	}
+	if copied.Parent == nil || copied.Parent.ID != *targetID || copied.Content != sourceContent || copied.Draft {
+		t.Fatalf("copied page = parent:%v content:%q draft:%v", copied.Parent, copied.Content, copied.Draft)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, source.ID, "/visible-source/hidden-child")
+	if len(copied.Children) != 0 {
+		t.Fatalf("copied page included source children: %#v", copied.Children)
+	}
+}
+
+func TestCopyRoute_RejectsVisibleTargetWithHiddenDraftChildWithoutChangingChildOrder(t *testing.T) {
+	storageDir := t.TempDir()
+	treeService := tree.NewTreeService(storageDir)
+	if err := treeService.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	pageKind := tree.NodeKindPage
+	sourceID, err := treeService.CreateNode("editor", nil, "Visible source", "visible-source", &pageKind)
+	if err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	target, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Visible target", "visible-target")
+	beforeOrder := snapshotChildIDs(t, treeService, target.ID)
+	slugService := tree.NewSlugService()
+	routes := &Routes{
+		treeService: treeService,
+		copyPage: NewCopyPageUseCase(
+			treeService,
+			slugService,
+			pagesave.NewPageSaveOrchestrator(nil),
+			assets.NewAssetService(storageDir, slugService),
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"targetParentId":"` + target.ID + `","title":"Blocked copy","slug":"blocked-copy"}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPost, "/api/pages/copy/"+*sourceID, body)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if _, err := treeService.FindPageByRoutePath("visible-target/blocked-copy"); err == nil {
+		t.Fatal("copy was created under target with hidden draft child")
+	}
+	afterOrder := snapshotChildIDs(t, treeService, target.ID)
+	if !slices.Equal(afterOrder, beforeOrder) {
+		t.Fatalf("target child order = %v, want %v", afterOrder, beforeOrder)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, target.ID, "/visible-target/hidden-child")
+}
+
+func TestDeleteRoute_DoesNotRevealOrDeleteHiddenDraftChild(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	parent, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Public parent", "public-parent")
+	routes := &Routes{
+		treeService: treeService,
+		deletePage: NewDeletePageUseCase(
+			treeService,
+			nil,
+			nil,
+			pagesave.NewPageSaveOrchestrator(nil),
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+
+	recorder := performDraftMutationRequest(router, http.MethodDelete, "/api/pages/"+parent.ID+"?version="+parent.Version(), "")
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if _, err := treeService.GetPage(parent.ID); err != nil {
+		t.Fatalf("visible parent was deleted: %v", err)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+}
+
+func TestConvertRoute_DoesNotRevealOrConvertSectionWithHiddenDraftChild(t *testing.T) {
+	treeService := newLoadedRouteTree(t)
+	parent, child := createVisibleSectionWithHiddenDraftChild(t, treeService, "Public parent", "public-parent")
+	routes := &Routes{
+		treeService: treeService,
+		convertPage: NewConvertPageUseCase(
+			treeService,
+			nil,
+			slog.Default(),
+		),
+	}
+	router := registerDraftMutationRoutes(t, routes, nil, true)
+	body := `{"version":"` + parent.Version() + `","targetKind":"page"}`
+
+	recorder := performDraftMutationRequest(router, http.MethodPost, "/api/pages/convert/"+parent.ID, body)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	unchangedParent, err := treeService.GetPage(parent.ID)
+	if err != nil {
+		t.Fatalf("GetPage parent: %v", err)
+	}
+	if unchangedParent.Kind != tree.NodeKindSection {
+		t.Fatalf("parent kind = %q, want %q", unchangedParent.Kind, tree.NodeKindSection)
+	}
+	assertHiddenDraftChildUnchanged(t, treeService, child, parent.ID, "/public-parent/hidden-child")
+}
+
+func createVisibleSectionWithHiddenDraftChild(t *testing.T, treeService *tree.TreeService, title, slug string) (*tree.Page, *tree.Page) {
+	t.Helper()
+	sectionKind := tree.NodeKindSection
+	parentID, err := treeService.CreateNode("editor", nil, title, slug, &sectionKind)
+	if err != nil {
+		t.Fatalf("CreateNode parent: %v", err)
+	}
+	pageKind := tree.NodeKindPage
+	childID, err := treeService.CreateNodeWithDraft("editor", parentID, "Hidden child", "hidden-child", &pageKind, true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft child: %v", err)
+	}
+	parent, err := treeService.GetPage(*parentID)
+	if err != nil {
+		t.Fatalf("GetPage parent: %v", err)
+	}
+	child, err := treeService.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage child: %v", err)
+	}
+	return parent, child
+}
+
+func assertHiddenDraftChildUnchanged(t *testing.T, treeService *tree.TreeService, before *tree.Page, parentID, path string) {
+	t.Helper()
+	after, err := treeService.GetPage(before.ID)
+	if err != nil {
+		t.Fatalf("GetPage hidden child: %v", err)
+	}
+	if after.Parent == nil || after.Parent.ID != parentID || !after.Draft || after.CalculatePath() != path || after.Content != before.Content {
+		t.Fatalf("hidden child changed = parent:%v draft:%v path:%q content:%q", after.Parent, after.Draft, after.CalculatePath(), after.Content)
+	}
+}
+
+func snapshotChildIDs(t *testing.T, treeService *tree.TreeService, pageID string) []string {
+	t.Helper()
+	node, err := treeService.SnapshotPageSubtree(pageID)
+	if err != nil {
+		t.Fatalf("SnapshotPageSubtree: %v", err)
+	}
+	ids := make([]string, 0, len(node.Children))
+	for _, child := range node.Children {
+		ids = append(ids, child.ID)
+	}
+	return ids
 }
 
 func newLoadedRouteTree(t *testing.T) *tree.TreeService {
