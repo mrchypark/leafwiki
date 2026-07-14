@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,19 +17,25 @@ import (
 	"github.com/perber/wiki/internal/core/treemigration"
 )
 
-type gatedErrContext struct {
+type cancelAfterGateContext struct {
 	context.Context
-	once    sync.Once
-	entered chan struct{}
-	release <-chan struct{}
+	calls int
+	done  chan struct{}
 }
 
-func (c *gatedErrContext) Err() error {
-	c.once.Do(func() {
-		close(c.entered)
-		<-c.release
-	})
-	return c.Context.Err()
+func (c *cancelAfterGateContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *cancelAfterGateContext) Err() error {
+	c.calls++
+	if c.calls >= 2 {
+		if c.calls == 2 {
+			close(c.done)
+		}
+		return context.Canceled
+	}
+	return nil
 }
 
 // --- helpers ---
@@ -93,6 +100,37 @@ func readOrderIDs(t *testing.T, dir string) []string {
 		t.Fatalf("unmarshal order file: %v", err)
 	}
 	return persisted.OrderedIDs
+}
+
+func assertTreeReaderAndWriterAvailable(t *testing.T, svc *TreeService, id, version string) {
+	t.Helper()
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := svc.SnapshotPageNode(id)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("SnapshotPageNode() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SnapshotPageNode() remained blocked")
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- svc.SetDraft("editor", id, true, version)
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("SetDraft() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SetDraft() remained blocked")
+	}
 }
 
 // --- A) Load/Save basics ---
@@ -2727,8 +2765,8 @@ func TestTreeService_ReconstructTreeFromFS_UpdatesSchemaVersion(t *testing.T) {
 	mustNotExist(t, filepath.Join(tmpDir, "tree.json"))
 }
 
-func TestTreeService_ReconstructTreeFromFS_SerializesConcurrentDraftWrite(t *testing.T) {
-	svc, _ := newLoadedService(t)
+func TestTreeService_ReconstructTreeFromFS_AllowsReadersAndSerializesConcurrentDraftWrite(t *testing.T) {
+	svc, storageDir := newLoadedService(t)
 	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
@@ -2739,19 +2777,53 @@ func TestTreeService_ReconstructTreeFromFS_SerializesConcurrentDraftWrite(t *tes
 	}
 
 	releaseReconstruct := make(chan struct{})
-	ctx := &gatedErrContext{
-		Context: context.Background(),
-		entered: make(chan struct{}),
-		release: releaseReconstruct,
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseReconstruct) }) }
+	defer release()
+	entered := make(chan struct{})
+	scan := func(ctx context.Context) (*PageNode, error) {
+		close(entered)
+		<-releaseReconstruct
+		return svc.store.ReconstructTreeFromFSContext(ctx)
 	}
 	reconstructDone := make(chan error, 1)
 	go func() {
-		reconstructDone <- svc.ReconstructTreeFromFSContext(ctx)
+		reconstructDone <- svc.reconstructTreeFromFSContext(context.Background(), scan)
 	}()
-	<-ctx.entered
-	if svc.mu.TryLock() {
-		svc.mu.Unlock()
-		t.Fatal("filesystem reconstruction did not hold the tree write lock while scanning")
+	<-entered
+	select {
+	case <-svc.persistGate:
+		svc.releasePersistence()
+		t.Fatal("filesystem reconstruction scan did not hold the persistence gate")
+	default:
+	}
+
+	snapshotDone := make(chan error, 1)
+	go func() {
+		_, err := svc.SnapshotPageNode(*id)
+		snapshotDone <- err
+	}()
+	select {
+	case err := <-snapshotDone:
+		if err != nil {
+			t.Fatalf("SnapshotPageNode() during reconstruction error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SnapshotPageNode() blocked during filesystem reconstruction")
+	}
+
+	getDone := make(chan error, 1)
+	go func() {
+		_, err := svc.GetPage(*id)
+		getDone <- err
+	}()
+	select {
+	case err := <-getDone:
+		if err != nil {
+			t.Fatalf("GetPage() during reconstruction error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetPage() blocked during filesystem reconstruction")
 	}
 
 	draftWriteStarted := make(chan struct{})
@@ -2761,8 +2833,13 @@ func TestTreeService_ReconstructTreeFromFS_SerializesConcurrentDraftWrite(t *tes
 		draftWriteDone <- svc.SetDraft("editor", *id, true, page.Version())
 	}()
 	<-draftWriteStarted
+	select {
+	case err := <-draftWriteDone:
+		t.Fatalf("SetDraft() completed before reconstruction scan was released: %v", err)
+	default:
+	}
 
-	close(releaseReconstruct)
+	release()
 	if err := <-reconstructDone; err != nil {
 		t.Fatalf("ReconstructTreeFromFSContext() error = %v", err)
 	}
@@ -2776,6 +2853,173 @@ func TestTreeService_ReconstructTreeFromFS_SerializesConcurrentDraftWrite(t *tes
 	}
 	if !updated.Draft {
 		t.Fatal("concurrent SetDraft(true) was lost after filesystem reconstruction")
+	}
+
+	reloaded := NewTreeService(storageDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() after concurrent reconstruction/write error = %v", err)
+	}
+	persisted, err := reloaded.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() after reload error = %v", err)
+	}
+	if !persisted.Draft {
+		t.Fatal("concurrent SetDraft(true) was not persisted after filesystem reconstruction")
+	}
+}
+
+func TestTreeService_ReconstructTreeFromFS_CancellationReleasesReaderAndWriterLocks(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	page, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+
+	base, cancel := context.WithCancel(context.Background())
+	releaseReconstruct := make(chan struct{})
+	entered := make(chan struct{})
+	scan := func(ctx context.Context) (*PageNode, error) {
+		close(entered)
+		<-releaseReconstruct
+		return svc.store.ReconstructTreeFromFSContext(ctx)
+	}
+	done := make(chan error, 1)
+	go func() { done <- svc.reconstructTreeFromFSContext(base, scan) }()
+	<-entered
+	cancel()
+	close(releaseReconstruct)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReconstructTreeFromFSContext() error = %v, want context.Canceled", err)
+	}
+
+	assertTreeReaderAndWriterAvailable(t, svc, *id, page.Version())
+}
+
+func TestTreeService_ReconstructTreeFromFS_CanceledWhilePersistenceGateHeldReturnsImmediately(t *testing.T) {
+	svc, _ := newLoadedService(t)
+	svc.lockPersistedTree()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.ReconstructTreeFromFSContext(ctx) }()
+	cancel()
+
+	select {
+	case err := <-done:
+		svc.unlockPersistedTree()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ReconstructTreeFromFSContext() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		svc.unlockPersistedTree()
+		<-done
+		t.Fatal("canceled reconstruction remained blocked behind persistence gate")
+	}
+}
+
+func TestTreeService_AcquirePersistence_ReturnsTokenWhenContextCancelsAfterReceive(t *testing.T) {
+	svc := NewTreeService(t.TempDir())
+	ctx := &cancelAfterGateContext{Context: context.Background(), done: make(chan struct{})}
+
+	err := svc.acquirePersistence(ctx)
+	if !errors.Is(err, context.Canceled) {
+		if err == nil {
+			svc.releasePersistence()
+		}
+		t.Fatalf("acquirePersistence() error = %v, want context.Canceled", err)
+	}
+	select {
+	case <-svc.persistGate:
+		svc.releasePersistence()
+	default:
+		t.Fatal("acquirePersistence() did not return token after post-receive cancellation")
+	}
+}
+
+func TestTreeService_ReconstructTreeFromFS_ErrorReleasesReaderAndWriterLocks(t *testing.T) {
+	svc, storageDir := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	page, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+	duplicate := filepath.Join(storageDir, "root", "duplicate.md")
+	mustWriteFile(t, duplicate, fmt.Sprintf("---\nleafwiki_id: %s\n---\n# Duplicate\n", *id), 0o644)
+
+	if err := svc.ReconstructTreeFromFS(); err == nil {
+		t.Fatal("ReconstructTreeFromFS() unexpectedly succeeded with duplicate IDs")
+	}
+	assertTreeReaderAndWriterAvailable(t, svc, *id, page.Version())
+}
+
+func TestTreeService_ReconstructTreeFromFS_SchemaFailureRollsBackTreeAndReleasesLocks(t *testing.T) {
+	svc, storageDir := newLoadedService(t)
+	id, err := svc.CreateNode("editor", nil, "Original", "original", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	original, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() error = %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(storageDir, "root", "external.md"), `---
+leafwiki_id: external-id
+leafwiki_title: External
+---
+# External`, 0o644)
+	schemaPath := filepath.Join(storageDir, "schema.json")
+	if err := os.Remove(schemaPath); err != nil {
+		t.Fatalf("Remove(schema.json) error = %v", err)
+	}
+	if err := os.Mkdir(schemaPath, 0o755); err != nil {
+		t.Fatalf("Mkdir(schema.json) error = %v", err)
+	}
+
+	if err := svc.ReconstructTreeFromFS(); err == nil {
+		t.Fatal("ReconstructTreeFromFS() unexpectedly succeeded when schema path was a directory")
+	}
+	for _, child := range svc.SnapshotTree().Children {
+		if child.ID == "external-id" {
+			t.Fatal("failed reconstruction replaced the live tree")
+		}
+	}
+	if _, err := svc.SnapshotPageNode("external-id"); !errors.Is(err, ErrPageNotFound) {
+		t.Fatalf("SnapshotPageNode(external-id) error = %v, want ErrPageNotFound", err)
+	}
+	if matches := svc.SnapshotPagesByTitle("External"); len(matches) != 0 {
+		t.Fatalf("SnapshotPagesByTitle(External) = %#v, want no rolled-back index entry", matches)
+	}
+	if _, err := svc.FindPageByRoutePath("external"); !errors.Is(err, ErrPageNotFound) {
+		t.Fatalf("FindPageByRoutePath(external) error = %v, want ErrPageNotFound", err)
+	}
+
+	if err := svc.SetDraft("editor", *id, true, original.Version()); err != nil {
+		t.Fatalf("SetDraft() after schema failure error = %v", err)
+	}
+	if err := os.Remove(schemaPath); err != nil {
+		t.Fatalf("Remove(schema directory) error = %v", err)
+	}
+	if err := saveSchema(storageDir, CurrentSchemaVersion); err != nil {
+		t.Fatalf("saveSchema() error = %v", err)
+	}
+	reloaded := NewTreeService(storageDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	persisted, err := reloaded.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage() after reload error = %v", err)
+	}
+	if !persisted.Draft {
+		t.Fatal("SetDraft(true) after schema failure was not persisted")
 	}
 }
 

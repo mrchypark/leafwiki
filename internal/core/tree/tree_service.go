@@ -27,7 +27,10 @@ type TreeService struct {
 	nodesByTitle map[string][]*PageNode
 	childSlugs   map[string]map[string]*PageNode
 
-	mu sync.RWMutex
+	// persistGate serializes filesystem reconstruction with every on-disk tree
+	// mutation. Always acquire it before mu.
+	persistGate chan struct{}
+	mu          sync.RWMutex
 }
 
 const (
@@ -39,6 +42,9 @@ const (
 )
 
 func NewTreeService(storageDir string) *TreeService {
+	persistGate := make(chan struct{}, 1)
+	persistGate <- struct{}{}
+
 	return &TreeService{
 		storageDir:   storageDir,
 		tree:         nil,
@@ -47,14 +53,15 @@ func NewTreeService(storageDir string) *TreeService {
 		nodesByID:    make(map[string]*PageNode),
 		nodesByTitle: make(map[string][]*PageNode),
 		childSlugs:   make(map[string]map[string]*PageNode),
+		persistGate:  persistGate,
 	}
 }
 
 // LoadTree reconstructs the in-memory tree from the filesystem.
 // Legacy tree.json data is only used as a migration source for older schema versions.
 func (t *TreeService) LoadTree() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	t.log.Info("Checking schema version...")
 	schema, err := loadSchema(t.storageDir)
@@ -123,9 +130,39 @@ func (t *TreeService) LoadTree() error {
 	return nil
 }
 
-func (t *TreeService) withLockedTree(fn func() error) error {
+func (t *TreeService) lockPersistedTree() {
+	_ = t.acquirePersistence(context.Background())
 	t.mu.Lock()
-	defer t.mu.Unlock()
+}
+
+func (t *TreeService) unlockPersistedTree() {
+	t.mu.Unlock()
+	t.releasePersistence()
+}
+
+func (t *TreeService) acquirePersistence(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.persistGate:
+		if err := ctx.Err(); err != nil {
+			t.releasePersistence()
+			return err
+		}
+		return nil
+	}
+}
+
+func (t *TreeService) releasePersistence() {
+	t.persistGate <- struct{}{}
+}
+
+func (t *TreeService) withPersistedTree(fn func() error) error {
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	return fn()
 }
@@ -148,21 +185,26 @@ func (t *TreeService) TreeHash() string {
 }
 
 // ReconstructTreeFromFS reconstructs the tree from the filesystem.
-// Reconstruction is rare and holds the write lock across the scan so a
-// concurrent persisted mutation cannot be replaced by a stale scan result.
+// Reconstruction serializes with persisted mutations while the slow scan runs,
+// but readers continue using the current in-memory tree until the final swap.
 func (t *TreeService) ReconstructTreeFromFS() error {
 	return t.ReconstructTreeFromFSContext(context.Background())
 }
 
 func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	return t.reconstructTreeFromFSContext(ctx, t.store.ReconstructTreeFromFSContext)
+}
 
+func (t *TreeService) reconstructTreeFromFSContext(ctx context.Context, scan func(context.Context) (*PageNode, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := t.acquirePersistence(ctx); err != nil {
+		return err
+	}
+	defer t.releasePersistence()
 
-	newTree, err := t.store.ReconstructTreeFromFSContext(ctx)
+	newTree, err := scan(ctx)
 	if err != nil {
 		t.log.Error("Error reconstructing tree from filesystem", "error", err)
 		return err
@@ -174,6 +216,9 @@ func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	oldTree := t.tree
 	t.tree = newTree
@@ -207,7 +252,7 @@ func (t *TreeService) CreateNode(userID string, parentID *string, title string, 
 // CreateNodeWithDraft creates a node and persists its initial draft state.
 func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title string, slug string, nodeKind *NodeKind, draft bool) (*string, error) {
 	var result *string
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{draft: draft})
 		if err != nil {
 			return err
@@ -222,7 +267,7 @@ func (t *TreeService) CreateNodeWithDraft(userID string, parentID *string, title
 
 func (t *TreeService) RestoreNode(userID, id string, parentID *string, title, slug string, nodeKind NodeKind, content string, metadata PageMetadata) (*Page, error) {
 	var restored *Page
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		kind := nodeKind
 		created, err := t.createNodeLocked(userID, parentID, title, slug, &kind, createNodeOptions{existingID: id})
 		if err != nil {
@@ -591,7 +636,7 @@ func (t *TreeService) findChildBySlugExactInParentLocked(parent *PageNode, slug 
 
 // DeleteNode deletes a node from the tree
 func (t *TreeService) DeleteNode(userID string, id string, recursive bool, expectedVersion string) error {
-	err := t.withLockedTree(func() error {
+	err := t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -690,7 +735,7 @@ func (t *TreeService) UpdateNodeWithDraftWithPreconditions(userID string, id str
 }
 
 func (t *TreeService) updateNode(userID string, id string, title string, slug string, content *string, expectedVersion string, tags []string, properties map[string]string, preserveFrontmatter bool, draft *bool, preconditions *PathPreconditions) error {
-	return t.withLockedTree(func() error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -836,7 +881,7 @@ func (t *TreeService) rollbackNodeUpdateLocked(node *PageNode, oldSlug string, o
 // SetDraft changes a node's own publication state. Descendants inherit draft
 // visibility through their ancestor chain without rewriting their files.
 func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion string) error {
-	return t.withLockedTree(func() error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -865,7 +910,7 @@ func (t *TreeService) SetDraft(userID, id string, draft bool, expectedVersion st
 }
 
 func (t *TreeService) ConvertNode(userID string, id string, kind NodeKind, expectedVersion string) error {
-	return t.withLockedTree(func() error {
+	return t.withPersistedTree(func() error {
 		if t.tree == nil {
 			return ErrTreeNotLoaded
 		}
@@ -1128,8 +1173,8 @@ func (t *TreeService) BulkUpdateContent(userID string, updates []BulkContentUpda
 		oldMetadata PageMetadata
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		for i := range errs {
@@ -1478,8 +1523,8 @@ func (t *TreeService) EnsurePagePath(userID string, p string, targetTitle string
 
 // EnsurePagePathWithDraft persists the final new node's own draft state during creation.
 func (t *TreeService) EnsurePagePathWithDraft(userID string, p string, targetTitle string, kind *NodeKind, draft bool) (*EnsurePathResult, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return nil, ErrTreeNotLoaded
@@ -1566,8 +1611,8 @@ func (t *TreeService) MoveNodeWithPreconditions(userID string, id string, parent
 }
 
 func (t *TreeService) moveNode(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return ErrTreeNotLoaded
@@ -1821,8 +1866,8 @@ func (t *TreeService) rollbackMovedNodeLocked(node *PageNode, oldParent *PageNod
 
 // SetPinned updates the leafwiki_pinned frontmatter field and in-memory Pinned flag.
 func (t *TreeService) SetPinned(id string, version string, pinned bool) (*Page, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return nil, ErrTreeNotLoaded
@@ -1855,8 +1900,8 @@ func (t *TreeService) SetPinned(id string, version string, pinned bool) (*Page, 
 }
 
 func (t *TreeService) SortPages(parentID string, orderedIDs []string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.lockPersistedTree()
+	defer t.unlockPersistedTree()
 
 	if t.tree == nil {
 		return ErrTreeNotLoaded
