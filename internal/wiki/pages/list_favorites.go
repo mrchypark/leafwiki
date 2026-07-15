@@ -49,7 +49,7 @@ func (uc *ListFavoritesUseCase) Execute(_ context.Context, in ListFavoritesInput
 			uc.log.Warn("skipping stale favorite", "userID", in.UserID, "pageID", ids[i], "error", errs[i])
 			continue
 		}
-		if !pagevisibility.CanView(p.PageNode, in.User, in.AuthDisabled) {
+		if p == nil || p.PageNode == nil || !pagevisibility.CanView(p.PageNode, in.User, in.AuthDisabled) {
 			continue
 		}
 		result = append(result, p)

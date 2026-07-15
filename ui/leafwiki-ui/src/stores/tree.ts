@@ -233,7 +233,7 @@ export const useTreeStore = create<TreeStore>()(
 
         const node = clonedById[nodeId]
         const target = clonedById[targetParentId]
-        const oldParent = node?.parentId ? clonedById[node.parentId] : null
+        const oldParent = clonedById[node?.parentId ?? 'root']
         if (!node || !target || !oldParent?.children) return
 
         const oldIndex = oldParent.children.findIndex((c) => c.id === nodeId)
