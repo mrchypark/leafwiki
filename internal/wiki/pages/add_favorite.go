@@ -30,7 +30,7 @@ func NewAddFavoriteUseCase(treeService *tree.TreeService, store *favorites.Favor
 
 func (uc *AddFavoriteUseCase) Execute(_ context.Context, in AddFavoriteInput) error {
 	node, err := uc.treeService.SnapshotPageNode(in.PageID)
-	if err != nil || !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
+	if err != nil || node == nil || !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
 		return tree.ErrPageNotFound
 	}
 	if _, err := uc.treeService.GetPage(in.PageID); err != nil {
