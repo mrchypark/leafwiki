@@ -13,16 +13,26 @@ export default class EditPage {
     const editor = this.page.locator('.cm-editor');
     await editor.click();
     await this.page.keyboard.press('ControlOrMeta+h');
-    await this.page.locator('.cm-search input[main-field="true"]').waitFor({ state: 'visible' });
+    const replaceInput = this.page.locator('.cm-search input[name="replace"]');
+    await replaceInput.waitFor({ state: 'visible' });
+    await expect(replaceInput).toBeFocused();
   }
 
   async replaceAll(search: string, replace: string) {
     const searchInput = this.page.locator('.cm-search input[main-field="true"]');
     const replaceInput = this.page.locator('.cm-search input[name="replace"]');
 
+    // CodeMirror commits search state on change, while fill() primarily
+    // dispatches input. Commit each complete value before replacing.
     await searchInput.fill(search);
+    await searchInput.dispatchEvent('change');
     await replaceInput.fill(replace);
+    await replaceInput.dispatchEvent('change');
+    await expect(searchInput).toHaveValue(search);
+    await expect(replaceInput).toHaveValue(replace);
     await this.page.locator('.cm-search button[name="replaceAll"]').click();
+    await expect(this.page.locator('.cm-content')).toContainText(replace);
+    await expect(this.page.locator('.editor-title-bar__dirty-indicator')).toBeVisible();
   }
 
   async closeSearchPanelWithEscape() {
