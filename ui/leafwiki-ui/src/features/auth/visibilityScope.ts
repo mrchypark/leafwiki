@@ -2,6 +2,7 @@ import { usePageEditorStore } from '@/features/editor/pageEditorStore'
 import { useLinkStatusStore } from '@/features/links/linkstatus_store'
 import { useViewerStore } from '@/features/viewer/viewer'
 import { useDialogsStore } from '@/stores/dialogs'
+import { useFavoritesStore } from '@/stores/favorites'
 import { useTreeStore } from '@/stores/tree'
 
 export function getVisibilityScope(
@@ -14,6 +15,7 @@ export function getVisibilityScope(
 }
 
 export function clearPrivilegedVisibilityState() {
+  useFavoritesStore.getState().clearFavorites()
   usePageEditorStore.getState().resetEditorState()
   useViewerStore.getState().clear()
   useTreeStore.getState().clearVisibilityData()

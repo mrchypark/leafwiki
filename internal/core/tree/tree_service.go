@@ -1600,17 +1600,31 @@ func (t *TreeService) EnsurePagePathWithDraft(userID string, p string, targetTit
 	}, nil
 }
 
-// MoveNode moves a node to another parent (root if parentID is empty/"root")
+// MoveNode moves a node to another parent (root if parentID is empty/"root"),
+// appending it at the end of the new parent's children.
 func (t *TreeService) MoveNode(userID string, id string, parentID string, expectedVersion string) error {
-	return t.moveNode(userID, id, parentID, expectedVersion, nil)
+	return t.moveNode(userID, id, parentID, expectedVersion, nil, -1)
 }
 
 // MoveNodeWithPreconditions rejects a move when source or destination ancestry changed.
 func (t *TreeService) MoveNodeWithPreconditions(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions) error {
-	return t.moveNode(userID, id, parentID, expectedVersion, preconditions)
+	return t.moveNode(userID, id, parentID, expectedVersion, preconditions, -1)
 }
 
-func (t *TreeService) moveNode(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions) error {
+// MoveNodeToPosition moves a node to another parent (root if parentID is empty/"root")
+// and inserts it at the given index among the new parent's children.
+// A negative or out-of-range position appends at the end.
+func (t *TreeService) MoveNodeToPosition(userID string, id string, parentID string, expectedVersion string, position int) error {
+	return t.moveNode(userID, id, parentID, expectedVersion, nil, position)
+}
+
+// MoveNodeToPositionWithPreconditions combines positioned moves with ancestry
+// checks so every move continues through the same persisted mutation path.
+func (t *TreeService) MoveNodeToPositionWithPreconditions(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions, position int) error {
+	return t.moveNode(userID, id, parentID, expectedVersion, preconditions, position)
+}
+
+func (t *TreeService) moveNode(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions, position int) error {
 	t.lockPersistedTree()
 	defer t.unlockPersistedTree()
 
@@ -1720,8 +1734,14 @@ func (t *TreeService) moveNode(userID string, id string, parentID string, expect
 		}
 	}
 
-	node.Position = len(newParent.Children)
-	newParent.Children = append(newParent.Children, node)
+	insertAt := len(newParent.Children)
+	if position >= 0 && position < len(newParent.Children) {
+		insertAt = position
+	}
+	newParent.Children = append(newParent.Children, nil)
+	copy(newParent.Children[insertAt+1:], newParent.Children[insertAt:])
+	newParent.Children[insertAt] = node
+	node.Position = insertAt
 	node.Parent = newParent
 	t.rebuildChildSlugIndexForParentLocked(oldParent)
 	t.rebuildChildSlugIndexForParentLocked(newParent)

@@ -13,6 +13,11 @@ type RefreshAfterPageRefactorOptions = {
   navigate: NavigateFunction
 }
 
+type RefreshAfterTreeMoveOptions = {
+  currentPath: string
+  navigate: NavigateFunction
+}
+
 function normalizeRoutePath(path: string) {
   if (!path) {
     return '/'
@@ -41,6 +46,41 @@ function buildRefactorRoutePath(currentPath: string, nextWikiPath: string) {
   }
 
   return buildViewUrl(nextWikiPath)
+}
+
+async function reloadViewerAndLinks(nextPath: string) {
+  await useViewerStore.getState().loadPageData(toPageLookupPath(nextPath))
+
+  const viewerPageID = useViewerStore.getState().page?.id
+  if (!viewerPageID) {
+    useLinkStatusStore.getState().clear()
+    return
+  }
+
+  await useLinkStatusStore.getState().fetchLinkStatusForPage(viewerPageID)
+}
+
+export async function refreshAfterTreeMove({
+  currentPath,
+  navigate,
+}: RefreshAfterTreeMoveOptions) {
+  const currentViewerPage = useViewerStore.getState().page
+  await useTreeStore.getState().reloadTree({ silent: true })
+  if (!currentViewerPage) return
+
+  const refreshedNode = useTreeStore.getState().byId[currentViewerPage.id]
+  if (!refreshedNode?.path) return
+
+  const previousPath = normalizeWikiRoutePath(currentViewerPage.path || '')
+  const nextPath = normalizeWikiRoutePath(refreshedNode.path)
+  if (previousPath !== nextPath) {
+    navigate(buildRefactorRoutePath(currentPath, nextPath), {
+      replace: true,
+      state: createNavigationVisitState(),
+    })
+  }
+
+  await reloadViewerAndLinks(nextPath)
 }
 
 export async function refreshAfterPageRefactor({
@@ -82,13 +122,5 @@ export async function refreshAfterPageRefactor({
     return
   }
 
-  await useViewerStore.getState().loadPageData(toPageLookupPath(nextPath))
-
-  const viewerPageID = useViewerStore.getState().page?.id
-  if (!viewerPageID) {
-    useLinkStatusStore.getState().clear()
-    return
-  }
-
-  await useLinkStatusStore.getState().fetchLinkStatusForPage(viewerPageID)
+  await reloadViewerAndLinks(nextPath)
 }

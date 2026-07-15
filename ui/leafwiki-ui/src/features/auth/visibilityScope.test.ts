@@ -4,6 +4,7 @@ import { useViewerStore } from '@/features/viewer/viewer'
 import type { Page, PageNode } from '@/lib/api/pages'
 import { fetchLinkStatus, type LinkStatusResult } from '@/lib/api/links'
 import { useDialogsStore } from '@/stores/dialogs'
+import { useFavoritesStore } from '@/stores/favorites'
 import { useTreeStore } from '@/stores/tree'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -71,6 +72,10 @@ describe('visibility scope', () => {
     useDialogsStore.getState().openDialog('page-permalink', {
       page: draftNode,
     })
+    useFavoritesStore.setState({
+      favoritePageIds: new Set([draftNode.id]),
+      loaded: true,
+    })
     useLinkStatusStore.setState({ status: draftLinks })
 
     clearPrivilegedVisibilityState()
@@ -91,6 +96,10 @@ describe('visibility scope', () => {
       status: null,
       loading: false,
       error: null,
+    })
+    expect(useFavoritesStore.getState()).toMatchObject({
+      favoritePageIds: new Set(),
+      loaded: false,
     })
   })
 

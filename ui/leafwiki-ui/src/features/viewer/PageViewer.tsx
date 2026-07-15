@@ -12,6 +12,7 @@ import {
   DIALOG_PAGE_PERMALINK,
 } from '@/lib/registries'
 import { buildHistoryUrl } from '@/lib/routePath'
+import { FavoriteToggleButton } from '@/features/favorites/FavoriteToggleButton'
 import { pinPage } from '@/lib/api/pages'
 import { createHotkeyDefinition } from '@/lib/shortcuts/shortcutCatalog'
 import { useScrollRestoration } from '@/lib/useScrollRestoration'
@@ -23,9 +24,9 @@ import {
 } from '@/lib/wikiPath'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useHotKeysStore } from '@/stores/hotkeys'
+import { useSessionStore } from '@/stores/session'
 import { useTocPanelStore } from '@/stores/tocPanel'
 import { useTreeStore } from '@/stores/tree'
-import { useSessionStore } from '@/stores/session'
 import { useConfigStore } from '@/stores/config'
 import { useCallback, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -72,6 +73,7 @@ export default function PageViewer() {
   const isPinned = useTreeStore((s) =>
     page ? (s.byId[page.id]?.pinned ?? false) : false,
   )
+  const isLoggedIn = useSessionStore((s) => s.user !== null)
 
   const actions = {
     pageKind: page?.kind,
@@ -204,6 +206,13 @@ export default function PageViewer() {
                     </div>
                   )}
                 </div>
+                {isLoggedIn && (
+                  <FavoriteToggleButton
+                    pageId={page.id}
+                    size={16}
+                    className="page-viewer__favorite-toggle"
+                  />
+                )}
               </div>
               {showTocButton && (
                 <div className="page-viewer__toc-button">

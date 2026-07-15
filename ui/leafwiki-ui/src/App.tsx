@@ -1,12 +1,13 @@
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { createLeafWikiRouter } from '@/features/router/router'
-import { useBootstrapAuth } from '@/lib/bootstrapAuth'
-import { BASE_PATH } from '@/lib/config'
-import { useIsReadOnly } from '@/lib/useIsReadOnly'
 import {
   clearPrivilegedVisibilityState,
   getVisibilityScope,
 } from '@/features/auth/visibilityScope'
+import { createLeafWikiRouter } from '@/features/router/router'
+import { useBootstrapAuth } from '@/lib/bootstrapAuth'
+import { BASE_PATH } from '@/lib/config'
+import { useIsReadOnly } from '@/lib/useIsReadOnly'
+import { useFavoritesStore } from '@/stores/favorites'
 import { useSessionStore } from '@/stores/session'
 import useApplyDesignMode from '@/useApplyDesignMode'
 import { Loader2 } from 'lucide-react'
@@ -31,9 +32,10 @@ function App() {
   // bootstrap authentication on app start -> session store
   useBootstrapAuth(configHasLoaded && !authDisabled)
 
-  const isLoggedIn = useSessionStore((s) => !!s.user)
-  const userId = useSessionStore((s) => s.user?.id ?? null)
-  const userRole = useSessionStore((s) => s.user?.role ?? null)
+  const sessionUser = useSessionStore((s) => s.user)
+  const isLoggedIn = !!sessionUser
+  const userId = sessionUser?.id ?? null
+  const userRole = sessionUser?.role ?? null
   const isRefreshing = useSessionStore((s) => s.isRefreshing)
   const isReadOnly = useIsReadOnly()
   const isReadOnlyViewer = isReadOnly && !isLoggedIn
@@ -48,11 +50,24 @@ function App() {
       clearPrivilegedVisibilityState()
     }
   }, [configHasLoaded, visibilityScope])
+  const loadFavorites = useFavoritesStore((s) => s.loadFavorites)
+  const clearFavorites = useFavoritesStore((s) => s.clearFavorites)
 
   useApplyDesignMode()
   useEffect(() => {
     loadConfig()
   }, [loadConfig])
+
+  // Favorites are per-user server truth — (re)load whenever the logged-in
+  // user changes, and clear them on logout so a second user on the same
+  // browser never sees the first user's favorites.
+  useEffect(() => {
+    if (userId) {
+      loadFavorites(userId)
+    } else {
+      clearFavorites()
+    }
+  }, [userId, loadFavorites, clearFavorites])
 
   useLayoutEffect(() => {
     // Load branding configuration
