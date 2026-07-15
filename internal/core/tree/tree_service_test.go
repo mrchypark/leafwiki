@@ -1421,6 +1421,42 @@ func TestTreeService_MoveNode_LeavingInheritedDraftPersistsOwnDraft(t *testing.T
 	}
 }
 
+func TestTreeService_PositionedMove_LeavingInheritedDraftPersistsOwnDraft(t *testing.T) {
+	svc, tmpDir := newLoadedService(t)
+	if _, err := svc.CreateNode("editor", nil, "Existing", "existing", ptrKind(NodeKindPage)); err != nil {
+		t.Fatalf("CreateNode(existing) error = %v", err)
+	}
+	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft parent", "draft-parent", ptrKind(NodeKindSection), true)
+	if err != nil {
+		t.Fatalf("CreateNodeWithDraft(parent) error = %v", err)
+	}
+	childID, err := svc.CreateNode("editor", draftParentID, "Child", "child", ptrKind(NodeKindPage))
+	if err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	child, err := svc.GetPage(*childID)
+	if err != nil {
+		t.Fatalf("GetPage(child) error = %v", err)
+	}
+
+	if err := svc.MoveNodeToPosition("editor", *childID, "root", child.Version(), 0); err != nil {
+		t.Fatalf("MoveNodeToPosition() error = %v", err)
+	}
+	root := svc.GetTree()
+	if len(root.Children) == 0 || root.Children[0].ID != *childID || !root.Children[0].Draft {
+		t.Fatalf("positioned child = %#v, want first root child with own draft", root.Children)
+	}
+
+	reloaded := NewTreeService(tmpDir)
+	if err := reloaded.LoadTree(); err != nil {
+		t.Fatalf("LoadTree() error = %v", err)
+	}
+	moved, err := reloaded.GetPage(*childID)
+	if err != nil || !moved.Draft || moved.Parent == nil || moved.Parent.ID != "root" || moved.Position != 0 {
+		t.Fatalf("reloaded positioned child = %#v, error = %v", moved, err)
+	}
+}
+
 func TestTreeService_MoveNode_FailureRollsBackPromotedOwnDraft(t *testing.T) {
 	svc, tmpDir := newLoadedService(t)
 	draftParentID, err := svc.CreateNodeWithDraft("editor", nil, "Draft parent", "draft-parent", ptrKind(NodeKindSection), true)

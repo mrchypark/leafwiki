@@ -43,6 +43,9 @@ type Routes struct {
 	previewRefactor  *PreviewPageRefactorUseCase
 	applyRefactor    *ApplyPageRefactorUseCase
 	pinPage          *PinPageUseCase
+	addFavorite      *AddFavoriteUseCase
+	removeFavorite   *RemoveFavoriteUseCase
+	listFavorites    *ListFavoritesUseCase
 	userResolver     *coreauth.UserResolver
 	authService      *coreauth.AuthService
 	authDisabled     bool
@@ -68,6 +71,9 @@ type RoutesConfig struct {
 	PreviewRefactor  *PreviewPageRefactorUseCase
 	ApplyRefactor    *ApplyPageRefactorUseCase
 	PinPage          *PinPageUseCase
+	AddFavorite      *AddFavoriteUseCase
+	RemoveFavorite   *RemoveFavoriteUseCase
+	ListFavorites    *ListFavoritesUseCase
 	UserResolver     *coreauth.UserResolver
 	AuthService      *coreauth.AuthService
 }
@@ -93,6 +99,9 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 		previewRefactor:  cfg.PreviewRefactor,
 		applyRefactor:    cfg.ApplyRefactor,
 		pinPage:          cfg.PinPage,
+		addFavorite:      cfg.AddFavorite,
+		removeFavorite:   cfg.RemoveFavorite,
+		listFavorites:    cfg.ListFavorites,
 		userResolver:     cfg.UserResolver,
 		authService:      cfg.AuthService,
 	}
@@ -140,6 +149,11 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	authGroup.PUT("/pages/:id/move", authmw.RequireEditorOrAdmin(), r.handleMove)
 	authGroup.PUT("/pages/:id/sort", authmw.RequireEditorOrAdmin(), r.handleSort)
 	authGroup.PUT("/pages/:id/pin", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handlePin)
+	// Favorites are a personal bookmark, not an editorial action — any
+	// authenticated user (already enforced by authGroup) may set their own.
+	authGroup.PUT("/pages/:id/favorite", r.handleAddFavorite)
+	authGroup.DELETE("/pages/:id/favorite", r.handleRemoveFavorite)
+	authGroup.GET("/favorites", r.handleListFavorites)
 	authGroup.POST("/pages/ensure", authmw.RequireEditorOrAdmin(), r.handleEnsurePath)
 	authGroup.POST("/pages/convert/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleConvert)
 	authGroup.POST("/pages/copy/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleCopy)
@@ -468,6 +482,7 @@ func (r *Routes) handleMove(c *gin.Context) {
 	var req struct {
 		Version  string `json:"version" binding:"required"`
 		ParentID string `json:"parentId"`
+		Position *int   `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidPayload, "Invalid payload", "invalid payload")
@@ -481,7 +496,7 @@ func (r *Routes) handleMove(c *gin.Context) {
 		return
 	}
 	if err := r.movePage.Execute(c.Request.Context(), MovePageInput{
-		UserID: user.ID, ID: id, Version: req.Version, ParentID: req.ParentID,
+		UserID: user.ID, ID: id, Version: req.Version, ParentID: req.ParentID, Position: req.Position,
 	}); err != nil {
 		respondWithPageError(c, err)
 		return
@@ -538,6 +553,58 @@ func (r *Routes) handlePin(c *gin.Context) {
 		return
 	}
 	r.respondPage(c, http.StatusOK, out.Page)
+}
+
+func (r *Routes) handleAddFavorite(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	user := authmw.MustGetUser(c)
+	if user == nil {
+		return
+	}
+	if err := r.addFavorite.Execute(c.Request.Context(), AddFavoriteInput{
+		UserID: user.ID, PageID: id, User: user, AuthDisabled: r.authDisabled,
+	}); err != nil {
+		respondWithPageError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Page favorited"})
+}
+
+func (r *Routes) handleRemoveFavorite(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	user := authmw.MustGetUser(c)
+	if user == nil {
+		return
+	}
+	if err := r.removeFavorite.Execute(c.Request.Context(), RemoveFavoriteInput{
+		UserID: user.ID, PageID: id,
+	}); err != nil {
+		respondWithPageError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Page unfavorited"})
+}
+
+func (r *Routes) handleListFavorites(c *gin.Context) {
+	r.setVisibilityCacheHeader(c)
+	user := authmw.MustGetUser(c)
+	if user == nil {
+		return
+	}
+	out, err := r.listFavorites.Execute(c.Request.Context(), ListFavoritesInput{
+		UserID: user.ID, User: user, AuthDisabled: r.authDisabled,
+	})
+	if err != nil {
+		respondWithPageError(c, err)
+		return
+	}
+	apiPages := make([]*dto.Page, 0, len(out.Pages))
+	for _, p := range out.Pages {
+		apiPage := dto.ToAPIPage(p, r.userResolver)
+		r.enrichPageMetadata(apiPage, p.RawContent)
+		apiPages = append(apiPages, apiPage)
+	}
+	c.JSON(http.StatusOK, gin.H{"pages": apiPages})
 }
 
 func (r *Routes) handleEnsurePath(c *gin.Context) {

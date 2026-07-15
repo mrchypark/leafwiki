@@ -13,6 +13,7 @@ import (
 	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
+	"github.com/perber/wiki/internal/favorites"
 	httpinternal "github.com/perber/wiki/internal/http"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	coreimporter "github.com/perber/wiki/internal/importer"
@@ -67,6 +68,7 @@ type Wiki struct {
 	searchEffect     *pagesave.SearchIndexSideEffect
 	tagsEffect       *pagesave.TagsSideEffect
 	propertiesEffect *pagesave.PropertiesSideEffect
+	favorites        *favorites.FavoritesStore
 	backupRoutes     *wikibackup.Routes
 	resyncRoutes     *wikiresync.Routes
 	resyncJob        *wikiresync.ResyncJob
@@ -119,6 +121,9 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 		return nil, err
 	}
 	if err := w.initPropertiesService(); err != nil {
+		return nil, err
+	}
+	if err := w.initFavoritesService(); err != nil {
 		return nil, err
 	}
 	w.bootstrapTagsAndProperties(w.shutdownCtx)
@@ -247,6 +252,15 @@ func (w *Wiki) initPropertiesService() error {
 	return nil
 }
 
+func (w *Wiki) initFavoritesService() error {
+	store, err := favorites.NewFavoritesStore(w.storageDir)
+	if err != nil {
+		return fmt.Errorf("failed to init favorites store: %w", err)
+	}
+	w.favorites = store
+	return nil
+}
+
 // bootstrapTagsAndProperties rebuilds both projections through their shared
 // runtime coordination boundaries.
 func (w *Wiki) bootstrapTagsAndProperties(ctx context.Context) {
@@ -331,7 +345,7 @@ func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
 		TreeService:      w.tree,
 		CreatePage:       wikipages.NewCreatePageUseCase(w.tree, w.slug, o, w.log, w.metrics),
 		UpdatePage:       wikipages.NewUpdatePageUseCase(w.tree, w.slug, o, w.log, w.metrics),
-		DeletePage:       wikipages.NewDeletePageUseCase(w.tree, w.revision, w.asset, o, w.log, w.metrics),
+		DeletePage:       wikipages.NewDeletePageUseCase(w.tree, w.revision, w.asset, w.favorites, o, w.log, w.metrics),
 		MovePage:         wikipages.NewMovePageUseCase(w.tree, o, w.log, w.metrics),
 		ConvertPage:      wikipages.NewConvertPageUseCase(w.tree, w.revision, w.log),
 		CopyPage:         wikipages.NewCopyPageUseCase(w.tree, w.slug, o, w.asset, w.log),
@@ -346,6 +360,9 @@ func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
 		PreviewRefactor:  wikipages.NewPreviewPageRefactorUseCase(w.tree, w.slug, w.links, w.log),
 		ApplyRefactor:    wikipages.NewApplyPageRefactorUseCase(w.tree, w.slug, w.links, o, w.log, w.metrics),
 		PinPage:          wikipages.NewPinPageUseCase(w.tree, w.log),
+		AddFavorite:      wikipages.NewAddFavoriteUseCase(w.tree, w.favorites),
+		RemoveFavorite:   wikipages.NewRemoveFavoriteUseCase(w.favorites),
+		ListFavorites:    wikipages.NewListFavoritesUseCase(w.tree, w.favorites, w.log),
 		UserResolver:     w.userResolver,
 		AuthService:      w.auth,
 	})
@@ -359,7 +376,7 @@ func (w *Wiki) buildAuthRoutes() *wikiauth.Routes {
 		CreateUser:        wikiauth.NewCreateUserUseCase(w.user, w.userResolver, w.log),
 		UpdateUser:        wikiauth.NewUpdateUserUseCase(w.user, w.userResolver, w.log),
 		ChangeOwnPassword: wikiauth.NewChangeOwnPasswordUseCase(w.user),
-		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.user, w.userResolver, w.log),
+		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.user, w.userResolver, w.favorites, w.log),
 		GetUsers:          wikiauth.NewGetUsersUseCase(w.user),
 		GetUserByID:       wikiauth.NewGetUserByIDUseCase(w.user),
 		AuthService:       w.auth,
@@ -748,6 +765,11 @@ func (w *Wiki) Close() error {
 	if w.links != nil {
 		if err := w.links.Close(); err != nil {
 			w.log.Error("error closing links", "error", err)
+		}
+	}
+	if w.favorites != nil {
+		if err := w.favorites.Close(); err != nil {
+			w.log.Error("error closing favorites", "error", err)
 		}
 	}
 

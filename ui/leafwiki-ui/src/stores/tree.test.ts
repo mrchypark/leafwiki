@@ -60,3 +60,22 @@ describe('useTreeStore — getPagesByTitle', () => {
     expect(getPagesByTitle('Anything')).toHaveLength(0)
   })
 })
+
+describe('useTreeStore — moveNodeLocally', () => {
+  it('reorders a root-level page immediately', () => {
+    const first = makeNode('first', 'First', 'first')
+    const second = makeNode('second', 'Second', 'second')
+    const root: PageNode = {
+      ...makeNode('root', 'Root', ''),
+      kind: 'section',
+      children: [first, second],
+    }
+    useTreeStore.setState({ tree: root })
+
+    useTreeStore.getState().moveNodeLocally(first.id, root.id, 1)
+
+    expect(
+      useTreeStore.getState().tree?.children?.map((node) => node.id),
+    ).toEqual([second.id, first.id])
+  })
+})

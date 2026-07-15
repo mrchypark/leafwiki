@@ -13,9 +13,11 @@ import (
 	"testing"
 
 	"github.com/perber/wiki/internal/core/assets"
+	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/revision"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
+	"github.com/perber/wiki/internal/favorites"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	"github.com/perber/wiki/internal/links"
 	"github.com/perber/wiki/internal/search"
@@ -34,6 +36,7 @@ type testDeps struct {
 	revision   *revision.Service
 	links      *links.LinkService
 	assets     *assets.AssetService
+	favorites  *favorites.FavoritesStore
 }
 
 func newTestDeps(t *testing.T) *testDeps {
@@ -59,6 +62,16 @@ func newTestDeps(t *testing.T) *testDeps {
 		revision.ServiceOptions{},
 	)
 
+	favoritesStore, err := favorites.NewFavoritesStore(storageDir)
+	if err != nil {
+		t.Fatalf("failed to create favorites store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := favoritesStore.Close(); err != nil {
+			t.Errorf("failed to close favorites store: %v", err)
+		}
+	})
+
 	return &testDeps{
 		storageDir: storageDir,
 		tree:       treeService,
@@ -66,6 +79,7 @@ func newTestDeps(t *testing.T) *testDeps {
 		revision:   revService,
 		links:      linkService,
 		assets:     assetService,
+		favorites:  favoritesStore,
 	}
 }
 
@@ -757,7 +771,7 @@ func TestDraftPage_AllowsCopyAndRefactorPreview(t *testing.T) {
 func TestDeletePageUseCase_HappyPath(t *testing.T) {
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
 		UserID: "user1", Title: "To Delete", Slug: "to-delete", Kind: pageKind(),
@@ -780,7 +794,7 @@ func TestDeletePageUseCase_HappyPath(t *testing.T) {
 
 func TestDeletePageUseCase_Root_ReturnsError(t *testing.T) {
 	deps := newTestDeps(t)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
 		UserID: "user1", ID: "root", Recursive: false,
@@ -793,7 +807,7 @@ func TestDeletePageUseCase_Root_ReturnsError(t *testing.T) {
 func TestDeletePageUseCase_WithChildren_Recursive(t *testing.T) {
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	parent, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
 		UserID: "user1", Title: "Parent", Slug: "parent", Kind: pageKind(),
@@ -810,6 +824,312 @@ func TestDeletePageUseCase_WithChildren_Recursive(t *testing.T) {
 	}
 }
 
+func TestDeletePageUseCase_NonRecursive_RemovesFavoritesForPage(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
+
+	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "To Delete", Slug: "to-delete", Kind: pageKind(),
+	})
+	if err := deps.favorites.Add("user1", created.Page.ID); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+
+	if err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
+		UserID: "user1", ID: created.Page.ID, Version: created.Page.Version(), Recursive: false,
+	}); err != nil {
+		t.Fatalf("unexpected error deleting page: %v", err)
+	}
+
+	ids, err := deps.favorites.ListPageIDsForUser("user1")
+	if err != nil {
+		t.Fatalf("ListPageIDsForUser: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected favorites for deleted page to be cleaned up, got %v", ids)
+	}
+}
+
+func TestDeletePageUseCase_Recursive_RemovesFavoritesForWholeSubtree(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
+
+	parent, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Parent", Slug: "parent", Kind: pageKind(),
+	})
+	child, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", ParentID: &parent.Page.ID, Title: "Child", Slug: "child", Kind: pageKind(),
+	})
+	if err := deps.favorites.Add("user1", parent.Page.ID); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+	if err := deps.favorites.Add("user1", child.Page.ID); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+
+	if err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
+		UserID: "user1", ID: parent.Page.ID, Version: parent.Page.Version(), Recursive: true,
+	}); err != nil {
+		t.Fatalf("unexpected error on recursive delete: %v", err)
+	}
+
+	ids, err := deps.favorites.ListPageIDsForUser("user1")
+	if err != nil {
+		t.Fatalf("ListPageIDsForUser: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected favorites for deleted subtree to be cleaned up, got %v", ids)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AddFavoriteUseCase / RemoveFavoriteUseCase / ListFavoritesUseCase
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestAddFavoriteUseCase_HappyPath(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+
+	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+
+	if err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+		UserID: "user1", PageID: created.Page.ID,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ids, err := deps.favorites.ListPageIDsForUser("user1")
+	if err != nil {
+		t.Fatalf("ListPageIDsForUser: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != created.Page.ID {
+		t.Errorf("expected [%s], got %v", created.Page.ID, ids)
+	}
+}
+
+func TestAddFavoriteUseCase_NonExistentPage_ReturnsError(t *testing.T) {
+	deps := newTestDeps(t)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+
+	err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+		UserID: "user1", PageID: "does-not-exist",
+	})
+	if !errors.Is(err, tree.ErrPageNotFound) {
+		t.Fatalf("expected ErrPageNotFound, got %v", err)
+	}
+}
+
+func TestAddFavoriteUseCase_HidesDirectAndInheritedDraftsFromViewer(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+	viewer := &auth.User{ID: "viewer", Role: auth.RoleViewer}
+
+	direct, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Direct Draft", Slug: "direct-draft", Kind: pageKind(), Draft: true, DraftAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("create direct draft: %v", err)
+	}
+	parent, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Draft Parent", Slug: "draft-parent", Kind: sectionKind(), Draft: true, DraftAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("create draft parent: %v", err)
+	}
+	inherited, err := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", ParentID: &parent.Page.ID, Title: "Inherited Draft", Slug: "inherited-draft", Kind: pageKind(),
+	})
+	if err != nil {
+		t.Fatalf("create inherited draft: %v", err)
+	}
+
+	for _, pageID := range []string{direct.Page.ID, inherited.Page.ID} {
+		err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+			UserID: viewer.ID, PageID: pageID, User: viewer,
+		})
+		if !errors.Is(err, tree.ErrPageNotFound) {
+			t.Fatalf("favorite hidden draft %q error = %v, want ErrPageNotFound", pageID, err)
+		}
+	}
+	ids, err := deps.favorites.ListPageIDsForUser(viewer.ID)
+	if err != nil {
+		t.Fatalf("list stored favorites: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("hidden drafts were stored as favorites: %v", ids)
+	}
+}
+
+func TestAddFavoriteUseCase_Idempotent(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+
+	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+
+	for i := 0; i < 2; i++ {
+		if err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+			UserID: "user1", PageID: created.Page.ID,
+		}); err != nil {
+			t.Fatalf("unexpected error on attempt %d: %v", i, err)
+		}
+	}
+
+	ids, err := deps.favorites.ListPageIDsForUser("user1")
+	if err != nil {
+		t.Fatalf("ListPageIDsForUser: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Errorf("expected exactly one favorite, got %v", ids)
+	}
+}
+
+func TestRemoveFavoriteUseCase_HappyPath(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+	removeFavoriteUC := pages.NewRemoveFavoriteUseCase(deps.favorites)
+
+	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+	if err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+		UserID: "user1", PageID: created.Page.ID,
+	}); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+
+	if err := removeFavoriteUC.Execute(context.Background(), pages.RemoveFavoriteInput{
+		UserID: "user1", PageID: created.Page.ID,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ids, err := deps.favorites.ListPageIDsForUser("user1")
+	if err != nil {
+		t.Fatalf("ListPageIDsForUser: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected no favorites, got %v", ids)
+	}
+}
+
+func TestRemoveFavoriteUseCase_NotFavorited_IsNoOp(t *testing.T) {
+	deps := newTestDeps(t)
+	removeFavoriteUC := pages.NewRemoveFavoriteUseCase(deps.favorites)
+
+	if err := removeFavoriteUC.Execute(context.Background(), pages.RemoveFavoriteInput{
+		UserID: "user1", PageID: "never-favorited",
+	}); err != nil {
+		t.Fatalf("expected no error removing a non-favorited page, got %v", err)
+	}
+}
+
+func TestListFavoritesUseCase_ResolvesFavoritedPages(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	addFavoriteUC := pages.NewAddFavoriteUseCase(deps.tree, deps.favorites)
+	listFavoritesUC := pages.NewListFavoritesUseCase(deps.tree, deps.favorites, slog.Default())
+
+	pageA, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Page A", Slug: "page-a", Kind: pageKind(),
+	})
+	createUC.Execute(context.Background(), pages.CreatePageInput{ //nolint:errcheck
+		UserID: "user1", Title: "Page B", Slug: "page-b", Kind: pageKind(),
+	})
+	if err := addFavoriteUC.Execute(context.Background(), pages.AddFavoriteInput{
+		UserID: "user1", PageID: pageA.Page.ID,
+	}); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+
+	out, err := listFavoritesUC.Execute(context.Background(), pages.ListFavoritesInput{UserID: "user1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Pages) != 1 || out.Pages[0].ID != pageA.Page.ID {
+		t.Fatalf("expected only page A, got %#v", out.Pages)
+	}
+
+	// Page B was never favorited and must not leak into another user's list.
+	otherUserOut, err := listFavoritesUC.Execute(context.Background(), pages.ListFavoritesInput{UserID: "user2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(otherUserOut.Pages) != 0 {
+		t.Errorf("expected user2 to have no favorites, got %#v", otherUserOut.Pages)
+	}
+}
+
+func TestListFavoritesUseCase_FiltersDirectAndInheritedDraftsForViewer(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	listFavoritesUC := pages.NewListFavoritesUseCase(deps.tree, deps.favorites, slog.Default())
+	viewer := &auth.User{ID: "viewer", Role: auth.RoleViewer}
+
+	publicPage, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Public", Slug: "public", Kind: pageKind(),
+	})
+	direct, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Direct Draft", Slug: "direct-draft", Kind: pageKind(), Draft: true, DraftAllowed: true,
+	})
+	parent, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", Title: "Draft Parent", Slug: "draft-parent", Kind: sectionKind(), Draft: true, DraftAllowed: true,
+	})
+	inherited, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "editor", ParentID: &parent.Page.ID, Title: "Inherited Draft", Slug: "inherited-draft", Kind: pageKind(),
+	})
+	for _, pageID := range []string{publicPage.Page.ID, direct.Page.ID, inherited.Page.ID} {
+		if err := deps.favorites.Add(viewer.ID, pageID); err != nil {
+			t.Fatalf("seed favorite %q: %v", pageID, err)
+		}
+	}
+
+	out, err := listFavoritesUC.Execute(context.Background(), pages.ListFavoritesInput{
+		UserID: viewer.ID, User: viewer,
+	})
+	if err != nil {
+		t.Fatalf("list favorites: %v", err)
+	}
+	if len(out.Pages) != 1 || out.Pages[0].ID != publicPage.Page.ID {
+		t.Fatalf("viewer favorites = %#v, want only public page", out.Pages)
+	}
+}
+
+func TestListFavoritesUseCase_SkipsStaleFavoriteForDeletedPage(t *testing.T) {
+	deps := newTestDeps(t)
+	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
+	listFavoritesUC := pages.NewListFavoritesUseCase(deps.tree, deps.favorites, slog.Default())
+
+	created, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
+		UserID: "user1", Title: "Page", Slug: "page", Kind: pageKind(),
+	})
+	// Simulate a stale row (e.g. pre-dating the delete-cascade cleanup) by
+	// favoriting an id that does not resolve to a live page.
+	if err := deps.favorites.Add("user1", "stale-page-id"); err != nil {
+		t.Fatalf("failed to seed stale favorite: %v", err)
+	}
+	if err := deps.favorites.Add("user1", created.Page.ID); err != nil {
+		t.Fatalf("failed to seed favorite: %v", err)
+	}
+
+	out, err := listFavoritesUC.Execute(context.Background(), pages.ListFavoritesInput{UserID: "user1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Pages) != 1 || out.Pages[0].ID != created.Page.ID {
+		t.Fatalf("expected stale favorite to be silently skipped, got %#v", out.Pages)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Recursive delete snapshot failure
 // ─────────────────────────────────────────────────────────────────────────────
@@ -818,7 +1138,7 @@ func TestDeletePageUseCase_Recursive_RemovesAssetsWhenAffectedSnapshotReadFails(
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default())
 	effect := &captureEffect{}
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, pagesave.NewPageSaveOrchestrator(nil, effect), slog.Default())
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, pagesave.NewPageSaveOrchestrator(nil, effect), slog.Default())
 
 	parent, err := createUC.Execute(context.Background(), pages.CreatePageInput{
 		UserID: "user1", Title: "Parent", Slug: "parent", Kind: pageKind(),
@@ -1215,7 +1535,7 @@ func TestUpdatePageUseCase_AllowsUppercaseSlug(t *testing.T) {
 
 func TestDeletePageUseCase_EmptyID_ReturnsError(t *testing.T) {
 	deps := newTestDeps(t)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	err := deleteUC.Execute(context.Background(), pages.DeletePageInput{
 		UserID: "user1", ID: "", Recursive: false,
@@ -3235,7 +3555,7 @@ func TestDeletePageUseCase_NonRecursive_MarksIncomingBroken(t *testing.T) {
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	a, err := createUC.Execute(context.Background(), pages.CreatePageInput{
 		UserID: "system", Title: "Page A", Slug: "a", Kind: pageKind(),
@@ -3299,7 +3619,7 @@ func TestDeletePageUseCase_Recursive_RemovesOutgoingAndBreaksIncomingForDeletedS
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	docs, _ := createUC.Execute(context.Background(), pages.CreatePageInput{
 		UserID: "system", Title: "Docs", Slug: "docs", Kind: pageKind(),
@@ -3372,7 +3692,7 @@ func TestDeletePageUseCase_SingleDelete_HealsSentinelWhenDuplicateTitleRemoved(t
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	// Two pages share the title "Kafka".
 	kafka1, err := createUC.Execute(context.Background(), pages.CreatePageInput{
@@ -3439,7 +3759,7 @@ func TestDeletePageUseCase_Recursive_HealsSentinelWhenDuplicateTitleRemoved(t *t
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	// kafka1 lives inside a section that we will delete recursively.
 	section, err := createUC.Execute(context.Background(), pages.CreatePageInput{
@@ -3523,7 +3843,7 @@ func TestDeletePageUseCase_Recursive_MarksHealedWikiLinkSentinelBroken(t *testin
 	deps := newTestDeps(t)
 	createUC := pages.NewCreatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), nil)
-	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.orchestrator(), slog.Default(), nil)
+	deleteUC := pages.NewDeletePageUseCase(deps.tree, deps.revision, deps.assets, deps.favorites, deps.orchestrator(), slog.Default(), nil)
 
 	// Step 1: source writes [[Kafka]] before any Kafka page exists → broken sentinel.
 	source, err := createUC.Execute(context.Background(), pages.CreatePageInput{

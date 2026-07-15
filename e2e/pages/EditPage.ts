@@ -13,16 +13,26 @@ export default class EditPage {
     const editor = this.page.locator('.cm-editor');
     await editor.click();
     await this.page.keyboard.press('ControlOrMeta+h');
-    await this.page.locator('.cm-search input[main-field="true"]').waitFor({ state: 'visible' });
+    const replaceInput = this.page.locator('.cm-search input[name="replace"]');
+    await replaceInput.waitFor({ state: 'visible' });
+    await expect(replaceInput).toBeFocused();
   }
 
   async replaceAll(search: string, replace: string) {
     const searchInput = this.page.locator('.cm-search input[main-field="true"]');
     const replaceInput = this.page.locator('.cm-search input[name="replace"]');
 
+    // CodeMirror commits search state on change, while fill() primarily
+    // dispatches input. Commit each complete value before replacing.
     await searchInput.fill(search);
+    await searchInput.dispatchEvent('change');
     await replaceInput.fill(replace);
+    await replaceInput.dispatchEvent('change');
+    await expect(searchInput).toHaveValue(search);
+    await expect(replaceInput).toHaveValue(replace);
     await this.page.locator('.cm-search button[name="replaceAll"]').click();
+    await expect(this.page.locator('.cm-content')).toContainText(replace);
+    await expect(this.page.locator('.editor-title-bar__dirty-indicator')).toBeVisible();
   }
 
   async closeSearchPanelWithEscape() {
@@ -43,6 +53,9 @@ export default class EditPage {
       await expect(saveButton).toBeEnabled({ timeout: 3000 });
       await saveButton.click();
       await this.page.getByText('Page saved successfully').last().waitFor({ state: 'visible' });
+      // The dirty flag can clear slightly after the success toast; closing the
+      // editor before it does trips the unsaved-changes blocker on slow runners.
+      await expect(dirtyIndicator).toHaveCount(0, { timeout: 5000 });
       return;
     } catch {
       await expect(saveButton).toBeDisabled();

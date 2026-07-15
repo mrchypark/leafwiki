@@ -12,6 +12,11 @@ vi.mock('@/features/router/router', () => ({
 }))
 
 vi.mock('@/lib/bootstrapAuth', () => ({ useBootstrapAuth: vi.fn() }))
+vi.mock('@/lib/api/favorites', () => ({
+  getFavorites: vi.fn().mockResolvedValue([]),
+  addFavorite: vi.fn(),
+  removeFavorite: vi.fn(),
+}))
 vi.mock('./useApplyDesignMode', () => ({ default: vi.fn() }))
 
 vi.mock('react-router-dom', async () => {

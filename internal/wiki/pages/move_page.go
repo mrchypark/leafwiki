@@ -18,6 +18,8 @@ type MovePageInput struct {
 	Version           string
 	ParentID          string
 	PathPreconditions *tree.PathPreconditions
+	// Position is the target index among the new parent's children; nil appends at the end.
+	Position *int
 }
 
 // MovePageUseCase moves a page to a new parent, updating links and recording revisions.
@@ -66,7 +68,11 @@ func (uc *MovePageUseCase) Execute(_ context.Context, in MovePageInput) (err err
 	oldPath := beforePage.CalculatePath()
 	wasDraft := pagevisibility.IsInDraftSubtree(beforePage.PageNode)
 
-	if err := uc.tree.MoveNodeWithPreconditions(in.UserID, in.ID, in.ParentID, in.Version, in.PathPreconditions); err != nil {
+	position := -1
+	if in.Position != nil {
+		position = *in.Position
+	}
+	if err = uc.tree.MoveNodeToPositionWithPreconditions(in.UserID, in.ID, in.ParentID, in.Version, in.PathPreconditions, position); err != nil {
 		return err
 	}
 	afterNode, err := uc.tree.SnapshotPageNode(in.ID)

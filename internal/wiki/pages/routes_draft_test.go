@@ -13,6 +13,7 @@ import (
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/tree"
+	"github.com/perber/wiki/internal/favorites"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
 	"github.com/perber/wiki/internal/http/middleware/security"
@@ -80,6 +81,34 @@ func TestPageResponse_ReturnsNotFoundWhenPageIsInvisible(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"code":"page_not_found"`) {
 		t.Fatalf("body = %s, want page_not_found error", recorder.Body.String())
+	}
+}
+
+func TestListFavoritesRoute_DisablesSharedCaching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	treeService := newLoadedRouteTree(t)
+	store, err := favorites.NewFavoritesStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFavoritesStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	routes := &Routes{
+		treeService:   treeService,
+		listFavorites: NewListFavoritesUseCase(treeService, store, slog.Default()),
+	}
+	router := gin.New()
+	router.GET("/favorites", func(c *gin.Context) {
+		c.Set("user", &auth.User{ID: "viewer", Role: auth.RoleViewer})
+	}, routes.handleListFavorites)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/favorites", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store", got)
 	}
 }
 
@@ -552,6 +581,7 @@ func TestDeleteRoute_DoesNotRevealOrDeleteHiddenDraftChild(t *testing.T) {
 		treeService: treeService,
 		deletePage: NewDeletePageUseCase(
 			treeService,
+			nil,
 			nil,
 			nil,
 			pagesave.NewPageSaveOrchestrator(nil),

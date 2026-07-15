@@ -26,11 +26,22 @@ type ApiPage = {
   effectiveDraft?: boolean;
 };
 
-async function login(page: Page) {
+type ApiUser = {
+  id: string;
+  username: string;
+  email: string;
+  role: 'admin' | 'editor' | 'viewer';
+};
+
+async function loginAs(page: Page, username: string, loginPassword: string) {
   const loginPage = new LoginPage(page);
   await loginPage.goto();
-  await loginPage.login(user, password);
+  await loginPage.login(username, loginPassword);
   await new ViewPage(page).expectUserLoggedIn();
+}
+
+async function login(page: Page) {
+  await loginAs(page, user, password);
 }
 
 async function mutate<T>(
@@ -79,6 +90,39 @@ async function createNode(
   });
 }
 
+async function createUser(
+  page: Page,
+  input: { username: string; email: string; password: string; role: ApiUser['role'] },
+): Promise<ApiUser> {
+  return mutate<ApiUser>(page, '/api/users', 'POST', input);
+}
+
+async function requestStatus(page: Page, path: string, method: 'PUT' | 'DELETE'): Promise<number> {
+  return page.evaluate(
+    async ({ path, method, csrfScript }) => {
+      const csrfToken = new Function(csrfScript)() as string;
+      const response = await fetch(path, {
+        method,
+        credentials: 'include',
+        headers: { 'X-CSRF-Token': csrfToken },
+      });
+      return response.status;
+    },
+    { path: toAppPath(path), method, csrfScript: getCsrfScript() },
+  );
+}
+
+async function getFavoritePageIds(page: Page): Promise<string[]> {
+  return page.evaluate(async (apiPath) => {
+    const response = await fetch(apiPath, { credentials: 'include' });
+    if (!response.ok) {
+      throw new Error(`GET ${apiPath} failed: ${response.status} ${await response.text()}`);
+    }
+    const result = (await response.json()) as { pages: ApiPage[] };
+    return result.pages.map((favorite) => favorite.id);
+  }, toAppPath('/api/favorites'));
+}
+
 async function getPageByPath(page: Page, path: string): Promise<ApiPage> {
   return page.evaluate(
     async (apiPath) => {
@@ -104,6 +148,46 @@ async function movePage(page: Page, current: ApiPage, parentId: string): Promise
     version: current.version,
     parentId,
   });
+}
+
+async function dragNodeBefore(page: Page, draggedId: string, targetId: string): Promise<void> {
+  const dragged = page.getByTestId(`tree-node-${draggedId}`);
+  const target = page.getByTestId(`tree-node-${targetId}`);
+  await dragged.scrollIntoViewIfNeeded();
+  await target.scrollIntoViewIfNeeded();
+
+  const draggedBox = await dragged.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!draggedBox || !targetBox) {
+    throw new Error('Expected draggable tree rows to have bounding boxes');
+  }
+
+  const moveResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      response.url().includes(`/api/pages/${draggedId}/move`),
+  );
+
+  await page.mouse.move(draggedBox.x + draggedBox.width / 2, draggedBox.y + draggedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    draggedBox.x + draggedBox.width / 2 + 10,
+    draggedBox.y + draggedBox.height / 2 + 10,
+    { steps: 4 },
+  );
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + 2, { steps: 20 });
+  await expect(target.locator('.tree-node__drop-line--top')).toBeVisible();
+  await page.mouse.up();
+
+  expect((await moveResponse).ok()).toBe(true);
+}
+
+async function ensureSidebarOpen(page: Page): Promise<void> {
+  const toggle = page.getByTestId('sidebar-toggle-button');
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+    await toggle.click();
+  }
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
 
 function expectDraftState(page: ApiPage, draft: boolean, effectiveDraft: boolean) {
@@ -288,6 +372,156 @@ test.describe('inherited draft subtrees', () => {
     await page.goto(toAppPath(`/${movedPath}`));
     await expect(page.locator('article>h1')).toHaveText(child.title);
     await expect(page.locator('.page-viewer__subheader .draft-badge')).toHaveText('Draft');
+  });
+
+  test('viewer favorites never expose direct, inherited, or newly hidden drafts', async ({
+    page,
+    browser,
+  }) => {
+    await login(page);
+    const stamp = Date.now();
+    const directDraft = await createNode(page, {
+      title: `Favorite direct draft ${stamp}`,
+      slug: `favorite-direct-draft-${stamp}`,
+      draft: true,
+    });
+    const draftParent = await createNode(page, {
+      title: `Favorite draft parent ${stamp}`,
+      slug: `favorite-draft-parent-${stamp}`,
+      kind: 'section',
+      draft: true,
+    });
+    const inheritedDraft = await createNode(page, {
+      title: `Favorite inherited draft ${stamp}`,
+      slug: `favorite-inherited-draft-${stamp}`,
+      parentId: draftParent.id,
+    });
+    const published = await createNode(page, {
+      title: `Favorite published page ${stamp}`,
+      slug: `favorite-published-page-${stamp}`,
+    });
+    const viewerUsername = `draft-viewer-${stamp}`;
+    const viewerPassword = `viewer-password-${stamp}`;
+    await createUser(page, {
+      username: viewerUsername,
+      email: `${viewerUsername}@example.com`,
+      password: viewerPassword,
+      role: 'viewer',
+    });
+
+    expect(await requestStatus(page, `/api/pages/${directDraft.id}/favorite`, 'PUT')).toBe(200);
+    await expect.poll(() => getFavoritePageIds(page)).toContain(directDraft.id);
+
+    const viewerContext = await browser.newContext({ baseURL });
+    const viewerPage = await viewerContext.newPage();
+    try {
+      await loginAs(viewerPage, viewerUsername, viewerPassword);
+
+      expect(await requestStatus(viewerPage, `/api/pages/${directDraft.id}/favorite`, 'PUT')).toBe(
+        404,
+      );
+      expect(
+        await requestStatus(viewerPage, `/api/pages/${inheritedDraft.id}/favorite`, 'PUT'),
+      ).toBe(404);
+
+      const publishedRow = viewerPage.getByTestId(`tree-node-${published.id}`);
+      await publishedRow.hover();
+      const favoriteResponse = viewerPage.waitForResponse(
+        (response) =>
+          response.request().method() === 'PUT' &&
+          response.url().includes(`/api/pages/${published.id}/favorite`),
+      );
+      await publishedRow.getByTestId(`favorite-toggle-${published.id}`).click();
+      expect((await favoriteResponse).ok()).toBe(true);
+      await expect(
+        viewerPage.getByTestId('favorites-section').getByText(published.title, { exact: true }),
+      ).toBeVisible();
+
+      await setDraft(page, await getPageByPath(page, published.slug), true);
+      await viewerPage.reload();
+
+      await expect.poll(() => getFavoritePageIds(viewerPage)).not.toContain(published.id);
+      await expect(viewerPage.getByTestId('favorites-section')).toHaveCount(0);
+      await expect(viewerPage.getByTestId(`tree-node-${published.id}`)).toHaveCount(0);
+    } finally {
+      await viewerContext.close();
+    }
+  });
+
+  test('dragging an inherited draft to the public root keeps it private after restart', async ({
+    page,
+    browser,
+  }) => {
+    const containerName = process.env.E2E_CONTAINER_NAME;
+    test.skip(
+      !containerName,
+      'A real restart requires the default Docker E2E harness; local mode has no container.',
+    );
+
+    await login(page);
+    const stamp = Date.now();
+    const source = await createNode(page, {
+      title: `Drag draft source ${stamp}`,
+      slug: `drag-draft-source-${stamp}`,
+      kind: 'section',
+      draft: true,
+    });
+    const child = await createNode(page, {
+      title: `Dragged inherited child ${stamp}`,
+      slug: `dragged-inherited-child-${stamp}`,
+      parentId: source.id,
+    });
+    const publicTarget = await createNode(page, {
+      title: `Public root target ${stamp}`,
+      slug: `public-root-target-${stamp}`,
+    });
+
+    const originalChildPath = `${source.slug}/${child.slug}`;
+    await page.goto(toAppPath(`/${originalChildPath}`));
+    await expect(page.locator('article>h1')).toHaveText(child.title);
+    await ensureSidebarOpen(page);
+    await expect(page.getByTestId(`tree-node-${child.id}`)).toBeVisible();
+    await dragNodeBefore(page, child.id, publicTarget.id);
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe(toAppPath(`/${child.slug}`));
+    await expect(page.locator('article>h1')).toHaveText(child.title);
+    await expect
+      .poll(async () => {
+        const moved = await getPageByPath(page, child.slug);
+        return `${Boolean(moved.draft)}:${Boolean(moved.effectiveDraft)}:${moved.path}`;
+      })
+      .toBe(`true:true:${child.slug}`);
+    await expect(page.getByTestId(`tree-node-${child.id}`).getByText('Draft')).toBeVisible();
+
+    await execFileAsync('docker', ['restart', containerName!]);
+    await expect
+      .poll(
+        async () => {
+          try {
+            const response = await page.request.get(toAppPath('/api/health'));
+            return response.status();
+          } catch {
+            return 0;
+          }
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(200);
+
+    expectDraftState(await getPageByPath(page, child.slug), true, true);
+    const anonymous = await newAnonymousContext(browser);
+    try {
+      const response = await anonymous.request.get(
+        toAppPath(`/api/pages/by-path?path=${encodeURIComponent(child.slug)}`),
+      );
+      expect(response.status()).toBe(404);
+
+      const anonymousPage = await anonymous.newPage();
+      await anonymousPage.goto(toAppPath(`/${child.slug}`));
+      await new NotFoundPage(anonymousPage).expectVisible();
+    } finally {
+      await anonymous.close();
+    }
   });
 
   test('preserves section and inherited draft state after a server restart', async ({ page }) => {
