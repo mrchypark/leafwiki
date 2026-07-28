@@ -63,11 +63,12 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	if r.assetsDir != "" {
 		assetsFS := gin.Dir(r.assetsDir, false)
 		assetsGroup := ctx.Base.Group("/assets")
-		if opts.AuthDisabled {
+		switch {
+		case opts.AuthDisabled:
 			assetsGroup.Use(authmw.InjectPublicEditor(true))
-		} else if opts.PublicAccess {
+		case opts.PublicAccess:
 			assetsGroup.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
-		} else {
+		default:
 			assetsGroup.Use(
 				authmw.RequireAuth(r.authService, ctx.AuthCookies, false),
 			)

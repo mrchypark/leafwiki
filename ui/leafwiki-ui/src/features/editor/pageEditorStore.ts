@@ -294,7 +294,9 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       }
 
       if (!updatedPage) {
-        throw new Error('Page update returned no page.')
+        throw new Error(
+          i18next.t('pageEditor.contentNullFallback', { ns: 'editor' }),
+        )
       }
       applyServerPage(updatedPage)
 

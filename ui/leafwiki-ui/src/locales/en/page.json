@@ -21,7 +21,9 @@
     "descriptionSection": "Enter the title of the new section",
     "titleLabel": "Title",
     "titlePlaceholder": "{{item}} title",
-    "pathPrefix": "Path:"
+    "pathPrefix": "Path:",
+    "draft": "Draft",
+    "keepDraftWhenParentPublished": "Keep draft when parent is published"
   },
   "moveDialog": {
     "movedToast": "Page moved successfully",

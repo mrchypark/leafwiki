@@ -28,6 +28,10 @@
   "validation": {
     "failedToast": "Validation failed"
   },
+  "draft": {
+    "label": "Draft",
+    "inherited": "Inherited draft"
+  },
   "configLoad": {
     "fetchErrorFallback": "Could not load config: {{status}} {{statusText}}",
     "errorFallback": "Could not load configuration"

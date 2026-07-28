@@ -256,7 +256,9 @@ export function AddPageDialog({
                 onCheckedChange={(checked) => setDraft(checked === true)}
                 data-testid="add-page-draft-checkbox"
               />
-              {inheritedDraft ? 'Keep draft when parent is published' : 'Draft'}
+              {inheritedDraft
+                ? t('addDialog.keepDraftWhenParentPublished')
+                : t('addDialog.draft')}
             </label>
           </div>
         )}

@@ -148,10 +148,8 @@ export function PageFrontmatterPanel({
               : t('frontmatterPanel.published'),
         ]
       : []),
-    normalizedTags.length === 1 ? '1 tag' : `${normalizedTags.length} tags`,
-    editableFields.length === 1
-      ? '1 property'
-      : `${editableFields.length} properties`,
+    t('frontmatterPanel.tagCount', { count: normalizedTags.length }),
+    t('frontmatterPanel.propertyCount', { count: editableFields.length }),
   ]
 
   return (

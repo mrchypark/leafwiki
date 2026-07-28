@@ -172,9 +172,9 @@ describe('TreeNodeActionsMenu', () => {
     expect(
       screen.getByTestId('tree-view-action-button-move'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Copy Page')).toBeInTheDocument()
-    expect(screen.getByText('Add Page')).toBeInTheDocument()
-    expect(screen.getByText('Add Section')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuCopyPage')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuAddPage')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuAddSection')).toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('tree-view-action-button-rename'))
     expect(useDialogsStore.getState().dialogProps).toMatchObject({

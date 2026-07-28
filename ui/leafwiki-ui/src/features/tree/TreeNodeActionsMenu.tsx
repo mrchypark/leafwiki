@@ -320,6 +320,7 @@ export default function TreeNodeActionsMenu({
                   itemKind: node.kind,
                   title: node.title,
                   slug: node.slug,
+                  slugReadOnly: false,
                   onChange: handleRenamePage,
                 })
               }}
