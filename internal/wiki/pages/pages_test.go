@@ -4774,7 +4774,7 @@ func TestApplyPageRefactorUseCase_Move_RewritesLinksInSubPages(t *testing.T) {
 
 func TestUpdatePageUseCase_EmitsSuccessMetrics(t *testing.T) {
 	deps := newTestDeps(t)
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	orchestrator := pagesave.NewPageSaveOrchestrator(
 		metrics,
 		pagesave.NewLinkIndexSideEffect(deps.links, slog.Default(), metrics),
@@ -4817,7 +4817,7 @@ func TestUpdatePageUseCase_EmitsSuccessMetrics(t *testing.T) {
 
 func TestUpdatePageUseCase_EmitsFailureMetrics(t *testing.T) {
 	deps := newTestDeps(t)
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	updateUC := pages.NewUpdatePageUseCase(deps.tree, deps.slug, deps.orchestrator(), slog.Default(), metrics)
 
 	_, err := updateUC.Execute(context.Background(), pages.UpdatePageInput{
@@ -4843,7 +4843,7 @@ func TestUpdatePageUseCase_EmitsFailureMetrics(t *testing.T) {
 
 func TestApplyPageRefactorUseCase_EmitsRenameMetrics(t *testing.T) {
 	deps := newTestDeps(t)
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	orchestrator := pagesave.NewPageSaveOrchestrator(
 		metrics,
 		pagesave.NewLinkIndexSideEffect(deps.links, slog.Default(), metrics),
@@ -4914,7 +4914,7 @@ func TestApplyPageRefactorUseCase_EmitsRenameMetrics(t *testing.T) {
 
 func TestApplyPageRefactorUseCase_EmitsMoveMetrics(t *testing.T) {
 	deps := newTestDeps(t)
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	orchestrator := pagesave.NewPageSaveOrchestrator(
 		metrics,
 		pagesave.NewLinkIndexSideEffect(deps.links, slog.Default(), metrics),

@@ -16,6 +16,7 @@ const unmatchedRoute = "unmatched"
 // metrics used for first-pass API load testing.
 type HTTPMetrics struct {
 	registry              *prometheus.Registry
+	buildInfo             *prometheus.GaugeVec
 	requestsTotal         *prometheus.CounterVec
 	requestDuration       *prometheus.HistogramVec
 	requestsInFlight      prometheus.Gauge
@@ -30,11 +31,28 @@ type HTTPMetrics struct {
 	resyncDuration        *prometheus.HistogramVec
 	resyncRuns            *prometheus.CounterVec
 	resyncFailures        *prometheus.CounterVec
+	authLoginAttempts     *prometheus.CounterVec
+	authTOTPVerifications *prometheus.CounterVec
+	authSessions          *prometheus.CounterVec
+	authTOTPEnrollment    *prometheus.CounterVec
 	handler               http.Handler
 }
 
-func NewHTTPMetrics() *HTTPMetrics {
+// NewHTTPMetrics creates the Prometheus registry and metrics. version is
+// reported via the leafwiki_build_info gauge so it can be scraped alongside
+// runtime metrics.
+func NewHTTPMetrics(version string) *HTTPMetrics {
 	registry := prometheus.NewRegistry()
+
+	buildInfo := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "leafwiki",
+			Name:      "build_info",
+			Help:      "Build information, constant 1, labeled by version.",
+		},
+		[]string{"version"},
+	)
+	buildInfo.WithLabelValues(version).Set(1)
 
 	requestsTotal := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -168,7 +186,44 @@ func NewHTTPMetrics() *HTTPMetrics {
 		[]string{"result"},
 	)
 
+	authLoginAttempts := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "leafwiki",
+			Name:      "auth_login_attempts_total",
+			Help:      "Total number of login attempts by outcome.",
+		},
+		[]string{"outcome"},
+	)
+
+	authTOTPVerifications := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "leafwiki",
+			Name:      "auth_totp_verifications_total",
+			Help:      "Total number of TOTP/recovery-code verifications during login by result.",
+		},
+		[]string{"result"},
+	)
+
+	authSessions := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "leafwiki",
+			Name:      "auth_sessions_total",
+			Help:      "Total number of session lifecycle events by event type.",
+		},
+		[]string{"event"},
+	)
+
+	authTOTPEnrollment := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "leafwiki",
+			Name:      "auth_totp_enrollment_total",
+			Help:      "Total number of TOTP enrollment changes by event type.",
+		},
+		[]string{"event"},
+	)
+
 	registry.MustRegister(
+		buildInfo,
 		requestsTotal,
 		requestDuration,
 		requestsInFlight,
@@ -183,10 +238,15 @@ func NewHTTPMetrics() *HTTPMetrics {
 		resyncDuration,
 		resyncRuns,
 		resyncFailures,
+		authLoginAttempts,
+		authTOTPVerifications,
+		authSessions,
+		authTOTPEnrollment,
 	)
 
 	return &HTTPMetrics{
 		registry:              registry,
+		buildInfo:             buildInfo,
 		requestsTotal:         requestsTotal,
 		requestDuration:       requestDuration,
 		requestsInFlight:      requestsInFlight,
@@ -201,6 +261,10 @@ func NewHTTPMetrics() *HTTPMetrics {
 		resyncDuration:        resyncDuration,
 		resyncRuns:            resyncRuns,
 		resyncFailures:        resyncFailures,
+		authLoginAttempts:     authLoginAttempts,
+		authTOTPVerifications: authTOTPVerifications,
+		authSessions:          authSessions,
+		authTOTPEnrollment:    authTOTPEnrollment,
 		handler:               promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
 	}
 }
@@ -284,6 +348,34 @@ func (m *HTTPMetrics) ObserveResyncRun(err error, started time.Time) {
 	if err != nil {
 		m.resyncFailures.WithLabelValues(result).Inc()
 	}
+}
+
+func (m *HTTPMetrics) IncAuthLoginAttempt(outcome string) {
+	if m == nil {
+		return
+	}
+	m.authLoginAttempts.WithLabelValues(outcome).Inc()
+}
+
+func (m *HTTPMetrics) IncAuthTOTPVerification(result string) {
+	if m == nil {
+		return
+	}
+	m.authTOTPVerifications.WithLabelValues(result).Inc()
+}
+
+func (m *HTTPMetrics) IncAuthSession(event string) {
+	if m == nil {
+		return
+	}
+	m.authSessions.WithLabelValues(event).Inc()
+}
+
+func (m *HTTPMetrics) IncAuthTOTPEnrollment(event string) {
+	if m == nil {
+		return
+	}
+	m.authTOTPEnrollment.WithLabelValues(event).Inc()
 }
 
 func resultLabel(err error) string {

@@ -24,9 +24,11 @@ import {
 import { getEventCoordinates } from '@dnd-kit/utilities'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { useLocation, useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { TreeDndContext } from './treeDndContext'
+import i18next from '@/lib/i18n'
+import { useTreeDndStore } from './treeDndStore'
 import {
   buildOrderedIds,
   collectSubtreeIds,
@@ -49,22 +51,39 @@ function offerConvertBackToPage(parentId: string) {
   if (!parent || parent.kind !== NODE_KIND_SECTION) return
   if ((parent.children?.length ?? 0) > 0) return
 
-  toast(`"${parent.title}" is now an empty section`, {
-    action: {
-      label: 'Convert back to page',
-      onClick: () => {
-        const node = useTreeStore.getState().byId[parentId]
-        if (!node) return
-        convertPage(parentId, NODE_KIND_PAGE, node.version)
-          .then(() => useTreeStore.getState().reloadTree({ silent: true }))
-          .then(() => toast.success(`"${node.title}" is a page again`))
-          .catch((err) => {
-            console.warn(err)
-            toast.error('Failed to convert section back to page')
-          })
+  toast(
+    i18next.t('treeActions.emptySectionToast', {
+      ns: 'viewer',
+      title: parent.title,
+    }),
+    {
+      action: {
+        label: i18next.t('treeActions.convertBackAction', { ns: 'viewer' }),
+        onClick: () => {
+          const node = useTreeStore.getState().byId[parentId]
+          if (!node) return
+          convertPage(parentId, NODE_KIND_PAGE, node.version)
+            .then(() => useTreeStore.getState().reloadTree({ silent: true }))
+            .then(() =>
+              toast.success(
+                i18next.t('treeActions.convertedBackToast', {
+                  ns: 'viewer',
+                  title: node.title,
+                }),
+              ),
+            )
+            .catch((err) => {
+              console.warn(err)
+              toast.error(
+                i18next.t('treeActions.convertBackErrorFallback', {
+                  ns: 'viewer',
+                }),
+              )
+            })
+        },
       },
     },
-  })
+  )
 }
 
 // Keeps the overlay chip attached to the cursor (12px right of it,
@@ -133,10 +152,10 @@ export function TreeDndProvider({
   enabled: boolean
   children: React.ReactNode
 }) {
+  const { t } = useTranslation('viewer')
   const location = useLocation()
   const navigate = useNavigate()
   const [activeNode, setActiveNode] = useState<PageNode | null>(null)
-  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
   const [saving, setSaving] = useState(false)
   const subtreeIdsRef = useRef<Set<string>>(new Set())
   const expandTimerRef = useRef<{ nodeId: string; timer: number } | null>(null)
@@ -164,6 +183,10 @@ export function TreeDndProvider({
 
   useEffect(() => disarmClickSuppression, [])
 
+  useEffect(() => {
+    useTreeDndStore.setState({ enabled: enabled && !saving })
+  }, [enabled, saving])
+
   const sensors = useSensors(
     // Distance threshold keeps plain clicks navigating; on touch a long
     // press starts the drag so the tree still scrolls normally.
@@ -182,15 +205,15 @@ export function TreeDndProvider({
 
   const resetDragState = () => {
     setActiveNode(null)
-    setDropTarget(null)
+    useTreeDndStore.setState({ activeId: null, dropTarget: null })
     subtreeIdsRef.current = new Set()
     clearExpandTimer()
   }
 
   const updateDropTarget = (next: DropTarget | null) => {
-    setDropTarget((prev) =>
-      prev?.nodeId === next?.nodeId && prev?.zone === next?.zone ? prev : next,
-    )
+    const prev = useTreeDndStore.getState().dropTarget
+    if (prev?.nodeId === next?.nodeId && prev?.zone === next?.zone) return
+    useTreeDndStore.setState({ dropTarget: next })
   }
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -198,6 +221,7 @@ export function TreeDndProvider({
     if (!node) return
     armClickSuppression()
     setActiveNode(node)
+    useTreeDndStore.setState({ activeId: node.id })
     subtreeIdsRef.current = collectSubtreeIds(node)
   }
 
@@ -259,7 +283,7 @@ export function TreeDndProvider({
         await reloadTree({ silent: true })
       } catch (err) {
         console.warn(err)
-        toast.error('Failed to reorder pages')
+        toast.error(t('treeActions.reorderErrorFallback'))
         await reloadTree({ silent: true })
       } finally {
         setSaving(false)
@@ -288,7 +312,7 @@ export function TreeDndProvider({
       }
     } catch (err) {
       console.warn(err)
-      toast.error('Failed to move page')
+      toast.error(t('treeActions.moveErrorFallback'))
       await reloadTree({ silent: true })
     } finally {
       setSaving(false)
@@ -299,7 +323,7 @@ export function TreeDndProvider({
     scheduleClickSuppressionDisarm()
 
     const dragged = event.active.data.current?.node as PageNode | undefined
-    const target = dropTarget
+    const target = useTreeDndStore.getState().dropTarget
     resetDragState()
 
     if (!dragged || !target) return
@@ -321,41 +345,34 @@ export function TreeDndProvider({
   }
 
   return (
-    <TreeDndContext.Provider
-      value={{
-        enabled: enabled && !saving,
-        activeId: activeNode?.id ?? null,
-        dropTarget,
+    <DndContext
+      sensors={sensors}
+      collisionDetection={pointerWithin}
+      autoScroll={{ threshold: { x: 0, y: 0.2 } }}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEnd}
+      onDragCancel={() => {
+        scheduleClickSuppressionDisarm()
+        resetDragState()
       }}
     >
-      <DndContext
-        sensors={sensors}
-        collisionDetection={pointerWithin}
-        autoScroll={{ threshold: { x: 0, y: 0.2 } }}
-        onDragStart={handleDragStart}
-        onDragMove={handleDragMove}
-        onDragEnd={handleDragEnd}
-        onDragCancel={() => {
-          scheduleClickSuppressionDisarm()
-          resetDragState()
-        }}
-      >
-        {children}
-        {/* Portaled to <body>: the sidebar panel animates via a CSS
-            transform, which would otherwise become the containing block
-            for the fixed-positioned overlay and offset it from the
-            cursor. */}
-        {createPortal(
-          <DragOverlay dropAnimation={null} modifiers={[followCursor]}>
-            {activeNode ? (
-              <div className="tree-dnd__overlay">
-                {activeNode.title || 'Untitled Page'}
-              </div>
-            ) : null}
-          </DragOverlay>,
-          document.body,
-        )}
-      </DndContext>
-    </TreeDndContext.Provider>
+      {children}
+      {/* Portaled to <body>: the sidebar panel animates via a CSS
+          transform, which would otherwise become the containing block
+          for the fixed-positioned overlay and offset it from the
+          cursor. */}
+      {createPortal(
+        <DragOverlay dropAnimation={null} modifiers={[followCursor]}>
+          {activeNode ? (
+            <div className="tree-dnd__overlay">
+              {activeNode.title ||
+                i18next.t('treeActions.untitledPage', { ns: 'viewer' })}
+            </div>
+          ) : null}
+        </DragOverlay>,
+        document.body,
+      )}
+    </DndContext>
   )
 }

@@ -59,6 +59,7 @@ func (e *LinkIndexSideEffect) Apply(event PageSaveEvent) {
 			if event.After != nil {
 				e.updateAndHeal(event.After, event.Operation)
 			}
+			e.healExact(event.After, event.Operation)
 		}
 		if !event.DraftChanged && !event.SlugChanged && event.TitleChanged {
 			e.reconcileChangedTitles(event)

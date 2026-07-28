@@ -1,15 +1,18 @@
 import TreeView from '@/features/tree/TreeView'
+import i18next from '@/lib/i18n'
 import { DialogRegistry } from '@/lib/registries/dialogRegistry'
 import { PanelItemRegistry } from '@/lib/registries/panelItemRegistry'
 import { getShortcutDefinition } from '@/lib/shortcuts/shortcutCatalog'
 import { FolderTree, Search as SearchIcon } from 'lucide-react'
 import {
   AddPageDialog,
+  ApiKeyFormDialog,
   AssetManagerDialog,
   ChangeOwnPasswordDialog,
   ChangePasswordDialog,
   CopyPageDialog,
   CreatePageByPathDialog,
+  DeleteApiKeyDialog,
   DeletePageDialog,
   DeleteUserDialog,
   EditPageMetadataDialog,
@@ -23,6 +26,8 @@ import {
   Search,
   ShortcutsDialog,
   SortPagesDialog,
+  TOTPDisableDialog,
+  TOTPSetupDialog,
   UnsavedChangesDialog,
   UserFormDialog,
   WikiLinkDisambiguationDialog,
@@ -38,7 +43,7 @@ export const SIDEBAR_SEARCH_PANEL_ID = 'search'
 
 panelItemRegistry.register({
   id: SIDEBAR_TREE_PANEL_ID,
-  label: 'Explorer',
+  label: i18next.t('sidebar.explorerTab', { ns: 'common' }),
   hotkey: getShortcutDefinition('sidebar.explorer.open').keyCombo,
   modes: ['view', 'edit', 'history', 'settings', 'user-management'],
   icon: () => <FolderTree size={16} />,
@@ -49,7 +54,7 @@ panelItemRegistry.register({
 
 panelItemRegistry.register({
   id: SIDEBAR_SEARCH_PANEL_ID,
-  label: 'Search',
+  label: i18next.t('sidebar.searchTab', { ns: 'common' }),
   hotkey: getShortcutDefinition('sidebar.search.open').keyCombo,
   modes: ['view', 'edit', 'history', 'settings', 'user-management'],
   icon: () => <SearchIcon size={16} />,
@@ -70,9 +75,13 @@ export const DIALOG_EDIT_PAGE_METADATA = 'edit-page-metadata'
 export const DIALOG_ASSET_MANAGER = 'asset-manager'
 export const DIALOG_DELETE_PAGE_CONFIRMATION = 'delete-page-confirmation'
 export const DIALOG_CHANGE_OWN_PASSWORD = 'change-own-password'
+export const DIALOG_TOTP_SETUP = 'totp-setup'
+export const DIALOG_TOTP_DISABLE = 'totp-disable'
 export const DIALOG_USER_FORM = 'user-form'
 export const DIALOG_CHANGE_USER_PASSWORD = 'change-user-password'
 export const DIALOG_DELETE_USER_CONFIRMATION = 'delete-user-confirmation'
+export const DIALOG_API_KEY_FORM = 'api-key-form'
+export const DIALOG_DELETE_API_KEY_CONFIRMATION = 'delete-api-key-confirmation'
 export const DIALOG_UNSAVED_CHANGES = 'unsaved-changes'
 export const DIALOG_IMAGE_PREVIEW = 'image-preview'
 export const DIALOG_PAGE_QUICK_SWITCHER = 'page-quick-switcher'
@@ -188,6 +197,20 @@ dialogRegistry.register({
 })
 
 dialogRegistry.register({
+  type: DIALOG_TOTP_SETUP,
+  render: () => {
+    return <TOTPSetupDialog key={DIALOG_TOTP_SETUP} />
+  },
+})
+
+dialogRegistry.register({
+  type: DIALOG_TOTP_DISABLE,
+  render: () => {
+    return <TOTPDisableDialog key={DIALOG_TOTP_DISABLE} />
+  },
+})
+
+dialogRegistry.register({
   type: DIALOG_USER_FORM,
   render: (props) => {
     return (
@@ -218,6 +241,25 @@ dialogRegistry.register({
       <DeleteUserDialog
         key={DIALOG_DELETE_USER_CONFIRMATION}
         {...(props as React.ComponentProps<typeof DeleteUserDialog>)}
+      />
+    )
+  },
+})
+
+dialogRegistry.register({
+  type: DIALOG_API_KEY_FORM,
+  render: () => {
+    return <ApiKeyFormDialog key={DIALOG_API_KEY_FORM} />
+  },
+})
+
+dialogRegistry.register({
+  type: DIALOG_DELETE_API_KEY_CONFIRMATION,
+  render: (props) => {
+    return (
+      <DeleteApiKeyDialog
+        key={DIALOG_DELETE_API_KEY_CONFIRMATION}
+        {...(props as React.ComponentProps<typeof DeleteApiKeyDialog>)}
       />
     )
   },

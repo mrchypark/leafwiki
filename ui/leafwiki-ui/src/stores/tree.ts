@@ -4,6 +4,7 @@ import {
   NODE_KIND_SECTION,
   PageNode,
 } from '@/lib/api/pages'
+import i18next from '@/lib/i18n'
 import { FlatPageSearchItem, buildFlatPageSearchItems } from '@/lib/pageSearch'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
@@ -233,7 +234,7 @@ export const useTreeStore = create<TreeStore>()(
 
         const node = clonedById[nodeId]
         const target = clonedById[targetParentId]
-        const oldParent = clonedById[node?.parentId ?? 'root']
+        const oldParent = node?.parentId ? clonedById[node.parentId] : null
         if (!node || !target || !oldParent?.children) return
 
         const oldIndex = oldParent.children.findIndex((c) => c.id === nodeId)
@@ -307,7 +308,9 @@ export const useTreeStore = create<TreeStore>()(
           if (err instanceof Error) {
             set({ error: err.message })
           } else {
-            set({ error: 'An unknown error occurred' })
+            set({
+              error: i18next.t('common.unknownError', { ns: 'page' }),
+            })
           }
         } finally {
           if (!signal.aborted) set({ loading: false })

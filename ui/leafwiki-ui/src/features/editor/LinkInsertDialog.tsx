@@ -16,6 +16,7 @@ import { useDialogsStore } from '@/stores/dialogs'
 import { HotKeyDefinition, useHotKeysStore } from '@/stores/hotkeys'
 import { useTreeStore } from '@/stores/tree'
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { MarkdownEditorRef } from './MarkdownEditor'
 
 const EXTERNAL_PREFIXES = ['http', 'https', 'mailto']
@@ -37,6 +38,7 @@ export function LinkInsertDialog({
   editorRef,
   selectedText,
 }: LinkInsertDialogProps) {
+  const { t } = useTranslation('editor')
   const closeDialog = useDialogsStore((s) => s.closeDialog)
   const open = useDialogsStore((s) => s.dialogType === DIALOG_LINK_INSERT)
   const registerHotkey = useHotKeysStore((s) => s.registerHotkey)
@@ -111,31 +113,33 @@ export function LinkInsertDialog({
     >
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Insert Link</DialogTitle>
+          <DialogTitle>{t('linkInsertDialog.dialogTitle')}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="link-text">Display Text</Label>
+            <Label htmlFor="link-text">
+              {t('linkInsertDialog.displayTextLabel')}
+            </Label>
             <Input
               id="link-text"
               ref={textInputRef}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="Link text"
+              placeholder={t('linkInsertDialog.textPlaceholder')}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleConfirm()
               }}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="link-url">URL</Label>
+            <Label htmlFor="link-url">{t('linkInsertDialog.urlLabel')}</Label>
             <div className="relative">
               <Input
                 id="link-url"
                 ref={urlInputRef}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https:// or search pages…"
+                placeholder={t('linkInsertDialog.urlPlaceholder')}
                 onFocus={() => setUrlFocused(true)}
                 onBlur={() => setTimeout(() => setUrlFocused(false), 150)}
                 onKeyDown={(e) => {
@@ -190,9 +194,11 @@ export function LinkInsertDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={closeDialog}>
-            Cancel
+            {t('linkInsertDialog.cancelButton')}
           </Button>
-          <Button onClick={handleConfirm}>Insert</Button>
+          <Button onClick={handleConfirm}>
+            {t('linkInsertDialog.insertButton')}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

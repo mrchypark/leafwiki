@@ -45,6 +45,7 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
   - [Security](#security)
   - [Operations notes](#operations-notes)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
+- [External Edits & Resync](#external-edits--resync)
 - [Sorting Pages](#sorting-pages)
 - [Support this project](#support-this-project)
 - [Contributing](#contributing)
@@ -59,6 +60,7 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
 - Runs on Linux, macOS, Windows, Raspberry Pi (x86_64 and ARM64)
 - Reverse-proxy friendly with `--base-path`
 - Reverse-proxy authentication via trusted HTTP header (v0.10+)
+- API keys for programmatic and agent access, admin-managed, read-only, experimental/opt-in
 - Three access modes: fully internal, public read with login-only editing, or open editing without login (see [Operating Modes](#operating-modes))
 - Roles: admin, editor, viewer
 
@@ -326,6 +328,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `--enable-revision`              | Enable revision history                                                 | `false`       | v0.9.0  |
 | `--enable-link-refactor`         | Enable link rewriting on rename/move                                    | `false`       | v0.9.0  |
 | `--max-revision-history`         | Max revisions per page; `0` = unlimited                                 | `100`         | v0.9.0  |
+| `--revision-coalesce-window`     | Window for coalescing rapid successive auto-save revisions by the same author; `0` = disabled | `5m` | v0.11.0 |
 | `--enable-http-remote-user`      | Enable reverse-proxy auth via HTTP header                               | `false`       | v0.10.0 |
 | `--http-remote-user-header-name` | Header name carrying the username from the proxy                        | `Remote-User` | v0.10.0 |
 | `--trusted-proxy-ips`            | Trusted proxy IPs/CIDRs for remote-user header                          | `""`          | v0.10.0 |
@@ -333,6 +336,16 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `--logout-url`                   | Redirect to an external URL after logout                                | `""`          | v0.12.0 |
 | `--http-remote-user-logout-url`  | ⚠️ Deprecated, use `--logout-url` instead                               | `""`          | v0.10.0 |
 | `--disable-request-log`          | Suppress per-request HTTP access log lines                              | `false`       | v0.10.1 |
+| `--log-format`                   | Log output format: `text` or `json`                                     | `text`        | v0.12.0 |
+| `--totp-encryption-key`          | Key to encrypt per-user TOTP secrets at rest (min 32 bytes); required only once a user enables TOTP | `""` | v0.12.0 |
+| `--enable-metrics`               | Enable the Prometheus `/metrics` endpoint on a separate listener        | `false`       | v0.12.0 |
+| `--metrics-host`                 | Host/IP for the metrics listener                                       | `127.0.0.1`   | v0.12.0 |
+| `--metrics-port`                 | Port for the metrics listener                                          | `9091`        | v0.12.0 |
+| `--snapshot`                     | Enable full backup snapshots (ZIP incl. the SQLite database)           | `true`        | v0.12.0 |
+| `--snapshot-interval`            | Snapshot interval (e.g. `24h`, `6h`); `0` = manual-only                 | `24h`         | v0.12.0 |
+| `--snapshot-retention`           | Number of most recent snapshots to keep; `<= 0` = keep all             | `10`          | v0.12.0 |
+| `--snapshot-dir`                 | Directory to store snapshot ZIPs in                                     | `<data-dir>/snapshots` | v0.12.0 |
+| `--restore-upload-max-size`      | Max size for an uploaded backup ZIP to restore from                    | `500MiB`      | v0.12.0 |
 | `--git-backup`                   | ⚗️ Enable git backup to a remote repository                             | `false`       | v0.11.3 |
 | `--git-backup-remote`            | ⚗️ SSH remote URL for git backup (e.g. `git@github.com:user/repo.git`) | `""`          | v0.11.3 |
 | `--git-backup-branch`            | ⚗️ Branch to push to                                                    | `main`        | v0.11.3 |
@@ -370,6 +383,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `LEAFWIKI_ENABLE_REVISION`              | Revision history                                     | `false`       | v0.9.0  |
 | `LEAFWIKI_ENABLE_LINK_REFACTOR`         | Link rewriting on rename/move                        | `false`       | v0.9.0  |
 | `LEAFWIKI_MAX_REVISION_HISTORY`         | Max revisions per page; `0` = unlimited              | `100`         | v0.9.0  |
+| `LEAFWIKI_REVISION_COALESCE_WINDOW`     | Window for coalescing rapid successive auto-save revisions; `0` = disabled | `5m` | v0.11.0 |
 | `LEAFWIKI_ENABLE_HTTP_REMOTE_USER`      | Reverse-proxy auth via header                        | `false`       | v0.10.0 |
 | `LEAFWIKI_HTTP_REMOTE_USER_HEADER_NAME` | Username header from proxy                           | `Remote-User` | v0.10.0 |
 | `LEAFWIKI_TRUSTED_PROXY_IPS`            | Trusted proxy IPs/CIDRs                              | `""`          | v0.10.0 |
@@ -377,6 +391,17 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `LEAFWIKI_LOGOUT_URL`                   | Redirect to an external URL after logout             | `""`          | v0.12.0 |
 | `LEAFWIKI_HTTP_REMOTE_USER_LOGOUT_URL`  | ⚠️ Deprecated, use `LEAFWIKI_LOGOUT_URL` instead     | `""`          | v0.10.0 |
 | `LEAFWIKI_DISABLE_REQUEST_LOG`          | Suppress per-request HTTP access log lines           | `false`       | v0.10.1 |
+| `LEAFWIKI_LOG_FORMAT`                   | Log output format: `text` or `json`                  | `text`        | v0.12.0 |
+| `LEAFWIKI_LOG_LEVEL`                    | Log level: `debug`, `info`, `warn`, `error` (env-var only, no CLI flag) | `info` | v0.8.0  |
+| `LEAFWIKI_TOTP_ENCRYPTION_KEY`          | Key to encrypt per-user TOTP secrets at rest (min 32 bytes) | `""`    | v0.12.0 |
+| `LEAFWIKI_ENABLE_METRICS`               | Enable the Prometheus `/metrics` endpoint            | `false`       | v0.12.0 |
+| `LEAFWIKI_METRICS_HOST`                 | Host/IP for the metrics listener                     | `127.0.0.1`   | v0.12.0 |
+| `LEAFWIKI_METRICS_PORT`                 | Port for the metrics listener                        | `9091`        | v0.12.0 |
+| `LEAFWIKI_SNAPSHOT`                     | Enable full backup snapshots                         | `true`        | v0.12.0 |
+| `LEAFWIKI_SNAPSHOT_INTERVAL`            | Snapshot interval; `0` = manual-only                 | `24h`         | v0.12.0 |
+| `LEAFWIKI_SNAPSHOT_RETENTION`           | Number of most recent snapshots to keep; `<= 0` = keep all | `10`   | v0.12.0 |
+| `LEAFWIKI_SNAPSHOT_DIR`                 | Directory to store snapshot ZIPs in                  | `<data-dir>/snapshots` | v0.12.0 |
+| `LEAFWIKI_RESTORE_UPLOAD_MAX_SIZE`      | Max size for an uploaded backup ZIP to restore from  | `500MiB`      | v0.12.0 |
 | `LEAFWIKI_GIT_BACKUP`                   | ⚗️ Enable git backup                                | `false`       | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_REMOTE`            | ⚗️ SSH remote URL                                   | `""`          | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_BRANCH`            | ⚗️ Branch to push to                                | `main`        | v0.11.3 |
@@ -422,7 +447,7 @@ Available since v0.10.0. Use when an upstream proxy authenticates users and forw
 - If the forwarded username doesn't exist in LeafWiki, the request is rejected
 - Do not enable without configuring `--trusted-proxy-ips`
 - `--login-url` and `--logout-url` are independent, optional redirect targets — set either or both to send users to an external IdP instead of the built-in login form / to redirect after logout
-- `--login-url` and `--logout-url` must start with `http://` or `https://`; the server refuses to start otherwise. `--user-management-url` has no such restriction — it's only used as a link, so relative paths work too
+- `--login-url`, `--logout-url`, and `--user-management-url` must all start with `http://` or `https://`; the server refuses to start otherwise (relative paths are not accepted for any of them)
 - ⚠️ `--login-url` takes effect regardless of `--enable-http-remote-user` and has no in-app bypass: once set, *every* unauthenticated visit (including `/login` itself) redirects to it immediately. Double-check the URL before setting it — a wrong or unreachable value locks all users, including admins, out of the built-in login form
 - `--http-remote-user-logout-url` (v0.10.0) is deprecated; use `--logout-url` instead. It still works as a fallback when `--logout-url`/`LEAFWIKI_LOGOUT_URL` isn't set, but a deprecation warning is logged
 
@@ -544,6 +569,19 @@ For most setups, prefer `--public-access` for read-only public access and the vi
 
 `Ctrl+V` / `Cmd+V` for pasting images and files works in the editor.  
 `Esc` closes modals, dialogs, and edit mode.
+
+---
+
+## External Edits & Resync
+
+If you edit Markdown files directly on disk — a text editor, Git, a script, a bulk import — LeafWiki won't pick up the changes on its own. Trigger a resync one of two ways:
+
+- **Admin UI:** trigger it manually from the maintenance/admin settings page, with live progress across four phases (tree, links, tags, search).
+- **OS signal:** send `SIGUSR1` or `SIGHUP` to the running process (e.g., from a git post-receive hook or a cron job) — no restart needed.
+
+Both paths share the same resync job, so either way you get the same consistent result. This is separate from `.leafwikiignore` changes, which are only read at startup.
+
+**New files without a `leafwiki_id`:** every page's identity lives in a `leafwiki_id` field in its own frontmatter, not in its filename or path — that's what lets pages survive renames and moves without losing their identity. If you add a `.md` file yourself (not created through the app) and it has no `leafwiki_id` yet, the next resync generates one and **writes it back into the file on disk**. This is automatic and requires no action from you, but it does mean the file changes on disk after the resync — worth knowing if you manage `root/` with your own separate Git workflow (outside LeafWiki's built-in [Git Backup](#git-backup-v0113-experimental)), since that ID write-back will show up as an extra diff you didn't make yourself.
 
 ---
 

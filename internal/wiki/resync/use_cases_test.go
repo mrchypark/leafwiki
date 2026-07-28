@@ -28,7 +28,7 @@ func metricsBody(t *testing.T, metrics *httpmetrics.HTTPMetrics) string {
 func TestTriggerResyncUseCase_Execute_LaunchesTrigger(t *testing.T) {
 	job := NewResyncJob()
 	called := false
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	uc := NewTriggerResyncUseCase(job, func() { called = true }, metrics)
 
 	if err := uc.Execute(context.Background()); err != nil {
@@ -46,7 +46,7 @@ func TestTriggerResyncUseCase_Execute_ReturnsLocalizedErrorWhenAlreadyRunning(t 
 	job := NewResyncJob()
 	job.Start() // simulate running
 
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	uc := NewTriggerResyncUseCase(job, func() { t.Error("trigger must not be called") }, metrics)
 	err := uc.Execute(context.Background())
 

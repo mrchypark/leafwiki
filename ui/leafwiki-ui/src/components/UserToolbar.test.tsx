@@ -8,7 +8,7 @@ import { useDialogsStore } from '@/stores/dialogs'
 import { useSessionStore } from '@/stores/session'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('UserToolbar', () => {
@@ -29,6 +29,7 @@ describe('UserToolbar', () => {
       loginUrl: '',
       logoutUrl: '',
       userManagementUrl: '',
+      totpAvailable: false,
     })
     useBackupStore.setState({ enabled: false })
     useSessionStore.setState({
@@ -37,6 +38,7 @@ describe('UserToolbar', () => {
         username: 'alice',
         email: 'alice@example.com',
         role: 'editor',
+        totpEnabled: false,
       },
     })
   })
@@ -111,6 +113,7 @@ describe('UserToolbar', () => {
           username: 'bob',
           email: 'bob@example.com',
           role: 'viewer',
+          totpEnabled: false,
         },
       })
     })
@@ -288,6 +291,69 @@ describe('UserToolbar', () => {
     })
   })
 
+  describe('totp menu item', () => {
+    it('does not show "enable two-factor authentication" when totp is not available on the server', async () => {
+      const user = userEvent.setup()
+      useConfigStore.setState({ totpAvailable: false })
+
+      render(
+        <MemoryRouter>
+          <UserToolbar />
+        </MemoryRouter>,
+      )
+
+      const avatar = screen.getByTestId('user-toolbar-avatar')
+      await user.click(avatar.closest('button') as HTMLButtonElement)
+
+      expect(
+        screen.queryByTestId('user-toolbar-totp-enable'),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows "enable two-factor authentication" when totp is available on the server', async () => {
+      const user = userEvent.setup()
+      useConfigStore.setState({ totpAvailable: true })
+
+      render(
+        <MemoryRouter>
+          <UserToolbar />
+        </MemoryRouter>,
+      )
+
+      const avatar = screen.getByTestId('user-toolbar-avatar')
+      await user.click(avatar.closest('button') as HTMLButtonElement)
+
+      expect(screen.getByTestId('user-toolbar-totp-enable')).toBeInTheDocument()
+    })
+
+    it('still shows "disable two-factor authentication" for a user who already has it enabled, even when totpAvailable is false', async () => {
+      const user = userEvent.setup()
+      useConfigStore.setState({ totpAvailable: false })
+      useSessionStore.setState({
+        user: {
+          id: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          role: 'editor',
+          totpEnabled: true,
+        },
+      })
+
+      render(
+        <MemoryRouter>
+          <UserToolbar />
+        </MemoryRouter>,
+      )
+
+      const avatar = screen.getByTestId('user-toolbar-avatar')
+      await user.click(avatar.closest('button') as HTMLButtonElement)
+
+      expect(
+        screen.getByTestId('user-toolbar-totp-disable'),
+      ).toBeInTheDocument()
+    })
+  })
+
   describe('user management link', () => {
     beforeEach(() => {
       useSessionStore.setState({
@@ -296,6 +362,7 @@ describe('UserToolbar', () => {
           username: 'admin',
           email: 'admin@example.com',
           role: 'admin',
+          totpEnabled: false,
         },
       })
     })

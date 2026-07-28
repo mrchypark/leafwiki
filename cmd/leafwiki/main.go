@@ -23,13 +23,25 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/gin-gonic/gin"
 	"github.com/perber/wiki/internal/backup"
+	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/tools"
 	httpinternal "github.com/perber/wiki/internal/http"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
+	"github.com/perber/wiki/internal/restore"
+	"github.com/perber/wiki/internal/snapshot"
 	"github.com/perber/wiki/internal/wiki"
 	wikibackup "github.com/perber/wiki/internal/wiki/backup"
+	wikirestore "github.com/perber/wiki/internal/wiki/restore"
+	wikisnapshot "github.com/perber/wiki/internal/wiki/snapshot"
 )
+
+// Version is the LeafWiki build version. It defaults to "dev" for local/unset
+// builds; release builds can inject the real version the same way Dockerfile
+// already injects internal/http.Environment, e.g.
+// -ldflags "-X main.Version=v0.12.0".
+var Version = "dev"
 
 const (
 	gitBackupSSHKeyFlagName = "git-backup-ssh-key"
@@ -43,9 +55,11 @@ func writeUsage(w io.Writer) {
 	leafwiki --jwt-secret <SECRET> --admin-password <PASSWORD> [--host <HOST>] [--port <PORT>] [--unix-socket <PATH>] [--data-dir <DIR>]
 	leafwiki --disable-auth [--host <HOST>] [--port <PORT>] [--unix-socket <PATH>] [--data-dir <DIR>]
 	leafwiki reset-admin-password
+	leafwiki [--data-dir <DIR>] restore-snapshot <path-to-zip>
 	leafwiki --help
 
 	Options:
+	--log-format       Log output format: text or json (default: text)
 	--host             Host/IP address to bind the server to (default: 127.0.0.1)
 	--port             Port to run the server on (default: 8080)
 	--unix-socket      Path to a unix domain socket to listen on (overrides --host and --port)
@@ -54,6 +68,9 @@ func writeUsage(w io.Writer) {
 	--admin-username   Initial admin username (used only if no admin exists) (default: admin)
 	--admin-email      Initial admin email (used only if no admin exists) (default: admin@localhost)
 	--jwt-secret       Secret for signing auth tokens (JWT) (required)
+	--totp-encryption-key    Key to encrypt per-user TOTP secrets at rest, min 32 bytes
+	                         (required only once a user enables TOTP; leave unset to keep
+	                         TOTP self-service unavailable) (default: "")
 	--public-access    Allow public access to the wiki only with read access (default: false)
 	--allow-insecure   Allow insecure HTTP connections (default: false)                      
 	--access-token-timeout  Access token timeout duration (e.g. 24h, 15m) (default: 15m)
@@ -68,6 +85,7 @@ func writeUsage(w io.Writer) {
 	--max-asset-upload-size       Maximum size for asset uploads (for example 50MiB, 50MB, 52428800) (default: 50MiB)
 	--enable-revision             Enable the revision / page history feature (default: false)
 	--enable-link-refactor        Enable the link refactoring dialog and rewrite flow (default: false)
+	--enable-api-key-management   Enable the experimental API key management feature (default: false)
 	--enable-metrics              Enable the Prometheus /metrics endpoint on a separate listener (default: false)
 	--metrics-host                Host/IP for the metrics listener (default: 127.0.0.1)
 	--metrics-port                Port for the metrics listener (default: 9091)
@@ -93,6 +111,18 @@ func writeUsage(w io.Writer) {
 	--git-backup-ssh-key           Raw SSH private key for git backup (env var preferred)
 	--git-backup-ssh-known-hosts   Path to known_hosts file for SSH host key verification (MITM protection)
 	--git-backup-interval          Git backup interval (e.g. 60m, 2h); 0 = manual-only, no automatic scheduling (default: 60m)
+	--snapshot                     Enable full backup snapshots (ZIP incl. the SQLite database) (default: true)
+	--snapshot-interval            Snapshot interval (e.g. 24h, 6h); 0 = manual-only, no automatic scheduling (default: 24h)
+	--snapshot-retention           Number of most recent snapshots to keep; <= 0 = keep all (default: 10)
+	--snapshot-dir                 Directory to store snapshot ZIPs in (default: <data-dir>/snapshots)
+	--restore-upload-max-size      Maximum size for an uploaded backup ZIP to restore from
+	                               (for example 500MiB, 500MB, 524288000) (default: 500MiB)
+	                               When --snapshot is enabled, live restore-from-snapshot is also available
+	                               via the admin UI (Settings > Full Backup) and gates writes (503) while a
+	                               restore is swapping files. For disaster recovery or migrating a snapshot
+	                               to a fresh instance, use the "restore-snapshot" subcommand instead (run it
+	                               before starting the server against that data directory; pass --data-dir
+	                               *before* the subcommand, e.g. "leafwiki --data-dir ./data restore-snapshot file.zip").
 
 	Environment variables:
 	LEAFWIKI_HOST
@@ -100,7 +130,9 @@ func writeUsage(w io.Writer) {
 	LEAFWIKI_UNIX_SOCKET
 	LEAFWIKI_DATA_DIR
 	LEAFWIKI_JWT_SECRET
+	LEAFWIKI_TOTP_ENCRYPTION_KEY
 	LEAFWIKI_LOG_LEVEL
+	LEAFWIKI_LOG_FORMAT
 	LEAFWIKI_ADMIN_PASSWORD
 	LEAFWIKI_ADMIN_USERNAME
 	LEAFWIKI_ADMIN_EMAIL
@@ -116,6 +148,7 @@ func writeUsage(w io.Writer) {
 	LEAFWIKI_MAX_ASSET_UPLOAD_SIZE
 	LEAFWIKI_ENABLE_REVISION
 	LEAFWIKI_ENABLE_LINK_REFACTOR
+	LEAFWIKI_ENABLE_API_KEY_MANAGEMENT
 	LEAFWIKI_ENABLE_METRICS
 	LEAFWIKI_METRICS_HOST
 	LEAFWIKI_METRICS_PORT
@@ -138,6 +171,11 @@ func writeUsage(w io.Writer) {
 	LEAFWIKI_GIT_BACKUP_SSH_KEY
 	LEAFWIKI_GIT_BACKUP_SSH_KNOWN_HOSTS
 	LEAFWIKI_GIT_BACKUP_INTERVAL
+	LEAFWIKI_SNAPSHOT
+	LEAFWIKI_SNAPSHOT_INTERVAL
+	LEAFWIKI_SNAPSHOT_RETENTION
+	LEAFWIKI_SNAPSHOT_DIR
+	LEAFWIKI_RESTORE_UPLOAD_MAX_SIZE
 	`); err != nil {
 		panic(err)
 	}
@@ -147,20 +185,28 @@ func printUsage() {
 	writeUsage(os.Stdout)
 }
 
-func setupLogger() {
+func setupLogger(w io.Writer, format string) {
 	level := slog.LevelInfo
-	if os.Getenv("LEAFWIKI_LOG_LEVEL") == "debug" {
+	switch os.Getenv("LEAFWIKI_LOG_LEVEL") {
+	case "debug":
 		level = slog.LevelDebug
-	} else if (os.Getenv("LEAFWIKI_LOG_LEVEL")) == "error" {
+	case "error":
 		level = slog.LevelError
-	} else if (os.Getenv("LEAFWIKI_LOG_LEVEL")) == "warn" {
+	case "warn":
 		level = slog.LevelWarn
 	}
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	opts := &slog.HandlerOptions{
 		Level:     level,
 		AddSource: true,
-	})
+	}
+
+	var handler slog.Handler
+	if format == "json" {
+		handler = slog.NewJSONHandler(w, opts)
+	} else {
+		handler = slog.NewTextHandler(w, opts)
+	}
 
 	slog.SetDefault(slog.New(handler))
 }
@@ -170,9 +216,22 @@ func fail(msg string, args ...any) {
 	os.Exit(1)
 }
 
+var errRestoreSnapshotUsage = errors.New("restore-snapshot requires a path to a snapshot zip: leafwiki [--data-dir <DIR>] restore-snapshot <path-to-zip>")
+
+// runRestoreSnapshotCommand implements the `restore-snapshot` subcommand: args
+// is flag.Args() (args[0] == "restore-snapshot"), so a snapshot path is
+// present at args[1].
+func runRestoreSnapshotCommand(dataDir string, args []string) error {
+	if len(args) < 2 {
+		return errRestoreSnapshotUsage
+	}
+	return restore.RestoreOffline(dataDir, args[1])
+}
+
 var gracefulShutdownTimeout = 10 * time.Second
 
 type cliFlags struct {
+	logFormat               *string
 	host                    *string
 	port                    *string
 	unixSocket              *string
@@ -181,6 +240,7 @@ type cliFlags struct {
 	adminEmail              *string
 	adminPassword           *string
 	jwtSecret               *string
+	totpEncryptionKey       *string
 	publicAccess            *bool
 	allowInsecure           *bool
 	injectCodeInHeader      *string
@@ -193,6 +253,7 @@ type cliFlags struct {
 	maxAssetUploadSize      *string
 	enableRevision          *bool
 	enableLinkRefactor      *bool
+	enableAPIKeyManagement  *bool
 	enableMetrics           *bool
 	metricsHost             *string
 	metricsPort             *string
@@ -215,10 +276,16 @@ type cliFlags struct {
 	gitBackupSSHKnownHosts  *string
 	gitBackupInterval       *time.Duration
 	revisionCoalesceWindow  *time.Duration
+	snapshotEnabled         *bool
+	snapshotInterval        *time.Duration
+	snapshotRetention       *int
+	snapshotDir             *string
+	restoreUploadMaxSize    *string
 }
 
 func registerFlags(fs *flag.FlagSet) *cliFlags {
 	return &cliFlags{
+		logFormat:               fs.String("log-format", "", "log output format: text or json (default: text)"),
 		host:                    fs.String("host", "", "host/IP address to bind the server to (e.g. 127.0.0.1 or 0.0.0.0)"),
 		port:                    fs.String("port", "", "port to run the server on"),
 		unixSocket:              fs.String("unix-socket", "", "path to a unix domain socket to listen on; overrides --host and --port"),
@@ -227,6 +294,7 @@ func registerFlags(fs *flag.FlagSet) *cliFlags {
 		adminEmail:              fs.String("admin-email", "", "initial admin email (used only if no admin exists) (default: admin@localhost)"),
 		adminPassword:           fs.String("admin-password", "", "initial admin password"),
 		jwtSecret:               fs.String("jwt-secret", "", "JWT secret for authentication"),
+		totpEncryptionKey:       fs.String("totp-encryption-key", "", "key to encrypt per-user TOTP secrets at rest, min 32 bytes (leave unset to keep TOTP self-service unavailable)"),
 		publicAccess:            fs.Bool("public-access", false, "allow public access to the wiki with read access (default: false)"),
 		allowInsecure:           fs.Bool("allow-insecure", false, "allow insecure HTTP connections (default: false)"),
 		injectCodeInHeader:      fs.String("inject-code-in-header", "", "raw string injected into <head> (default: \"\")"),
@@ -239,6 +307,7 @@ func registerFlags(fs *flag.FlagSet) *cliFlags {
 		maxAssetUploadSize:      fs.String("max-asset-upload-size", "", "maximum size for asset uploads (for example 50MiB, 50MB, 52428800)"),
 		enableRevision:          fs.Bool("enable-revision", false, "enable the revision / page history feature (default: false)"),
 		enableLinkRefactor:      fs.Bool("enable-link-refactor", false, "enable the link refactoring dialog and rewrite flow (default: false)"),
+		enableAPIKeyManagement:  fs.Bool("enable-api-key-management", false, "enable the experimental API key management feature (default: false)"),
 		enableMetrics:           fs.Bool("enable-metrics", false, "enable the Prometheus /metrics endpoint on a separate listener (default: false)"),
 		metricsHost:             fs.String("metrics-host", "", "host/IP address for the Prometheus metrics listener (default: 127.0.0.1)"),
 		metricsPort:             fs.String("metrics-port", "", "port for the Prometheus metrics listener (default: 9091)"),
@@ -261,11 +330,15 @@ func registerFlags(fs *flag.FlagSet) *cliFlags {
 		gitBackupSSHKnownHosts:  fs.String("git-backup-ssh-known-hosts", "", "path to known_hosts file for SSH host key verification (MITM protection)"),
 		gitBackupInterval:       fs.Duration("git-backup-interval", 60*time.Minute, "git backup interval (e.g. 60m, 2h); 0 = manual-only, no automatic scheduling (default: 60m)"),
 		revisionCoalesceWindow:  fs.Duration("revision-coalesce-window", 5*time.Minute, "window for coalescing rapid successive saves by the same author; 0 = disabled (default: 5m)"),
+		snapshotEnabled:         fs.Bool("snapshot", true, "enable full backup snapshots (ZIP incl. the SQLite database) (default: true)"),
+		snapshotInterval:        fs.Duration("snapshot-interval", 24*time.Hour, "snapshot interval (e.g. 24h, 6h); 0 = manual-only, no automatic scheduling (default: 24h)"),
+		snapshotRetention:       fs.Int("snapshot-retention", 10, "number of most recent snapshots to keep; <= 0 = keep all (default: 10)"),
+		snapshotDir:             fs.String("snapshot-dir", "", "directory to store snapshot ZIPs in (default: <data-dir>/snapshots)"),
+		restoreUploadMaxSize:    fs.String("restore-upload-max-size", "", "maximum size for an uploaded backup ZIP to restore from (for example 500MiB, 500MB, 524288000) (default: 500MiB)"),
 	}
 }
 
 func main() {
-	setupLogger()
 	exitCode := 0
 	defer func() {
 		if exitCode != 0 {
@@ -284,6 +357,9 @@ func main() {
 	visited := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 
+	logFormat := resolveLogFormat("log-format", *flags.logFormat, visited, "LEAFWIKI_LOG_FORMAT", "text")
+	setupLogger(os.Stdout, logFormat)
+
 	host := resolveString("host", *flags.host, visited, "LEAFWIKI_HOST", "127.0.0.1")
 	port := resolveString("port", *flags.port, visited, "LEAFWIKI_PORT", "8080")
 	unixSocket := resolveString("unix-socket", *flags.unixSocket, visited, "LEAFWIKI_UNIX_SOCKET", "")
@@ -294,6 +370,7 @@ func main() {
 	adminUsername := resolveString("admin-username", *flags.adminUsername, visited, "LEAFWIKI_ADMIN_USERNAME", "")
 	adminEmail := resolveString("admin-email", *flags.adminEmail, visited, "LEAFWIKI_ADMIN_EMAIL", "")
 	jwtSecret := resolveString("jwt-secret", *flags.jwtSecret, visited, "LEAFWIKI_JWT_SECRET", "")
+	totpEncryptionKey := resolveString("totp-encryption-key", *flags.totpEncryptionKey, visited, "LEAFWIKI_TOTP_ENCRYPTION_KEY", "")
 	injectCodeInHeader := resolveString("inject-code-in-header", *flags.injectCodeInHeader, visited, "LEAFWIKI_INJECT_CODE_IN_HEADER", "")
 	customStylesheet := resolveString("custom-stylesheet", *flags.customStylesheet, visited, "LEAFWIKI_CUSTOM_STYLESHEET", "")
 	allowInsecure := resolveBool("allow-insecure", *flags.allowInsecure, visited, "LEAFWIKI_ALLOW_INSECURE")
@@ -308,8 +385,13 @@ func main() {
 		resolveString("max-asset-upload-size", *flags.maxAssetUploadSize, visited, "LEAFWIKI_MAX_ASSET_UPLOAD_SIZE", "50MiB"),
 		"max asset upload size",
 	)
+	restoreUploadMaxSize := parseByteSize(
+		resolveString("restore-upload-max-size", *flags.restoreUploadMaxSize, visited, "LEAFWIKI_RESTORE_UPLOAD_MAX_SIZE", "500MiB"),
+		"restore upload max size",
+	)
 	enableRevision := resolveBool("enable-revision", *flags.enableRevision, visited, "LEAFWIKI_ENABLE_REVISION")
 	enableLinkRefactor := resolveBool("enable-link-refactor", *flags.enableLinkRefactor, visited, "LEAFWIKI_ENABLE_LINK_REFACTOR")
+	enableAPIKeyManagement := resolveBool("enable-api-key-management", *flags.enableAPIKeyManagement, visited, "LEAFWIKI_ENABLE_API_KEY_MANAGEMENT")
 	enableMetrics := resolveBool("enable-metrics", *flags.enableMetrics, visited, "LEAFWIKI_ENABLE_METRICS")
 	metricsHost := resolveString("metrics-host", *flags.metricsHost, visited, "LEAFWIKI_METRICS_HOST", "127.0.0.1")
 	metricsPort := resolveString("metrics-port", *flags.metricsPort, visited, "LEAFWIKI_METRICS_PORT", "9091")
@@ -335,6 +417,10 @@ func main() {
 	gitBackupSSHKey := resolveString(gitBackupSSHKeyFlagName, *flags.gitBackupSSHKey, visited, "LEAFWIKI_GIT_BACKUP_SSH_KEY", "")
 	gitBackupInterval := resolveDuration("git-backup-interval", *flags.gitBackupInterval, visited, "LEAFWIKI_GIT_BACKUP_INTERVAL")
 	gitBackupSSHKnownHosts := resolveString("git-backup-ssh-known-hosts", *flags.gitBackupSSHKnownHosts, visited, "LEAFWIKI_GIT_BACKUP_SSH_KNOWN_HOSTS", "")
+	snapshotEnabled := resolveBool("snapshot", *flags.snapshotEnabled, visited, "LEAFWIKI_SNAPSHOT")
+	snapshotInterval := resolveDuration("snapshot-interval", *flags.snapshotInterval, visited, "LEAFWIKI_SNAPSHOT_INTERVAL")
+	snapshotRetention := resolveInt("snapshot-retention", *flags.snapshotRetention, visited, "LEAFWIKI_SNAPSHOT_RETENTION", 10)
+	snapshotDir := resolveString("snapshot-dir", *flags.snapshotDir, visited, "LEAFWIKI_SNAPSHOT_DIR", "")
 	trustedProxies, err := authmw.ParseTrustedProxies(trustedProxyIPsRaw)
 	if err != nil {
 		fail("invalid --trusted-proxy-ips value", "error", err)
@@ -353,9 +439,9 @@ func main() {
 	if err := validateRedirectURL("logout-url", logoutURL); err != nil {
 		fail("Invalid logout URL configuration", "error", err)
 	}
-	// --user-management-url is only ever used as a plain <a href> in the frontend
-	// (relative paths and other schemes work fine there), so it isn't restricted
-	// to http(s) like --login-url/--logout-url, which the browser navigates to directly.
+	if err := validateRedirectURL("user-management-url", userManagementURL); err != nil {
+		fail("Invalid user management URL configuration", "error", err)
+	}
 
 	if enableHTTPRemoteUser {
 		slog.Default().Info("Reverse-proxy authentication enabled",
@@ -387,6 +473,16 @@ func main() {
 
 			fmt.Println("Admin password reset successfully.")
 			fmt.Printf("New password for user %s: %s\n", user.Username, user.Password)
+			return
+		case "restore-snapshot":
+			if err := runRestoreSnapshotCommand(dataDir, args); err != nil {
+				if errors.Is(err, errRestoreSnapshotUsage) {
+					fail(err.Error())
+				} else {
+					fail("Restore failed", "error", err)
+				}
+			}
+			fmt.Println("Snapshot restored successfully. Start the server normally to pick up the restored data.")
 			return
 		case "--help", "-h", "help":
 			printUsage()
@@ -425,9 +521,13 @@ func main() {
 		}
 	}
 
+	if totpEncryptionKey != "" && len(totpEncryptionKey) < auth.MinTOTPEncryptionKeyLen {
+		fail("--totp-encryption-key/LEAFWIKI_TOTP_ENCRYPTION_KEY is too short", "minimum_bytes", auth.MinTOTPEncryptionKeyLen, "got", len(totpEncryptionKey))
+	}
+
 	var metrics *httpmetrics.HTTPMetrics
 	if enableMetrics {
-		metrics = httpmetrics.NewHTTPMetrics()
+		metrics = httpmetrics.NewHTTPMetrics(Version)
 	}
 
 	w, err := wiki.NewWiki(&wiki.WikiOptions{
@@ -436,10 +536,12 @@ func main() {
 		AdminEmail:             adminEmail,
 		AdminPassword:          adminPassword,
 		JWTSecret:              jwtSecret,
+		TOTPEncryptionKey:      totpEncryptionKey,
 		AccessTokenTimeout:     accessTokenTimeout,
 		RefreshTokenTimeout:    refreshTokenTimeout,
 		AuthDisabled:           disableAuth,
 		EnableRevision:         enableRevision,
+		EnableAPIKeyManagement: enableAPIKeyManagement,
 		MaxRevisionHistory:     maxRevisionHistory,
 		RevisionCoalesceWindow: revisionCoalesceWindow,
 		Metrics:                metrics,
@@ -447,6 +549,15 @@ func main() {
 	if err != nil {
 		fail("Failed to initialize Wiki", "error", err)
 	}
+
+	// Log .leafwikiignore status
+	rootDir := filepath.Join(dataDir, "root")
+	if ignoreFile, err := ignore.LoadFromDir(rootDir); err != nil {
+		slog.Default().Warn("invalid .leafwikiignore", "error", err)
+	} else if ignoreFile != nil {
+		slog.Default().Info("loaded .leafwikiignore", "patterns", ignoreFile.PatternCount())
+	}
+
 	defer func() {
 		if err := w.Close(); err != nil {
 			slog.Default().Error("Failed to close Wiki", "error", err)
@@ -483,6 +594,47 @@ func main() {
 		w.SetBackupRoutes(wikibackup.NewRoutes(backupRepo, backupScheduler, w.AuthService()))
 	}
 
+	// Initialize full backup snapshots if enabled
+	var writeGate *restore.WriteGate
+	if snapshotEnabled {
+		snapshotsDir := snapshotDir
+		if snapshotsDir == "" {
+			snapshotsDir = filepath.Join(dataDir, "snapshots")
+		}
+		snapshotManager := snapshot.NewManager(snapshot.Config{
+			BackupsDir:         snapshotsDir,
+			RootDir:            filepath.Join(dataDir, "root"),
+			AssetsDir:          filepath.Join(dataDir, "assets"),
+			BrandingDir:        filepath.Join(dataDir, "branding"),
+			BrandingConfigFile: filepath.Join(dataDir, "branding.json"),
+			SchemaFile:         filepath.Join(dataDir, "schema.json"),
+			UsersDBPath:        filepath.Join(dataDir, "users.db"),
+			WikiVersion:        Version,
+			Interval:           snapshotInterval,
+			RetentionCount:     snapshotRetention,
+		})
+		snapshotScheduler := snapshot.NewScheduler(snapshotManager)
+		defer snapshotScheduler.Stop()
+		w.SetSnapshotRoutes(wikisnapshot.NewRoutes(snapshotManager, snapshotScheduler, w.AuthService(), snapshotRetention))
+
+		writeGate = restore.NewWriteGate()
+		restoreManager := restore.NewManager(restore.Config{
+			SnapshotManager:    snapshotManager,
+			DataDir:            dataDir,
+			WikiVersion:        Version,
+			WriteGate:          writeGate,
+			AuthService:        w.AuthService(),
+			BrandingService:    w.BrandingService(),
+			TriggerResync:      w.TriggerResyncAsync,
+			MaxUploadSizeBytes: restoreUploadMaxSize,
+		})
+		// Registered after (so it runs before, defers are LIFO) the w.Close()
+		// deferred above: an in-flight restore must finish before AuthService's
+		// user/session stores get closed out from under it during shutdown.
+		defer restoreManager.Wait()
+		w.SetRestoreRoutes(wikirestore.NewRoutes(restoreManager, w.AuthService()))
+	}
+
 	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
 		PublicAccess:            publicAccess,
 		InjectCodeInHeader:      injectCodeInHeader,
@@ -496,18 +648,23 @@ func main() {
 		MaxAssetUploadSizeBytes: maxAssetUploadSize,
 		EnableRevision:          enableRevision,
 		EnableLinkRefactor:      enableLinkRefactor,
+		EnableAPIKeyManagement:  enableAPIKeyManagement,
 		Metrics:                 metrics,
 		GitBackupEnabled:        gitBackupEnabled,
+		SnapshotEnabled:         snapshotEnabled,
+		TOTPAvailable:           w.TOTPService() != nil,
 		HTTPRemoteUser: httpinternal.HTTPRemoteUserConfig{
 			Enabled:        enableHTTPRemoteUser,
 			HeaderName:     httpRemoteUserHeader,
 			TrustedProxies: trustedProxies,
 			UserService:    w.UserService(),
 		},
+		APIKeyService:     w.APIKeyService(),
 		DisableRequestLog: disableRequestLog,
 		UserManagementURL: userManagementURL,
 		LoginURL:          loginURL,
 		LogoutURL:         logoutURL,
+		WriteGate:         writeGate,
 	})
 
 	reloadSignals := make(chan os.Signal, 1)
@@ -663,6 +820,34 @@ func resolveString(flagName, flagVal string, visited map[string]bool, envVar str
 	}
 	// Fall back to provided default when flag wasn't set and no env var is present
 	return def
+}
+
+// CLI > ENV > default
+func resolveLogFormat(flagName, flagVal string, visited map[string]bool, envVar string, def string) string {
+	if visited[flagName] {
+		if f, ok := parseLogFormat(flagVal); ok {
+			return f
+		}
+		fail("Invalid flag value", "flag", flagName, "value", flagVal, "expected", "text or json")
+	}
+	if env := strings.TrimSpace(os.Getenv(envVar)); env != "" {
+		if f, ok := parseLogFormat(env); ok {
+			return f
+		}
+		// If env var is set but invalid, fail fast (helps operators)
+		fail(errInvalidEnvVarValue, "variable", envVar, "value", env, "expected", "text or json")
+	}
+	return def
+}
+
+func parseLogFormat(s string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "text":
+		return "text", true
+	case "json":
+		return "json", true
+	}
+	return "", false
 }
 
 // CLI > ENV > default(flag)

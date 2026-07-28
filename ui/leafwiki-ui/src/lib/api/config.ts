@@ -1,4 +1,5 @@
 import type { ApiLocalizedErrorResponse } from './errors'
+import i18next from '@/lib/i18n'
 import { API_BASE_URL } from '../config'
 import {
   ApiLocalizedError,
@@ -18,7 +19,10 @@ export type Config = {
   maxAssetUploadSizeBytes: number
   enableRevision: boolean
   enableLinkRefactor: boolean
+  enableApiKeyManagement: boolean
   gitBackupEnabled: boolean
+  snapshotEnabled: boolean
+  totpAvailable: boolean
   httpRemoteUserEnabled: boolean
   loginUrl: string
   logoutUrl: string
@@ -29,7 +33,11 @@ export async function getConfig(): Promise<Config> {
   const res = await fetch(`${API_BASE_URL}/api/config`)
   if (!res.ok) {
     const errorText = await res.text()
-    const fallbackMessage = `Could not load config: ${res.status} ${res.statusText}`
+    const fallbackMessage = i18next.t('configLoad.fetchErrorFallback', {
+      ns: 'common',
+      status: res.status,
+      statusText: res.statusText,
+    })
     let errorBody: ConfigErrorResponse | null = null
 
     try {

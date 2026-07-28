@@ -1,5 +1,6 @@
 import { getConfig } from '@/lib/api/config'
 import { DEFAULT_MAX_ASSET_UPLOAD_SIZE_BYTES } from '@/lib/config'
+import i18next from '@/lib/i18n'
 import { create } from 'zustand'
 
 type ConfigStore = {
@@ -9,7 +10,10 @@ type ConfigStore = {
   maxAssetUploadSizeBytes: number
   enableRevision: boolean
   enableLinkRefactor: boolean
+  enableApiKeyManagement: boolean
   gitBackupEnabled: boolean
+  snapshotEnabled: boolean
+  totpAvailable: boolean
   httpRemoteUserEnabled: boolean
   loginUrl: string
   logoutUrl: string
@@ -27,7 +31,10 @@ export const useConfigStore = create<ConfigStore>((set) => ({
   maxAssetUploadSizeBytes: DEFAULT_MAX_ASSET_UPLOAD_SIZE_BYTES,
   enableRevision: false,
   enableLinkRefactor: false,
+  enableApiKeyManagement: false,
   gitBackupEnabled: false,
+  snapshotEnabled: false,
+  totpAvailable: false,
   httpRemoteUserEnabled: false,
   loginUrl: '',
   logoutUrl: '',
@@ -53,7 +60,10 @@ export const useConfigStore = create<ConfigStore>((set) => ({
         maxAssetUploadSizeBytes,
         enableRevision: config.enableRevision ?? false,
         enableLinkRefactor: config.enableLinkRefactor ?? false,
+        enableApiKeyManagement: config.enableApiKeyManagement ?? false,
         gitBackupEnabled: config.gitBackupEnabled ?? false,
+        snapshotEnabled: config.snapshotEnabled ?? false,
+        totpAvailable: config.totpAvailable ?? false,
         httpRemoteUserEnabled: config.httpRemoteUserEnabled ?? false,
         loginUrl: config.loginUrl ?? '',
         logoutUrl: config.logoutUrl ?? '',
@@ -67,7 +77,7 @@ export const useConfigStore = create<ConfigStore>((set) => ({
         error:
           error instanceof Error
             ? error.message
-            : 'Could not load configuration',
+            : i18next.t('configLoad.errorFallback', { ns: 'common' }),
         hasLoaded: true,
       })
     } finally {

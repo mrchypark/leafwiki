@@ -6,7 +6,7 @@ import { createPage, suggestSlug } from '@/lib/api/pages'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AddPageDialog } from './AddPageDialog'
 
@@ -29,6 +29,7 @@ describe('AddPageDialog draft creation', () => {
         username: 'editor',
         email: 'editor@example.test',
         role: 'editor',
+        totpEnabled: false,
       },
     })
   })

@@ -2,6 +2,7 @@ package tree
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,8 +10,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/markdown"
 )
+
+// isCaseSensitive reports whether the filesystem at t.TempDir() is case-sensitive.
+func isCaseSensitive(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	f1 := filepath.Join(dir, "cschk_A")
+	f2 := filepath.Join(dir, "cschk_a")
+	if err := os.WriteFile(f1, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(f2)
+	return os.IsNotExist(err)
+}
 
 func findChildBySlug(t *testing.T, parent *PageNode, slug string) *PageNode {
 	t.Helper()
@@ -299,7 +314,42 @@ func TestNodeStore_ReconstructTreeFromFS_OrderFileIgnoresUnknownIDsAndKeepsRemai
 	}
 }
 
-func TestNodeStore_ReconstructTreeFromFS_ReturnsErrorOnDuplicateLeafWikiIDs(t *testing.T) {
+func TestNodeStore_ReconstructTreeFromFS_SkipsSectionSubtreeOnDuplicateLeafWikiID(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustMkdir(t, filepath.Join(tmp, "root", "first"))
+	mustWriteFile(t, filepath.Join(tmp, "root", "first", "index.md"), `---
+leafwiki_id: dup-section-id
+leafwiki_title: First
+---
+# First`, 0o644)
+
+	mustMkdir(t, filepath.Join(tmp, "root", "second"))
+	mustWriteFile(t, filepath.Join(tmp, "root", "second", "index.md"), `---
+leafwiki_id: dup-section-id
+leafwiki_title: Second
+---
+# Second`, 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "second", "nested.md"), `---
+leafwiki_id: nested-id
+leafwiki_title: Nested
+---
+# Nested`, 0o644)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	got := slugs(tree.Children)
+	want := []string{"first"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected children: got %v want %v (second section with a duplicate leafwiki_id, including its subtree, should be skipped)", got, want)
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_ContinuesPastDuplicateLeafWikiID(t *testing.T) {
 	tmp := t.TempDir()
 	store := NewNodeStore(tmp)
 
@@ -313,20 +363,28 @@ leafwiki_id: dup-id
 leafwiki_title: B
 ---
 # B`, 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "c.md"), `---
+leafwiki_id: unique-id
+leafwiki_title: C
+---
+# C`, 0o644)
 
-	_, err := store.ReconstructTreeFromFS()
-	if err == nil {
-		t.Fatalf("expected duplicate ID error")
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
 	}
-	if !strings.Contains(err.Error(), "duplicate leafwiki_id") {
-		t.Fatalf("expected duplicate ID error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "dup-id") {
-		t.Fatalf("expected duplicate ID to be mentioned, got: %v", err)
+
+	got := slugs(tree.Children)
+	want := []string{"a", "c"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected children: got %v want %v (reconstruct should continue past the duplicate ID and still pick up unrelated siblings)", got, want)
 	}
 }
 
 func TestNodeStore_ReconstructTreeFromFS_ReturnsErrorOnCaseInsensitiveDuplicateSlugs(t *testing.T) {
+	if !isCaseSensitive(t) {
+		t.Skip("skipping case-sensitivity test on case-insensitive filesystem")
+	}
 	tmp := t.TempDir()
 	store := NewNodeStore(tmp)
 
@@ -590,5 +648,271 @@ leafwiki_last_author_id: bob
 	}
 	if page.Metadata.CreatorID != "alice" || page.Metadata.LastAuthorID != "bob" {
 		t.Fatalf("expected author metadata to be preserved, got %#v", page.Metadata)
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_IgnoresMatchingFile(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustWriteFile(t, filepath.Join(tmp, "root", "page1.md"), "# Page 1", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "secret.md"), "# Secret", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "secret.md", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	if findChildBySlugExist(tree, "page1") != nil {
+
+	} else {
+		t.Fatal("expected page1 to be in tree")
+	}
+	if findChildBySlugExist(tree, "secret") != nil {
+		t.Fatal("expected secret to NOT be in tree")
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_IgnoresDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustMkdir(t, filepath.Join(tmp, "root", "public"))
+	mustMkdir(t, filepath.Join(tmp, "root", "private"))
+	mustWriteFile(t, filepath.Join(tmp, "root", "public", "a.md"), "# A", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "private", "b.md"), "# B", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "private/", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	if findChildBySlugExist(tree, "public") == nil {
+		t.Fatal("expected public dir to be in tree")
+	}
+	if findChildBySlugExist(tree, "private") != nil {
+		t.Fatal("expected private dir to NOT be in tree")
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_NegationUnignores(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustWriteFile(t, filepath.Join(tmp, "root", "a.md"), "# A", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "b.md"), "# B", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "important.md"), "# Important", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "*.md\n!important.md", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	if findChildBySlugExist(tree, "important") == nil {
+		t.Fatal("expected important to be un-ignored and present")
+	}
+	if findChildBySlugExist(tree, "a") != nil {
+		t.Fatal("expected a to be ignored")
+	}
+	if findChildBySlugExist(tree, "b") != nil {
+		t.Fatal("expected b to be ignored")
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_NestedIgnoredPath(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustMkdir(t, filepath.Join(tmp, "root", "docs"))
+	mustMkdir(t, filepath.Join(tmp, "root", "docs", "archive"))
+	mustWriteFile(t, filepath.Join(tmp, "root", "docs", "index.md"), "# Docs", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "docs", "archive", "old.md"), "# Old", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "docs/archive/", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	docs := findChildBySlugExist(tree, "docs")
+	if docs == nil {
+		t.Fatal("expected docs section to be present")
+	}
+	if len(docs.Children) > 0 {
+		t.Fatal("expected docs to have no children (archive is ignored)")
+	}
+}
+
+func findChildBySlugExist(parent *PageNode, slug string) *PageNode {
+	for _, ch := range parent.Children {
+		if ch.Slug == slug {
+			return ch
+		}
+	}
+	return nil
+}
+
+func TestReconstructTreeFromFS_MultiLevelIgnore(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "draft*", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "docs", ".leafwikiignore"), "!draft-important.md", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "draft-me.md"), "# Draft Me", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "docs", "draft-important.md"), "# Important Draft", 0o644)
+	mustWriteFile(t, filepath.Join(tmp, "root", "docs", "keep.md"), "# Keep", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	if findChildBySlugExist(tree, "draft-me") != nil {
+		t.Fatal("expected draft-me.md to be excluded by root draft*")
+	}
+
+	docs := findChildBySlugExist(tree, "docs")
+	if docs == nil {
+		t.Fatal("expected docs section to exist")
+	}
+
+	if findChildBySlugExist(docs, "draft-important") == nil {
+		t.Fatal("expected docs/draft-important.md to be un-ignored by !draft-important.md")
+	}
+
+	if findChildBySlugExist(docs, "keep") == nil {
+		t.Fatal("expected docs/keep.md to be present")
+	}
+}
+
+func TestCreatePage_MultiLevelIgnore(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	mustWriteFile(t, filepath.Join(tmp, "root", ".leafwikiignore"), "", 0o644)
+
+	cache := ignore.NewCache(filepath.Join(tmp, "root"))
+	store.SetIgnoreCache(cache)
+
+	root := &PageNode{ID: "root", Slug: "root", Title: "root", Kind: NodeKindSection}
+	draftsSection := &PageNode{ID: "s1", Slug: "drafts", Title: "Drafts", Kind: NodeKindSection, Parent: root}
+
+	if err := store.CreateSection(root, draftsSection); err != nil {
+		t.Fatalf("expected CreateSection to succeed for drafts: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(tmp, "root", "drafts", ".leafwikiignore"), "secret", 0o644)
+
+	entry := &PageNode{ID: "p1", Slug: "secret", Title: "Secret", Kind: NodeKindPage, Parent: draftsSection}
+	err := store.CreatePage(draftsSection, entry)
+	if err == nil {
+		t.Fatal("expected error for ignored path under drafts")
+	}
+	var opErr *InvalidOpError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("expected InvalidOpError, got %T: %v", err, err)
+	}
+	if !strings.Contains(opErr.Reason, "leafwikiignore") {
+		t.Fatalf("expected reason mentioning leafwikiignore, got %q", opErr.Reason)
+	}
+
+	entry2 := &PageNode{ID: "p2", Slug: "notes", Title: "Notes", Kind: NodeKindPage, Parent: draftsSection}
+	if err := store.CreatePage(draftsSection, entry2); err != nil {
+		t.Fatalf("expected CreatePage to succeed for non-ignored notes: %v", err)
+	}
+}
+
+func TestNodeStore_ReconstructTreeFromFS_PageWithUnquotedColonInFrontmatterTitle_IsNotDropped(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	page := `---
+leafwiki_id: page-adr
+leafwiki_title: ADR-0001: Filesystem as Source of Truth
+---
+# ADR-0001`
+	mustWriteFile(t, filepath.Join(tmp, "root", "adr-0001.md"), page, 0o644)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	p := findChildBySlug(t, tree, "adr-0001")
+	if p.Title != "ADR-0001: Filesystem as Source of Truth" {
+		t.Fatalf("expected title %q, got %q", "ADR-0001: Filesystem as Source of Truth", p.Title)
+	}
+	if p.ID != "page-adr" {
+		t.Fatalf("expected ID page-adr, got %q", p.ID)
+	}
+}
+
+// TestNodeStore_ReconstructTreeFromFS_ColonFixupDoesNotCorruptUnrelatedBlockScalar
+// pins down a regression found in code review: the frontmatter colon-fixup
+// must not touch an unrelated block-scalar ("notes: |") field just because
+// one of its indented content lines happens to start with "leafwiki_title:"
+// after left-trim. The page is also missing leafwiki_created_at/updated_at,
+// so it goes through the writeback path (needsWriteback) on the same
+// resync -- if the fixup corrupted the in-memory ExtraFields, that
+// corruption would get permanently persisted back to the file on disk.
+func TestNodeStore_ReconstructTreeFromFS_ColonFixupDoesNotCorruptUnrelatedBlockScalar(t *testing.T) {
+	tmp := t.TempDir()
+	store := NewNodeStore(tmp)
+
+	filePath := filepath.Join(tmp, "root", "adr-0001.md")
+	page := `---
+leafwiki_id: page-adr
+leafwiki_title: ADR-0001: Filesystem as Source of Truth
+notes: |
+  Meeting notes.
+  leafwiki_title: v2: draft notes not real metadata
+---
+# ADR-0001`
+	mustWriteFile(t, filePath, page, 0o644)
+
+	tree, err := store.ReconstructTreeFromFS()
+	if err != nil {
+		t.Fatalf("ReconstructTreeFromFS: %v", err)
+	}
+
+	p := findChildBySlug(t, tree, "adr-0001")
+	if p.Title != "ADR-0001: Filesystem as Source of Truth" {
+		t.Fatalf("expected title %q, got %q", "ADR-0001: Filesystem as Source of Truth", p.Title)
+	}
+
+	mdFile, err := markdown.LoadMarkdownFile(filePath)
+	if err != nil {
+		t.Fatalf("LoadMarkdownFile after reconstruct: %v", err)
+	}
+	fm := mdFile.GetFrontmatter()
+	wantNotes := "Meeting notes.\nleafwiki_title: v2: draft notes not real metadata"
+	if got, _ := fm.ExtraFields["notes"].(string); got != wantNotes {
+		t.Fatalf("notes field was corrupted by the colon fixup and/or writeback: got %q, want %q", got, wantNotes)
+	}
+
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("reading persisted file: %v", err)
+	}
+	if strings.Contains(string(raw), `\"`) {
+		t.Fatalf("on-disk file contains injected escape sequences from the colon fixup, notes field was corrupted on writeback:\n%s", raw)
 	}
 }

@@ -2,7 +2,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { useHotKeysStore } from '@/stores/hotkeys'
 import { useSidebarStore } from '@/stores/sidebar'
 import { act, render } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Sidebar from './Sidebar'
 
@@ -98,5 +98,27 @@ describe('Sidebar', () => {
 
     expect(useSidebarStore.getState().sidebarVisible).toBe(true)
     expect(useSidebarStore.getState().sidebarMode).toBe('search')
+  })
+
+  it('requests search focus when the search hotkey is invoked while already active', () => {
+    useSidebarStore.setState({ sidebarVisible: true, sidebarMode: 'search' })
+
+    renderSidebar()
+
+    const before = useSidebarStore.getState().searchFocusRequestId
+    invokeHotkey('Mod+Shift+KeyF')
+
+    expect(useSidebarStore.getState().searchFocusRequestId).toBe(before + 1)
+  })
+
+  it('does not request search focus when the search panel was not yet active', () => {
+    useSidebarStore.setState({ sidebarVisible: false, sidebarMode: 'tree' })
+
+    renderSidebar()
+
+    const before = useSidebarStore.getState().searchFocusRequestId
+    invokeHotkey('Mod+Shift+KeyF')
+
+    expect(useSidebarStore.getState().searchFocusRequestId).toBe(before)
   })
 })

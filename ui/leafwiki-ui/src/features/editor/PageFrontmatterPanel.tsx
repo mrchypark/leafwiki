@@ -14,6 +14,7 @@ import { useConfigStore } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { EditorFrontmatterField } from './frontmatter'
 
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
@@ -65,6 +66,7 @@ export function PageFrontmatterPanel({
   const userRole = useSessionStore((state) => state.user?.role)
   const showDraft = canManageDrafts(authDisabled, userRole)
   const inheritedDraft = effectiveDraft && !draft
+  const { t } = useTranslation('editor')
   const [showInternalFields, setShowInternalFields] = useState(false)
 
   const normalizedTags = useMemo(() => {
@@ -138,7 +140,13 @@ export function PageFrontmatterPanel({
 
   const summaryParts = [
     ...(showDraft
-      ? [draft ? 'Draft' : inheritedDraft ? 'Inherited draft' : 'Published']
+      ? [
+          draft
+            ? t('frontmatterPanel.draft')
+            : inheritedDraft
+              ? t('frontmatterPanel.inheritedDraft')
+              : t('frontmatterPanel.published'),
+        ]
       : []),
     normalizedTags.length === 1 ? '1 tag' : `${normalizedTags.length} tags`,
     editableFields.length === 1
@@ -168,7 +176,9 @@ export function PageFrontmatterPanel({
                 className={`page-frontmatter-panel__title-row${hasErrors ? 'page-frontmatter-panel__title-row--has-errors' : ''}`}
               >
                 <Tag className="page-frontmatter-panel__title-icon" size={14} />
-                <span className="page-frontmatter-panel__title">Metadata</span>
+                <span className="page-frontmatter-panel__title">
+                  {t('frontmatterPanel.metadataTitle')}
+                </span>
               </div>
               <span
                 className={`page-frontmatter-panel__summary${hasErrors ? 'page-frontmatter-panel__summary--has-errors' : ''}`}
@@ -182,7 +192,7 @@ export function PageFrontmatterPanel({
               {showDraft && (
                 <div className="page-frontmatter-panel__row">
                   <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
-                    Visibility
+                    {t('frontmatterPanel.visibilityHeading')}
                   </div>
                   <div className="page-frontmatter-panel__draft-field">
                     <Checkbox
@@ -194,8 +204,8 @@ export function PageFrontmatterPanel({
                     />
                     <Label htmlFor="page-frontmatter-draft">
                       {inheritedDraft
-                        ? 'Keep draft when parent is published'
-                        : 'Draft'}
+                        ? t('frontmatterPanel.keepDraftWhenParentPublished')
+                        : t('frontmatterPanel.draft')}
                     </Label>
                   </div>
                 </div>
@@ -203,13 +213,13 @@ export function PageFrontmatterPanel({
 
               <div className="page-frontmatter-panel__row page-frontmatter-panel__row--tags">
                 <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
-                  Tags
+                  {t('frontmatterPanel.tagsHeading')}
                 </div>
                 <div className="page-frontmatter-panel__tags-field">
                   <TagInputWithSuggestions
                     tags={normalizedTags}
                     onTagsChange={onTagsChange}
-                    placeholder="Add tag"
+                    placeholder={t('frontmatterPanel.addTagPlaceholder')}
                     variant="metadata"
                     inputTestId="page-frontmatter-tag-input"
                     inputHotkeys={METADATA_ALLOWED_HOTKEYS}
@@ -227,7 +237,7 @@ export function PageFrontmatterPanel({
 
               <div className="page-frontmatter-panel__row page-frontmatter-panel__row--properties">
                 <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
-                  Properties
+                  {t('frontmatterPanel.propertiesHeading')}
                 </div>
                 <div className="page-frontmatter-panel__properties">
                   <div className="page-frontmatter-panel__properties-scroll custom-scrollbar">
@@ -243,7 +253,9 @@ export function PageFrontmatterPanel({
                                     key: event.target.value,
                                   })
                                 }
-                                placeholder="Key"
+                                placeholder={t(
+                                  'frontmatterPanel.keyPlaceholder',
+                                )}
                                 className={`page-frontmatter-panel__field-key${errors[`properties.${index}.key`] ? 'page-frontmatter-panel__input--error' : ''}`}
                                 data-testid={`page-frontmatter-field-key-${index}`}
                                 data-allow-hotkeys={METADATA_ALLOWED_HOTKEYS}
@@ -257,7 +269,9 @@ export function PageFrontmatterPanel({
                                     value: event.target.value,
                                   })
                                 }
-                                placeholder="Value"
+                                placeholder={t(
+                                  'frontmatterPanel.valuePlaceholder',
+                                )}
                                 className={`page-frontmatter-panel__field-value${errors[`properties.${index}.value`] ? 'page-frontmatter-panel__input--error' : ''}`}
                                 data-testid={`page-frontmatter-field-value-${index}`}
                                 data-allow-hotkeys={METADATA_ALLOWED_HOTKEYS}
@@ -266,7 +280,10 @@ export function PageFrontmatterPanel({
                                 type="button"
                                 className="page-frontmatter-panel__field-remove"
                                 onClick={() => removeField(index)}
-                                aria-label={`Remove frontmatter field ${field.key || index + 1}`}
+                                aria-label={t(
+                                  'frontmatterPanel.removeFieldAriaLabel',
+                                  { field: field.key || index + 1 },
+                                )}
                               >
                                 <Trash2 size={14} />
                               </button>

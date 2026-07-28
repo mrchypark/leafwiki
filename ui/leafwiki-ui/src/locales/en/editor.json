@@ -6,19 +6,25 @@
   },
   "slugInput": {
     "label": "Slug",
-    "placeholder": "Page slug"
+    "placeholder": "Page slug",
+    "generateErrorFallback": "Error generating slug"
   },
   "addPageDialog": {
     "dateTitleTooltip": "Set title to today's date"
   },
   "editPageMetadataDialog": {
+    "dialogTitle": "Edit {{item}} metadata",
+    "dialogDescription": "Change metadata of the {{item}}",
     "titleLabel": "Title",
+    "titlePlaceholder": "{{item}} title",
     "pathPrefix": "Path:",
     "cancelButton": "Cancel",
     "saveButton": "Change",
     "dateTitleTooltip": "Set title to today's date"
   },
   "toolbar": {
+    "closeEditorButton": "Close Editor",
+    "savePageButton": "Save Page",
     "boldTooltip": "Bold (Ctrl+B)",
     "italicTooltip": "Italic (Ctrl+I)",
     "strikethroughTooltip": "Strikethrough",
@@ -55,6 +61,52 @@
     "lineWrap": "Line wrap",
     "autoSave": "Auto-save",
     "autoSavePaused": "paused"
+  },
+  "pageEditor": {
+    "savedToast": "Page saved successfully",
+    "saveErrorFallback": "Error saving page",
+    "saveAnyway": "Save anyway",
+    "conflictAgainMessage": "The page was modified again while saving. Please reload the page and re-apply your changes.",
+    "errorPrefix": "Error: {{error}}",
+    "metadataErrorsBeforeSave": "Please fix metadata errors before saving.",
+    "contentNullFallback": "Updated page content is null or undefined",
+    "unknownErrorFallback": "An unknown error occurred"
+  },
+  "linkInsertDialog": {
+    "dialogTitle": "Insert Link",
+    "displayTextLabel": "Display Text",
+    "urlLabel": "URL",
+    "textPlaceholder": "Link text",
+    "urlPlaceholder": "https:// or search pages…",
+    "cancelButton": "Cancel",
+    "insertButton": "Insert"
+  },
+  "frontmatterPanel": {
+    "metadataTitle": "Metadata",
+    "tagsHeading": "Tags",
+    "propertiesHeading": "Properties",
+    "removeFieldAriaLabel": "Remove frontmatter field {{field}}",
+    "addTagPlaceholder": "Add tag",
+    "keyPlaceholder": "Key",
+    "valuePlaceholder": "Value",
+    "draft": "Draft",
+    "inheritedDraft": "Inherited draft",
+    "published": "Published",
+    "visibilityHeading": "Visibility",
+    "keepDraftWhenParentPublished": "Keep draft when parent is published"
+  },
+  "tagInput": {
+    "loading": "Loading…",
+    "noMatchingTags": "No matching tags found.",
+    "removeTagAriaLabel": "Remove tag {{tag}}"
+  },
+  "markdownEditor": {
+    "editorTab": "Editor",
+    "previewTab": "Preview",
+    "resizeAriaLabel": "Resize editor and preview panes",
+    "fileTooLarge": "File too large. Max {{maxSize}} allowed.",
+    "uploadedToast": "Uploaded {{filename}}",
+    "uploadErrorFallback": "Failed to upload {{filename}}"
   },
   "autoSave": {
     "savedToast": "Saved",
