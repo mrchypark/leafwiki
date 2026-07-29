@@ -424,14 +424,12 @@ test.describe('inherited draft subtrees', () => {
         await requestStatus(viewerPage, `/api/pages/${inheritedDraft.id}/favorite`, 'PUT'),
       ).toBe(404);
 
-      const publishedRow = viewerPage.getByTestId(`tree-node-${published.id}`);
-      await publishedRow.hover();
       const favoriteResponse = viewerPage.waitForResponse(
         (response) =>
           response.request().method() === 'PUT' &&
           response.url().includes(`/api/pages/${published.id}/favorite`),
       );
-      await publishedRow.getByTestId(`favorite-toggle-${published.id}`).click();
+      await new TreeView(viewerPage).toggleFavoriteForPage(published.title);
       expect((await favoriteResponse).ok()).toBe(true);
       await expect(
         viewerPage.getByTestId('favorites-section').getByText(published.title, { exact: true }),

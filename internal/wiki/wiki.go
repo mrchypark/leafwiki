@@ -11,6 +11,7 @@ import (
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/favorites"
@@ -21,6 +22,7 @@ import (
 	"github.com/perber/wiki/internal/properties"
 	"github.com/perber/wiki/internal/search"
 	"github.com/perber/wiki/internal/tags"
+	wikiapikeys "github.com/perber/wiki/internal/wiki/apikeys"
 	wikiassets "github.com/perber/wiki/internal/wiki/assets"
 	wikiauth "github.com/perber/wiki/internal/wiki/auth"
 	wikibackup "github.com/perber/wiki/internal/wiki/backup"
@@ -31,9 +33,11 @@ import (
 	wikipages "github.com/perber/wiki/internal/wiki/pages"
 	"github.com/perber/wiki/internal/wiki/pagesave"
 	wikiproperties "github.com/perber/wiki/internal/wiki/properties"
+	wikirestore "github.com/perber/wiki/internal/wiki/restore"
 	wikiresync "github.com/perber/wiki/internal/wiki/resync"
 	wikirevisions "github.com/perber/wiki/internal/wiki/revisions"
 	wikisearch "github.com/perber/wiki/internal/wiki/search"
+	wikisnapshot "github.com/perber/wiki/internal/wiki/snapshot"
 	wikitags "github.com/perber/wiki/internal/wiki/tags"
 )
 
@@ -43,6 +47,8 @@ type Wiki struct {
 	auth         *auth.AuthService
 	userResolver *auth.UserResolver
 	user         *auth.UserService
+	apiKeys      *auth.APIKeyService
+	totp         *auth.TOTPService
 	asset        *assets.AssetService
 	branding     *branding.BrandingService
 	searchIndex  *search.SQLiteIndex
@@ -59,6 +65,7 @@ type Wiki struct {
 	tagsRoutes       *wikitags.Routes
 	propertiesRoutes *wikiproperties.Routes
 	brandingRoutes   *wikibranding.Routes
+	apiKeysRoutes    *wikiapikeys.Routes
 	importerRoutes   *wikiimporter.Routes
 	healthRoutes     *wikihealth.Routes
 	revision         *revision.Service
@@ -70,8 +77,11 @@ type Wiki struct {
 	propertiesEffect *pagesave.PropertiesSideEffect
 	favorites        *favorites.FavoritesStore
 	backupRoutes     *wikibackup.Routes
+	snapshotRoutes   *wikisnapshot.Routes
+	restoreRoutes    *wikirestore.Routes
 	resyncRoutes     *wikiresync.Routes
 	resyncJob        *wikiresync.ResyncJob
+	ignoreCache      *ignore.Cache
 	reloadMu         sync.Mutex
 	reloadWG         sync.WaitGroup
 	shutdownCtx      context.Context
@@ -92,9 +102,11 @@ type WikiOptions struct {
 	RefreshTokenTimeout     time.Duration // Refresh token timeout duration
 	AuthDisabled            bool          // Whether authentication is disabled
 	EnableRevision          bool          // Whether revision recording/storage is enabled
+	EnableAPIKeyManagement  bool          // Whether the experimental API key management feature is enabled
 	MaxRevisionHistory      int           // Max revisions kept per page; 0 = unlimited
 	MaxAssetUploadSizeBytes int64         // Maximum allowed size in bytes for asset/import uploads; 0 = default
 	RevisionCoalesceWindow  time.Duration // Window for coalescing rapid successive saves; 0 = disabled
+	TOTPEncryptionKey       string        // Key used to encrypt per-user TOTP secrets at rest; empty disables TOTP self-service
 	Metrics                 *httpmetrics.HTTPMetrics
 }
 
@@ -200,23 +212,60 @@ func (w *Wiki) initAuth(options *WikiOptions) error {
 	if err != nil {
 		return err
 	}
+	if options.TOTPEncryptionKey != "" {
+		totpService, err := auth.NewTOTPService([]byte(options.TOTPEncryptionKey))
+		if err != nil {
+			return fmt.Errorf("invalid TOTP encryption key: %w", err)
+		}
+		w.totp = totpService
+	}
 	if !options.AuthDisabled {
 		sessionStore, err := auth.NewSessionStore(w.storageDir)
 		if err != nil {
 			return err
 		}
-		w.auth = auth.NewAuthService(w.user, sessionStore, options.JWTSecret, options.AccessTokenTimeout, options.RefreshTokenTimeout)
+		sessions := auth.NewSessionManager(sessionStore, options.JWTSecret, options.AccessTokenTimeout, options.RefreshTokenTimeout)
+		w.auth = auth.NewAuthService(w.user, sessions, w.totp)
+
+		// API keys are only meaningful when authentication is meaningful:
+		// key management is admin-only and RequireAdmin already hard-blocks
+		// admin operations when auth is disabled, so no key can be created
+		// in that mode anyway. Keeping construction inside this block (like
+		// sessionStore/w.auth) means w.APIKeyService() is nil when
+		// AuthDisabled, which in turn keeps the Bearer middleware from being
+		// registered at all — a key created before a later --disable-auth
+		// restart must not keep authenticating (and narrowing/blocking)
+		// requests in a mode where auth is supposed to be irrelevant.
+		//
+		// The feature is additionally gated behind EnableAPIKeyManagement:
+		// it ships experimental and off by default, so w.apiKeys stays nil
+		// (and the Bearer middleware/admin routes stay disabled) until an
+		// operator explicitly opts in.
+		if options.EnableAPIKeyManagement {
+			apiKeyStore, err := auth.NewAPIKeyStore(w.storageDir)
+			if err != nil {
+				return err
+			}
+			w.apiKeys = auth.NewAPIKeyService(apiKeyStore, w.user)
+		}
 	}
 	return nil
 }
 
 func (w *Wiki) initCoreServices(options *WikiOptions) error {
+	// Create a shared ignore cache for multi-level .leafwikiignore resolution.
+	rootDir := filepath.Join(w.storageDir, "root")
+	w.ignoreCache = ignore.NewCache(rootDir)
+
 	w.tree = tree.NewTreeService(w.storageDir)
+	w.tree.SetIgnoreCache(w.ignoreCache)
 	if err := w.tree.LoadTree(); err != nil {
 		return err
 	}
 	w.slug = tree.NewSlugService()
 	w.asset = assets.NewAssetService(w.storageDir, w.slug)
+	w.asset.SetIgnoreCache(w.ignoreCache)
+
 	return nil
 }
 
@@ -313,6 +362,7 @@ func (w *Wiki) buildRoutes(options *WikiOptions) {
 	w.tagsRoutes = w.buildTagsRoutes()
 	w.propertiesRoutes = w.buildPropertiesRoutes()
 	w.brandingRoutes = w.buildBrandingRoutes()
+	w.apiKeysRoutes = w.buildAPIKeysRoutes()
 	w.importerRoutes = w.buildImporterRoutes(options)
 	w.healthRoutes = wikihealth.NewRoutes(wikihealth.RoutesConfig{
 		Index:      w.searchIndex,
@@ -370,15 +420,20 @@ func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
 
 func (w *Wiki) buildAuthRoutes() *wikiauth.Routes {
 	return wikiauth.NewRoutes(wikiauth.RoutesConfig{
-		Login:             wikiauth.NewLoginUseCase(w.auth),
-		Logout:            wikiauth.NewLogoutUseCase(w.auth),
-		RefreshToken:      wikiauth.NewRefreshTokenUseCase(w.auth),
+		Login:             wikiauth.NewLoginUseCase(w.auth, w.metrics),
+		CompleteTOTPLogin: wikiauth.NewCompleteTOTPLoginUseCase(w.auth, w.metrics),
+		Logout:            wikiauth.NewLogoutUseCase(w.auth, w.metrics),
+		RefreshToken:      wikiauth.NewRefreshTokenUseCase(w.auth, w.metrics),
 		CreateUser:        wikiauth.NewCreateUserUseCase(w.user, w.userResolver, w.log),
 		UpdateUser:        wikiauth.NewUpdateUserUseCase(w.user, w.userResolver, w.log),
 		ChangeOwnPassword: wikiauth.NewChangeOwnPasswordUseCase(w.user),
 		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.user, w.userResolver, w.favorites, w.log),
 		GetUsers:          wikiauth.NewGetUsersUseCase(w.user),
 		GetUserByID:       wikiauth.NewGetUserByIDUseCase(w.user),
+		StartTOTPSetup:    wikiauth.NewStartTOTPSetupUseCase(w.auth),
+		ConfirmTOTPSetup:  wikiauth.NewConfirmTOTPSetupUseCase(w.auth, w.metrics),
+		DisableTOTP:       wikiauth.NewDisableTOTPUseCase(w.auth, w.metrics),
+		GetTOTPStatus:     wikiauth.NewGetTOTPStatusUseCase(w.auth),
 		AuthService:       w.auth,
 	})
 }
@@ -456,10 +511,21 @@ func (w *Wiki) buildBrandingRoutes() *wikibranding.Routes {
 	})
 }
 
+func (w *Wiki) buildAPIKeysRoutes() *wikiapikeys.Routes {
+	return wikiapikeys.NewRoutes(wikiapikeys.RoutesConfig{
+		CreateAPIKey: wikiapikeys.NewCreateAPIKeyUseCase(w.apiKeys),
+		ListAPIKeys:  wikiapikeys.NewListAPIKeysUseCase(w.apiKeys),
+		RevokeAPIKey: wikiapikeys.NewRevokeAPIKeyUseCase(w.apiKeys),
+		AuthService:  w.auth,
+	})
+}
+
 func (w *Wiki) buildImporterRoutes(options *WikiOptions) *wikiimporter.Routes {
 	importerDir := filepath.Join(options.StorageDir, ".importer")
 	adapter := NewWikiImportAdapter(w)
-	planner := coreimporter.NewPlanner(adapter, w.slug)
+	planner := coreimporter.NewPlanner(adapter, w.slug, options.StorageDir)
+	planner.SetIgnoreCache(w.ignoreCache)
+
 	store := coreimporter.NewPlanStore(filepath.Join(importerDir, "current-plan.json"))
 	svc := coreimporter.NewImporterService(planner, store, filepath.Join(importerDir, "workspaces"), options.MaxAssetUploadSizeBytes)
 	return wikiimporter.NewRoutes(wikiimporter.RoutesConfig{
@@ -487,12 +553,19 @@ func (w *Wiki) Registrars() []httpinternal.RouteRegistrar {
 		w.tagsRoutes,
 		w.propertiesRoutes,
 		w.brandingRoutes,
+		w.apiKeysRoutes,
 		w.importerRoutes,
 		w.healthRoutes,
 		w.resyncRoutes,
 	}
 	if w.backupRoutes != nil {
 		registrars = append(registrars, w.backupRoutes)
+	}
+	if w.snapshotRoutes != nil {
+		registrars = append(registrars, w.snapshotRoutes)
+	}
+	if w.restoreRoutes != nil {
+		registrars = append(registrars, w.restoreRoutes)
 	}
 	return registrars
 }
@@ -502,9 +575,31 @@ func (w *Wiki) SetBackupRoutes(r *wikibackup.Routes) {
 	w.backupRoutes = r
 }
 
+// SetSnapshotRoutes sets the full-backup (snapshot) routes and must be called before router creation.
+func (w *Wiki) SetSnapshotRoutes(r *wikisnapshot.Routes) {
+	w.snapshotRoutes = r
+}
+
+// SetRestoreRoutes sets the live-restore routes and must be called before router creation.
+func (w *Wiki) SetRestoreRoutes(r *wikirestore.Routes) {
+	w.restoreRoutes = r
+}
+
 // AuthService returns the authentication service.
 func (w *Wiki) AuthService() *auth.AuthService {
 	return w.auth
+}
+
+// BrandingService returns the branding service.
+func (w *Wiki) BrandingService() *branding.BrandingService {
+	return w.branding
+}
+
+// TOTPService returns the TOTP service, or nil if no --totp-encryption-key /
+// LEAFWIKI_TOTP_ENCRYPTION_KEY was configured (TOTP self-service is then
+// unavailable until an operator sets one).
+func (w *Wiki) TOTPService() *auth.TOTPService {
+	return w.totp
 }
 
 // FrontendConfig returns the minimal runtime data required by the router to serve the SPA.
@@ -747,6 +842,11 @@ func (w *Wiki) UserService() *auth.UserService {
 	return w.user
 }
 
+// APIKeyService returns the API key service used for Bearer authentication.
+func (w *Wiki) APIKeyService() *auth.APIKeyService {
+	return w.apiKeys
+}
+
 func (w *Wiki) Close() error {
 	w.shutdownCancel() // signal in-flight reloads to abort
 	w.reloadWG.Wait()  // drain goroutines before closing stores
@@ -758,6 +858,12 @@ func (w *Wiki) Close() error {
 		}
 	} else if w.user != nil {
 		if err := w.user.Close(); err != nil {
+			return err
+		}
+	}
+
+	if w.apiKeys != nil {
+		if err := w.apiKeys.Close(); err != nil {
 			return err
 		}
 	}

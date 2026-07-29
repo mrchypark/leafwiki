@@ -44,7 +44,8 @@ export default class TreeView {
       | 'tree-view-action-button-sort'
       | 'tree-view-action-button-move'
       | 'tree-view-action-button-delete'
-      | 'tree-view-action-button-rename',
+      | 'tree-view-action-button-rename'
+      | 'tree-view-action-button-favorite',
   ) {
     await nodeRow.waitFor({ state: 'visible' });
     await nodeRow.scrollIntoViewIfNeeded();
@@ -286,6 +287,20 @@ export default class TreeView {
     );
     await expect(deleteButton).toBeVisible();
     await deleteButton.click();
+  }
+
+  async toggleFavoriteForPage(pageTitle: string) {
+    await this.ensureSidebarVisible();
+    await this.closeBlockingOverlayIfPresent();
+
+    const nodeRow = this.getNodeRowByTitle(pageTitle);
+    await this.openMoreActionsMenuForNodeRow(nodeRow, 'tree-view-action-button-favorite');
+
+    const favoriteButton = this.page.locator(
+      '[role="menuitem"][data-testid="tree-view-action-button-favorite"]',
+    );
+    await expect(favoriteButton).toBeVisible();
+    await favoriteButton.click();
   }
 
   async expectNumberOfTreeNodes(expectedCount: number) {

@@ -186,7 +186,7 @@ func TestWiki_DeletePage_Recursive(t *testing.T) {
 }
 
 func TestWiki_TriggerResyncAsync_EmitsMetrics(t *testing.T) {
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	w := createWikiTestInstanceWithMetrics(t, metrics)
 	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
 
@@ -304,6 +304,75 @@ func TestWiki_AuthDisabled_Initialization(t *testing.T) {
 	// Verify that the auth service is nil
 	if wikiInstance.auth != nil {
 		t.Error("Expected auth service to be nil when AuthDisabled is true")
+	}
+}
+
+// TestWiki_AuthDisabled_APIKeysUnavailable guards against the exact
+// regression a code review caught: API-key auth must not remain active when
+// --disable-auth is set, or a key created before a later restart with
+// --disable-auth could keep authenticating (and narrowing/blocking)
+// requests in a mode where auth is supposed to be irrelevant.
+func TestWiki_AuthDisabled_APIKeysUnavailable(t *testing.T) {
+	wikiInstance, err := NewWiki(&WikiOptions{
+		StorageDir:   t.TempDir(),
+		AuthDisabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create wiki instance with AuthDisabled: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(wikiInstance.Close, t)
+
+	if wikiInstance.apiKeys != nil {
+		t.Error("Expected api key service to be nil when AuthDisabled is true")
+	}
+	if wikiInstance.APIKeyService() != nil {
+		t.Error("Expected APIKeyService() to be nil when AuthDisabled is true")
+	}
+}
+
+// TestWiki_APIKeyManagementDisabled_APIKeysUnavailable ensures the
+// experimental API key feature stays off by default: with auth enabled but
+// EnableAPIKeyManagement left false, APIKeyService() must be nil so the
+// Bearer middleware never gets registered and the admin CRUD routes report
+// the feature as disabled.
+func TestWiki_APIKeyManagementDisabled_APIKeysUnavailable(t *testing.T) {
+	wikiInstance, err := NewWiki(&WikiOptions{
+		StorageDir:             t.TempDir(),
+		AdminPassword:          "admin",
+		JWTSecret:              "secretkey",
+		AccessTokenTimeout:     15 * time.Minute,
+		RefreshTokenTimeout:    7 * 24 * time.Hour,
+		EnableAPIKeyManagement: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create wiki instance: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(wikiInstance.Close, t)
+
+	if wikiInstance.APIKeyService() != nil {
+		t.Error("Expected APIKeyService() to be nil when EnableAPIKeyManagement is false")
+	}
+}
+
+// TestWiki_APIKeyManagementEnabled_APIKeysAvailable confirms opting in via
+// EnableAPIKeyManagement actually constructs the service (auth must also be
+// enabled, since API keys are meaningless without it).
+func TestWiki_APIKeyManagementEnabled_APIKeysAvailable(t *testing.T) {
+	wikiInstance, err := NewWiki(&WikiOptions{
+		StorageDir:             t.TempDir(),
+		AdminPassword:          "admin",
+		JWTSecret:              "secretkey",
+		AccessTokenTimeout:     15 * time.Minute,
+		RefreshTokenTimeout:    7 * 24 * time.Hour,
+		EnableAPIKeyManagement: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create wiki instance: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(wikiInstance.Close, t)
+
+	if wikiInstance.APIKeyService() == nil {
+		t.Error("Expected APIKeyService() to be non-nil when EnableAPIKeyManagement is true")
 	}
 }
 
@@ -433,5 +502,49 @@ func TestWiki_EnsureBaselineRevisions_SkipsUnreadablePages(t *testing.T) {
 	}
 	if len(brokenRevisions) != 0 {
 		t.Fatalf("expected no baseline revision for unreadable page, got %d", len(brokenRevisions))
+	}
+}
+
+func TestWiki_ResyncRespectsLeafwikiignore(t *testing.T) {
+	tmp := t.TempDir()
+
+	rootDir := filepath.Join(tmp, "root")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// .leafwikiignore goes in root/ alongside the markdown files
+	test_utils.WriteFile(t, tmp, "root/.leafwikiignore", "secret.md")
+	test_utils.WriteFile(t, tmp, "root/public.md", "# Public Page")
+	test_utils.WriteFile(t, tmp, "root/secret.md", "# Secret Page")
+
+	w, err := NewWiki(&WikiOptions{
+		StorageDir:          tmp,
+		AdminPassword:       "admin",
+		JWTSecret:           "secretkey",
+		AccessTokenTimeout:  15 * time.Minute,
+		RefreshTokenTimeout: 7 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewWiki: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+
+	// Verify tree has only the public page
+	tree := w.tree.GetTree()
+	if len(tree.Children) != 1 {
+		t.Fatalf("expected 1 child in root, got %d", len(tree.Children))
+	}
+	if tree.Children[0].Slug != "public" {
+		t.Fatalf("expected child slug 'public', got %q", tree.Children[0].Slug)
+	}
+
+	// Verify ignored page is not findable
+	lookup, err := w.tree.LookupPagePath("secret")
+	if err != nil {
+		t.Fatalf("LookupPagePath: %v", err)
+	}
+	if lookup.Exists {
+		t.Fatal("expected ignored page 'secret' to not exist")
 	}
 }

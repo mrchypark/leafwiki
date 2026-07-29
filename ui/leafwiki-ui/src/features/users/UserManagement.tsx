@@ -1,6 +1,7 @@
 import { mapApiError } from '@/lib/api/errors'
 import { useUserStore } from '@/stores/users'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { useSetTitle } from '../viewer/setTitle'
 import { ChangePasswordButton } from './ChangePasswordButton'
@@ -9,16 +10,17 @@ import { DeleteUserButton } from './DeleteUserButton'
 import { useToolbarActions } from './useToolbarActions'
 
 export default function UserManagement() {
+  const { t } = useTranslation('users')
   const { users, loadUsers, reset } = useUserStore()
   const [loading, setLoading] = useState(true)
-  useSetTitle({ title: 'User Management' })
+  useSetTitle({ title: t('pageTitle') })
   useToolbarActions()
 
   useEffect(() => {
     loadUsers()
       .catch((err) => {
         console.warn(err)
-        const mapped = mapApiError(err, 'Error loading users')
+        const mapped = mapApiError(err, t('loadErrorFallback'))
         toast.error(mapped.message)
       })
       .finally(() => {
@@ -28,12 +30,12 @@ export default function UserManagement() {
     return () => {
       reset()
     }
-  }, [loadUsers, reset])
+  }, [loadUsers, reset, t])
 
   return (
     <>
       <div className="settings">
-        <h1 className="settings__title">User Management</h1>
+        <h1 className="settings__title">{t('pageTitle')}</h1>
 
         <div className="settings__header-actions">
           <CreateEditUserButton />
@@ -44,24 +46,35 @@ export default function UserManagement() {
             <table className="settings__table">
               <thead className="settings__table-head">
                 <tr>
-                  <th className="settings__table-header-cell">Username</th>
-                  <th className="settings__table-header-cell">Email</th>
-                  <th className="settings__table-header-cell">Role</th>
-                  <th className="settings__table-header-cell">Actions</th>
+                  <th className="settings__table-header-cell">
+                    {t('columns.username')}
+                  </th>
+                  <th className="settings__table-header-cell">
+                    {t('columns.email')}
+                  </th>
+                  <th className="settings__table-header-cell">
+                    {t('columns.role')}
+                  </th>
+                  <th className="settings__table-header-cell">
+                    {t('totp.column')}
+                  </th>
+                  <th className="settings__table-header-cell">
+                    {t('columns.actions')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan={4} className="settings__table-body-message">
-                      Loading users...
+                    <td colSpan={5} className="settings__table-body-message">
+                      {t('loading')}
                     </td>
                   </tr>
                 )}
                 {!loading && users.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="settings__table-body-message">
-                      No users found.
+                    <td colSpan={5} className="settings__table-body-message">
+                      {t('noUsersFound')}
                     </td>
                   </tr>
                 )}
@@ -80,6 +93,19 @@ export default function UserManagement() {
                           }`}
                         >
                           {user.role}
+                        </span>
+                      </td>
+                      <td className="settings__table-cell">
+                        <span
+                          className={`settings__pill ${
+                            user.totpEnabled
+                              ? 'settings__pill-success'
+                              : 'settings__pill-warning'
+                          }`}
+                        >
+                          {user.totpEnabled
+                            ? t('totp.enabled')
+                            : t('totp.disabled')}
                         </span>
                       </td>
                       <td className="settings__actions-cell">

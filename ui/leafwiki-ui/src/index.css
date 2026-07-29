@@ -577,23 +577,43 @@
      subheader bar's matching padding-right (.page-viewer__subheader--toc-
      reserved / --collapsed in the subheader rules below) transitions with
      the exact same width/duration so it stays aligned with <main> at every
-     frame, not just at rest. */
+     frame, not just at rest.
+
+     Stays `display: flex; width: 0` (not `display: none`) even when empty,
+     so the pane always has a real box to animate width from/to. Toggling
+     `display: none` <-> `flex` on mount/unmount of the portaled TocSidePanel
+     (e.g. navigating from a page with no TOC to one with a TOC) gives the
+     browser no previous width to transition from, so <main> would snap to
+     its narrower width in one frame while the subheader's padding-right
+     (which animates on an always-mounted node) still eased in over 200ms —
+     a visible desync between the two. Keeping a persistent 0-width flex box
+     here means that first appearance animates too, in lockstep. */
   .app-layout__toc-pane {
     display: none;
   }
 
   @media (min-width: 1280px) {
-    .app-layout__toc-pane:not(:empty) {
+    .app-layout__toc-pane {
       display: flex;
       flex-direction: column;
       position: sticky;
       top: 0;
       align-self: flex-start;
-      width: 16rem;
+      width: 0;
       flex-shrink: 0;
-      padding-top: 1.5rem;
       overflow: hidden;
+      /* Caps the panel to the height of #scroll-container (its sticky
+         containing block, itself bounded by .app-layout's viewport-derived
+         height) so it can never grow past the bottom of the window with
+         many headings. .page-viewer__toc-panel-list is the part that
+         actually scrolls once capped — see index.css further down. */
+      max-height: 100%;
       transition: width 200ms ease;
+    }
+
+    .app-layout__toc-pane:not(:empty) {
+      width: 16rem;
+      padding-top: 1.5rem;
     }
 
     /* 3rem, not a rounder 2.5rem: the header needs pl-3 (12px) + border-l
@@ -839,6 +859,31 @@
 
   .login__submit {
     @apply w-full;
+  }
+
+  .login__totp-description {
+    @apply text-muted-foreground mb-4 text-sm;
+  }
+
+  .login__totp-back {
+    @apply mt-2 w-full;
+  }
+
+  /* TOTP setup dialog */
+  .totp-setup__qr {
+    @apply flex justify-center rounded bg-white p-3;
+  }
+
+  .totp-setup__manual-key {
+    @apply text-interface-text text-center text-sm;
+  }
+
+  .totp-setup__manual-key code {
+    @apply bg-surface-alt rounded px-1.5 py-0.5 font-mono text-xs break-all;
+  }
+
+  .totp-setup__recovery-codes {
+    @apply bg-surface-alt text-interface-text rounded p-3 font-mono text-sm leading-relaxed;
   }
 
   .editor-title-bar {
@@ -1686,7 +1731,7 @@
      border-color (not display/width), independent of the always-visible
      header/toggle button below. */
   .page-viewer__toc-panel {
-    @apply border-surface-border w-full border-l pb-4 pl-3 transition-colors duration-200;
+    @apply border-surface-border flex min-h-0 w-full flex-1 flex-col border-l pb-4 pl-3 transition-colors duration-200;
   }
 
   .page-viewer__toc-panel--collapsed {
@@ -1719,7 +1764,13 @@
     border: none;
   }
 
+  /* flex: 1 + min-height: 0 lets this take whatever space is left in the
+     panel after the fixed-height header and scroll internally once that's
+     less than the entry list's natural height — the header stays put and
+     only the entries scroll, instead of the whole sticky panel growing
+     past the bottom of the viewport (see .app-layout__toc-pane). */
   .page-viewer__toc-panel-list {
+    @apply min-h-0 flex-1 overflow-y-auto;
     visibility: visible;
     transition: visibility 0s linear 0s;
   }
@@ -1741,7 +1792,7 @@
      lines as the pane narrows during the collapse transition, which reads as
      jumbled reflow rather than a clean shrink. */
   .page-viewer__toc-panel-entry {
-    @apply text-interface-text/70 hover:text-interface-text block w-full cursor-pointer overflow-hidden py-0.5 text-left text-sm leading-snug text-ellipsis whitespace-nowrap transition-colors;
+    @apply text-interface-text/70 hover:text-interface-text block w-full cursor-pointer overflow-hidden py-0.5 pr-3 text-left text-sm leading-snug text-ellipsis whitespace-nowrap transition-colors;
     background: none;
     border: none;
   }
@@ -2598,7 +2649,7 @@
   }
 
   .tree-node {
-    @apply text-interface-text relative flex cursor-pointer items-center transition-all;
+    @apply text-interface-text relative flex cursor-pointer items-center transition-colors;
   }
 
   .tree-node--active {

@@ -62,7 +62,7 @@ func createRouterTestInstanceWithMetricsEnabled(w *wiki.Wiki, t *testing.T) *gin
 		RefreshTokenTimeout:     7 * 24 * time.Hour,
 		HideLinkMetadataSection: false,
 		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
-		Metrics:                 httpmetrics.NewHTTPMetrics(),
+		Metrics:                 httpmetrics.NewHTTPMetrics("test"),
 	})
 }
 
@@ -966,6 +966,152 @@ func TestConfigEndpoint_IncludesEnableLinkRefactor(t *testing.T) {
 
 	if !gotEnabled {
 		t.Fatalf("Expected enableLinkRefactor=true, got %v", gotEnabled)
+	}
+}
+
+func TestConfigEndpoint_IncludesEnableAPIKeyManagement(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		InjectCodeInHeader:      "",
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		HideLinkMetadataSection: false,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+		EnableAPIKeyManagement:  true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Invalid JSON response: %v", err)
+	}
+
+	gotEnabled, ok := resp["enableApiKeyManagement"].(bool)
+	if !ok {
+		t.Fatalf("Expected enableApiKeyManagement in config response, got %v", resp)
+	}
+
+	if !gotEnabled {
+		t.Fatalf("Expected enableApiKeyManagement=true, got %v", gotEnabled)
+	}
+}
+
+func TestConfigEndpoint_EnableAPIKeyManagementDefaultsToFalse(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Invalid JSON response: %v", err)
+	}
+
+	gotEnabled, ok := resp["enableApiKeyManagement"].(bool)
+	if !ok {
+		t.Fatalf("Expected enableApiKeyManagement in config response, got %v", resp)
+	}
+
+	if gotEnabled {
+		t.Fatalf("Expected enableApiKeyManagement=false by default, got %v", gotEnabled)
+	}
+}
+
+func TestConfigEndpoint_IncludesTOTPAvailable(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		InjectCodeInHeader:      "",
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		HideLinkMetadataSection: false,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+		TOTPAvailable:           true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Invalid JSON response: %v", err)
+	}
+
+	gotAvailable, ok := resp["totpAvailable"].(bool)
+	if !ok {
+		t.Fatalf("Expected totpAvailable in config response, got %v", resp)
+	}
+
+	if !gotAvailable {
+		t.Fatalf("Expected totpAvailable=true, got %v", gotAvailable)
+	}
+}
+
+func TestConfigEndpoint_TOTPAvailableDefaultsToFalse(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+
+	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
+		PublicAccess:            true,
+		AllowInsecure:           true,
+		AccessTokenTimeout:      15 * time.Minute,
+		RefreshTokenTimeout:     7 * 24 * time.Hour,
+		MaxAssetUploadSizeBytes: assets.DefaultMaxUploadSizeBytes,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Invalid JSON response: %v", err)
+	}
+
+	gotAvailable, ok := resp["totpAvailable"].(bool)
+	if !ok {
+		t.Fatalf("Expected totpAvailable in config response, got %v", resp)
+	}
+
+	if gotAvailable {
+		t.Fatalf("Expected totpAvailable=false by default, got %v", gotAvailable)
 	}
 }
 
@@ -3390,6 +3536,53 @@ func TestViewer_CannotDeletePage(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("Expected 403 Forbidden for viewer deleting page, got %d", rec.Code)
+	}
+}
+
+func TestViewer_CannotMovePage(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+
+	// Create a viewer user
+	createUserBody := `{"username": "vieweruser5", "email": "viewer5@example.com", "password": "viewerpass5", "role": "viewer"}`
+	authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUserBody))
+
+	// Create two pages as admin
+	a := createPageViaAPI(t, router, "Section A", "section-a", nil, pageNodeKind())
+	b := createPageViaAPI(t, router, "Section B", "section-b", nil, pageNodeKind())
+
+	// Try to move a under b as viewer
+	rec := authenticatedRequestAs(t, router, "vieweruser5", "viewerpass5", http.MethodPut, "/api/pages/"+a.ID+"/move", strings.NewReader(`{"version":"`+a.Version+`","parentId":"`+b.ID+`"}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for viewer moving page, got %d", rec.Code)
+	}
+}
+
+func TestViewer_CannotSortPages(t *testing.T) {
+	w := createWikiTestInstance(t)
+	defer test_utils.WrapCloseWithErrorCheck(w.Close, t)
+	router := createRouterTestInstance(w, t)
+
+	// Create a viewer user
+	createUserBody := `{"username": "vieweruser6", "email": "viewer6@example.com", "password": "viewerpass6", "role": "viewer"}`
+	authenticatedRequest(t, router, http.MethodPost, "/api/users", strings.NewReader(createUserBody))
+
+	// Create pages as admin
+	page1 := createPageViaAPI(t, router, "Page 1", "page-1", nil, pageNodeKind())
+	page2 := createPageViaAPI(t, router, "Page 2", "page-2", nil, pageNodeKind())
+
+	// Try to sort pages as viewer
+	payload := map[string]interface{}{
+		"orderedIds": []string{page2.ID, page1.ID},
+	}
+	body, _ := json.Marshal(payload)
+
+	rec := authenticatedRequestAs(t, router, "vieweruser6", "viewerpass6", http.MethodPut, "/api/pages/root/sort", strings.NewReader(string(body)))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for viewer sorting pages, got %d", rec.Code)
 	}
 }
 

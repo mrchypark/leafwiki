@@ -35,6 +35,7 @@ describe('PageFrontmatterPanel draft control', () => {
         username: 'editor',
         email: 'editor@example.test',
         role: 'editor',
+        totpEnabled: false,
       },
     })
   })
@@ -81,6 +82,7 @@ describe('PageFrontmatterPanel draft control', () => {
           username: 'viewer',
           email: 'viewer@example.test',
           role: 'viewer',
+          totpEnabled: false,
         },
       })
     } else if (_label === 'anonymous') {

@@ -4,7 +4,7 @@ import i18next from '@/lib/i18n'
 import { useIsReadOnly } from '@/lib/useIsReadOnly'
 import { Link2Off, Paperclip } from 'lucide-react'
 import { useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useViewerStore } from '../viewer/viewer'
 import { useLinkStatusStore } from './linkstatus_store'
 
@@ -46,7 +46,9 @@ export function BacklinkInfo() {
     <div className="backlinks__pane">
       <div className="backlinks__content">
         {error && !loading ? (
-          <p className="page-viewer__error">Error: {error}</p>
+          <p className="page-viewer__error">
+            {t('backlinks.errorPrefix', { error })}
+          </p>
         ) : null}
 
         <div className="backlinks__group">

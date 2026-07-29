@@ -23,6 +23,7 @@ func newTestConfig(t *testing.T) Config {
 	assetsDir := filepath.Join(base, "assets")
 	backupsDir := filepath.Join(base, "backups")
 	usersDBPath := filepath.Join(base, "users.db")
+	brandingConfigFile := test_utils.WriteFile(t, base, "branding.json", `{"siteName":"Test Site"}`)
 
 	test_utils.WriteFile(t, rootDir, "page.md", "# Hello\n")
 	test_utils.WriteFile(t, assetsDir, "image.png", "fake-image-bytes")
@@ -30,11 +31,12 @@ func newTestConfig(t *testing.T) Config {
 	createTestUsersDB(t, usersDBPath)
 
 	return Config{
-		BackupsDir:  backupsDir,
-		RootDir:     rootDir,
-		AssetsDir:   assetsDir,
-		UsersDBPath: usersDBPath,
-		WikiVersion: "v0.0.0-test",
+		BackupsDir:         backupsDir,
+		RootDir:            rootDir,
+		AssetsDir:          assetsDir,
+		BrandingConfigFile: brandingConfigFile,
+		UsersDBPath:        usersDBPath,
+		WikiVersion:        "v0.0.0-test",
 	}
 }
 
@@ -108,10 +110,95 @@ func TestCreateSnapshot_ContainsExpectedFiles(t *testing.T) {
 		got[f.Name] = true
 	}
 
-	for _, want := range []string{"root/page.md", "assets/image.png", "users.db", "backup-meta.json"} {
+	for _, want := range []string{"root/page.md", "assets/image.png", "users.db", "branding.json", "backup-meta.json"} {
 		if !got[want] {
 			t.Errorf("zip missing expected entry %q; got entries: %v", want, got)
 		}
+	}
+}
+
+func TestCreateSnapshot_BrandingConfigFileIsOptional(t *testing.T) {
+	// An instance that has never touched branding settings has no
+	// branding.json on disk yet — createSnapshot must not fail over that
+	// (matches addFileToZip's existing "missing optional source" behavior).
+	cfg := newTestConfig(t)
+	cfg.BrandingConfigFile = filepath.Join(t.TempDir(), "does-not-exist", "branding.json")
+
+	id, err := createSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("createSnapshot failed: %v", err)
+	}
+
+	zipPath := filepath.Join(cfg.BackupsDir, id+".zip")
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("failed to open zip: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(r.Close, t)
+
+	for _, f := range r.File {
+		if f.Name == "branding.json" {
+			t.Error("expected no branding.json entry when the source file doesn't exist")
+		}
+	}
+}
+
+func TestCreateSnapshot_SameSecondCallsDoNotCollide(t *testing.T) {
+	cfg := newTestConfig(t)
+
+	id1, err := createSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first createSnapshot failed: %v", err)
+	}
+	id2, err := createSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("second createSnapshot failed: %v", err)
+	}
+
+	if id1 == id2 {
+		t.Fatalf("expected distinct IDs for two createSnapshot calls, got %q twice", id1)
+	}
+
+	for _, id := range []string{id1, id2} {
+		if _, err := os.Stat(filepath.Join(cfg.BackupsDir, id+".zip")); err != nil {
+			t.Errorf("expected zip for %s to still exist: %v", id, err)
+		}
+		if _, err := os.Stat(filepath.Join(cfg.BackupsDir, id+".json")); err != nil {
+			t.Errorf("expected sidecar for %s to still exist: %v", id, err)
+		}
+	}
+}
+
+func TestUniqueSnapshotID_ReturnsSameIDWhenNoCollision(t *testing.T) {
+	backupsDir := t.TempDir()
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	id, err := uniqueSnapshotID(backupsDir, ts)
+	if err != nil {
+		t.Fatalf("uniqueSnapshotID failed: %v", err)
+	}
+	want := "snapshot-20260101-120000"
+	if id != want {
+		t.Errorf("id = %q, want %q", id, want)
+	}
+}
+
+func TestUniqueSnapshotID_AppendsSuffixOnCollision(t *testing.T) {
+	backupsDir := t.TempDir()
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	base := "snapshot-20260101-120000"
+
+	if err := os.WriteFile(filepath.Join(backupsDir, base+".zip"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	id, err := uniqueSnapshotID(backupsDir, ts)
+	if err != nil {
+		t.Fatalf("uniqueSnapshotID failed: %v", err)
+	}
+	want := base + "-2"
+	if id != want {
+		t.Errorf("id = %q, want %q", id, want)
 	}
 }
 
@@ -256,6 +343,90 @@ func TestManager_Delete_RemovesFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(backupsDir, entry.ID+".json")); !os.IsNotExist(err) {
 		t.Errorf("expected sidecar file to be removed")
+	}
+}
+
+func TestManager_RunOnce_ErrAlreadyRunning(t *testing.T) {
+	cfg := newTestConfig(t)
+	m := NewManager(cfg)
+
+	if !m.status.TryStart() {
+		t.Fatal("expected TryStart to succeed")
+	}
+	defer m.status.SetSuccess(time.Now().UTC(), "")
+
+	assertLocalizedErrorCode(t, m.RunOnce(context.Background()), "snapshot_already_running")
+}
+
+func TestManager_PruneOldSnapshots_KeepsNewestOnly(t *testing.T) {
+	backupsDir := t.TempDir()
+	m := NewManager(Config{BackupsDir: backupsDir, RetentionCount: 2})
+
+	entries := []SnapshotEntry{
+		{ID: "snapshot-20260101-000000", CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), SizeBytes: 1},
+		{ID: "snapshot-20260102-000000", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), SizeBytes: 1},
+		{ID: "snapshot-20260103-000000", CreatedAt: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), SizeBytes: 1},
+	}
+	for _, e := range entries {
+		writeSidecarFixture(t, backupsDir, e)
+	}
+
+	if err := m.pruneOldSnapshots(); err != nil {
+		t.Fatalf("pruneOldSnapshots failed: %v", err)
+	}
+
+	remaining, err := m.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining snapshots, got %d", len(remaining))
+	}
+	want := map[string]bool{"snapshot-20260103-000000": true, "snapshot-20260102-000000": true}
+	for _, r := range remaining {
+		if !want[r.ID] {
+			t.Errorf("unexpected snapshot retained: %s", r.ID)
+		}
+	}
+}
+
+func TestManager_PruneOldSnapshots_UnlimitedWhenRetentionNotPositive(t *testing.T) {
+	backupsDir := t.TempDir()
+	m := NewManager(Config{BackupsDir: backupsDir, RetentionCount: 0})
+
+	writeSidecarFixture(t, backupsDir, SnapshotEntry{ID: "snapshot-20260101-000000", CreatedAt: time.Now().UTC(), SizeBytes: 1})
+	writeSidecarFixture(t, backupsDir, SnapshotEntry{ID: "snapshot-20260102-000000", CreatedAt: time.Now().UTC(), SizeBytes: 1})
+
+	if err := m.pruneOldSnapshots(); err != nil {
+		t.Fatalf("pruneOldSnapshots failed: %v", err)
+	}
+
+	remaining, err := m.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Errorf("expected no pruning with RetentionCount=0, got %d remaining", len(remaining))
+	}
+}
+
+func TestManager_RunOnce_PrunesAfterSuccess(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.RetentionCount = 2
+	m := NewManager(cfg)
+
+	for i := 0; i < 3; i++ {
+		if err := m.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce #%d failed: %v", i, err)
+		}
+	}
+
+	remaining, err := m.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected retention to keep 2 snapshots, got %d", len(remaining))
 	}
 }
 

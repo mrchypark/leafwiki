@@ -55,10 +55,8 @@ func (e *LinkIndexSideEffect) Apply(event PageSaveEvent) {
 				e.log.Warn("failed to reconcile links for updated pages", "error", err)
 				e.recordFailure(event.Operation)
 			}
-		} else {
-			if event.After != nil {
-				e.updateAndHeal(event.After, event.Operation)
-			}
+		} else if event.After != nil {
+			e.updateAndHeal(event.After, event.Operation)
 		}
 		if !event.DraftChanged && !event.SlugChanged && event.TitleChanged {
 			e.reconcileChangedTitles(event)

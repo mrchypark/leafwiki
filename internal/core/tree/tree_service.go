@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/shared"
 	"github.com/perber/wiki/internal/core/treemigration"
 )
@@ -44,17 +45,23 @@ const (
 func NewTreeService(storageDir string) *TreeService {
 	persistGate := make(chan struct{}, 1)
 	persistGate <- struct{}{}
+	store := NewNodeStore(storageDir)
 
 	return &TreeService{
 		storageDir:   storageDir,
 		tree:         nil,
-		store:        NewNodeStore(storageDir),
+		store:        store,
 		log:          slog.Default().With("component", "TreeService"),
 		nodesByID:    make(map[string]*PageNode),
 		nodesByTitle: make(map[string][]*PageNode),
 		childSlugs:   make(map[string]map[string]*PageNode),
 		persistGate:  persistGate,
 	}
+}
+
+// SetIgnoreCache sets the ignore cache for multi-level ignore resolution.
+func (t *TreeService) SetIgnoreCache(ignoreCache *ignore.Cache) {
+	t.store.SetIgnoreCache(ignoreCache)
 }
 
 // LoadTree reconstructs the in-memory tree from the filesystem.
@@ -1603,7 +1610,7 @@ func (t *TreeService) EnsurePagePathWithDraft(userID string, p string, targetTit
 // MoveNode moves a node to another parent (root if parentID is empty/"root"),
 // appending it at the end of the new parent's children.
 func (t *TreeService) MoveNode(userID string, id string, parentID string, expectedVersion string) error {
-	return t.moveNode(userID, id, parentID, expectedVersion, nil, -1)
+	return t.MoveNodeToPosition(userID, id, parentID, expectedVersion, -1)
 }
 
 // MoveNodeWithPreconditions rejects a move when source or destination ancestry changed.
@@ -1616,12 +1623,6 @@ func (t *TreeService) MoveNodeWithPreconditions(userID string, id string, parent
 // A negative or out-of-range position appends at the end.
 func (t *TreeService) MoveNodeToPosition(userID string, id string, parentID string, expectedVersion string, position int) error {
 	return t.moveNode(userID, id, parentID, expectedVersion, nil, position)
-}
-
-// MoveNodeToPositionWithPreconditions combines positioned moves with ancestry
-// checks so every move continues through the same persisted mutation path.
-func (t *TreeService) MoveNodeToPositionWithPreconditions(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions, position int) error {
-	return t.moveNode(userID, id, parentID, expectedVersion, preconditions, position)
 }
 
 func (t *TreeService) moveNode(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions, position int) error {
@@ -1786,6 +1787,12 @@ func (t *TreeService) moveNode(userID string, id string, parentID string, expect
 	}
 
 	return nil
+}
+
+// MoveNodeToPositionWithPreconditions combines positioned moves with ancestry
+// checks so every move continues through the same persisted mutation path.
+func (t *TreeService) MoveNodeToPositionWithPreconditions(userID string, id string, parentID string, expectedVersion string, preconditions *PathPreconditions, position int) error {
+	return t.moveNode(userID, id, parentID, expectedVersion, preconditions, position)
 }
 
 func (t *TreeService) rollbackMovePreparationLocked(newParent *PageNode, newParentWasConverted bool) error {

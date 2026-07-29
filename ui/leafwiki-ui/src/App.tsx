@@ -12,7 +12,7 @@ import { useSessionStore } from '@/stores/session'
 import useApplyDesignMode from '@/useApplyDesignMode'
 import { Loader2 } from 'lucide-react'
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
-import { RouterProvider } from 'react-router-dom'
+import { RouterProvider } from 'react-router/dom'
 import { toast, Toaster } from 'sonner'
 import './App.css'
 import { useBrandingStore } from './stores/branding'
@@ -24,6 +24,7 @@ function App() {
   const loadConfig = useConfigStore((s) => s.loadConfig)
   const authDisabled = useConfigStore((s) => s.authDisabled)
   const enableRevision = useConfigStore((s) => s.enableRevision)
+  const enableApiKeyManagement = useConfigStore((s) => s.enableApiKeyManagement)
   const userManagementUrl = useConfigStore((s) => s.userManagementUrl)
   const loginUrl = useConfigStore((s) => s.loginUrl)
   const loadBranding = useBrandingStore((s) => s.loadBranding)
@@ -92,6 +93,7 @@ function App() {
         isReadOnlyViewer,
         authDisabled,
         enableRevision,
+        enableApiKeyManagement,
         userManagementUrl,
         loginUrl,
         BASE_PATH || undefined,
@@ -100,6 +102,7 @@ function App() {
       isReadOnlyViewer,
       authDisabled,
       enableRevision,
+      enableApiKeyManagement,
       userManagementUrl,
       loginUrl,
     ],

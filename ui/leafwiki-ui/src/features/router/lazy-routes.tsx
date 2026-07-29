@@ -1,5 +1,8 @@
 import { lazy } from 'react'
 
+export const ApiKeysManagement = lazy(
+  () => import('../apikeys/ApiKeysManagement'),
+)
 export const BackupSettings = lazy(() => import('../backup/BackupSettings'))
 export const LoginForm = lazy(() => import('../auth/LoginForm'))
 export const BrandingSettings = lazy(
@@ -13,5 +16,8 @@ export const MaintenanceSettings = lazy(
 export const PageHistoryPage = lazy(() => import('../page/PageHistoryPage'))
 export const PermalinkRedirect = lazy(() => import('../page/PermalinkRedirect'))
 export const RootRedirect = lazy(() => import('../page/RootRedirect'))
+export const SnapshotSettings = lazy(
+  () => import('../snapshot/SnapshotSettings'),
+)
 export const UserManagement = lazy(() => import('../users/UserManagement'))
 export { default as PageViewer } from '../viewer/PageViewer'

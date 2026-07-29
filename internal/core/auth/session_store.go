@@ -3,12 +3,13 @@ package auth
 import (
 	"context"
 	"database/sql"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/perber/wiki/internal/core/shared/sqliteutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -19,6 +20,7 @@ type SessionStore struct {
 	db         *sql.DB
 	cancel     context.CancelFunc
 	done       chan struct{}
+	log        *slog.Logger
 }
 
 func sessionDatabasePath(storageDir string, filename string) string {
@@ -33,15 +35,20 @@ func NewSessionStore(storageDir string) (*SessionStore, error) {
 		filename:   "sessions.db",
 		cancel:     cancel,
 		done:       make(chan struct{}),
+		log:        slog.Default().With("component", "SessionStore"),
 	}
 
-	err := s.ensureSchema()
-	if err != nil {
-		// Ensure any opened database connection is closed on error
-		if s.db != nil {
-			_ = s.db.Close()
-			s.db = nil
+	err := sqliteutil.RetryOnCorruption(sessionDatabasePath(s.storageDir, s.filename), func() error {
+		if err := s.ensureSchema(); err != nil {
+			if s.db != nil {
+				_ = s.db.Close()
+				s.db = nil
+			}
+			return err
 		}
+		return nil
+	})
+	if err != nil {
 		cancel()
 		return nil, err
 	}
@@ -57,7 +64,7 @@ func NewSessionStore(storageDir string) (*SessionStore, error) {
 				return
 			case <-ticker.C:
 				if err := s.CleanupExpiredSessions(); err != nil {
-					log.Printf("failed to cleanup expired sessions: %v", err)
+					s.log.Warn("failed to cleanup expired sessions", "error", err)
 				}
 			}
 		}
@@ -178,6 +185,31 @@ func (s *SessionStore) RevokeAllSessionsForUser(userID string) error {
 			SET revoked_at = ?
 			WHERE user_id = ? AND revoked_at IS NULL;
 		`, time.Now().Unix(), userID)
+		return err
+	})
+}
+
+// RevokeAllSessionsForUserExcept revokes every active session for userID
+// except the one identified by exceptID. If exceptID is empty, every session
+// is revoked (same as RevokeAllSessionsForUser) — the safe fallback when the
+// caller could not identify which session to preserve.
+func (s *SessionStore) RevokeAllSessionsForUserExcept(userID, exceptID string) error {
+	return s.withDB(func(db *sql.DB) error {
+		_, err := db.Exec(`
+			UPDATE sessions
+			SET revoked_at = ?
+			WHERE user_id = ? AND revoked_at IS NULL AND id != ?;
+		`, time.Now().Unix(), userID, exceptID)
+		return err
+	})
+}
+
+// DeleteAllSessions removes every session row regardless of state (active,
+// expired, or already revoked) — used after a restore, where the previous
+// sessions.db content is no longer meaningful against a swapped-in users.db.
+func (s *SessionStore) DeleteAllSessions() error {
+	return s.withDB(func(db *sql.DB) error {
+		_, err := db.Exec(`DELETE FROM sessions;`)
 		return err
 	})
 }

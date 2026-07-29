@@ -55,7 +55,10 @@ export function useToolbarActions({
   const enableRevision = useConfigStore((state) => state.enableRevision)
   const registerHotkey = useHotKeysStore((s) => s.registerHotkey)
   const unregisterHotkey = useHotKeysStore((s) => s.unregisterHotkey)
-  const itemLabel = pageKind === NODE_KIND_PAGE ? 'Page' : 'Section'
+  const itemLabel =
+    pageKind === NODE_KIND_PAGE
+      ? t('pageToolbar.itemPage')
+      : t('pageToolbar.itemSection')
   const isMacOS =
     typeof navigator !== 'undefined' &&
     /Mac|iPhone|iPad|iPod/.test(navigator.platform)
@@ -69,14 +72,14 @@ export function useToolbarActions({
     const toolbarButtons: ToolbarButton[] = [
       {
         id: 'edit-page',
-        label: `Edit ${itemLabel}`,
+        label: t('pageToolbar.editButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.edit', isMacOS),
         icon: <Pencil size={18} />,
         action: editPage,
       },
       {
         id: 'page-permalink',
-        label: `Share ${itemLabel}`,
+        label: t('pageToolbar.shareButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.permalink', isMacOS),
         icon: <Link2 size={18} />,
         variant: 'outline',
@@ -84,14 +87,14 @@ export function useToolbarActions({
       },
       {
         id: 'print-page',
-        label: `Print ${itemLabel}`,
+        label: t('pageToolbar.printButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.print', isMacOS),
         icon: <Printer size={18} />,
         action: printPage,
       },
       {
         id: 'copy-page',
-        label: `Copy ${itemLabel}`,
+        label: t('pageToolbar.copyButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.copy', isMacOS),
         icon: <Copy size={18} />,
         variant: 'outline',
@@ -107,7 +110,7 @@ export function useToolbarActions({
       },
       {
         id: 'delete-page',
-        label: `Delete ${itemLabel}`,
+        label: t('pageToolbar.deleteButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.delete', isMacOS),
         icon: <Trash2 size={18} />,
         variant: 'outline',
@@ -122,7 +125,7 @@ export function useToolbarActions({
     if (enableRevision) {
       toolbarButtons.splice(2, 0, {
         id: 'page-history',
-        label: `${itemLabel} History`,
+        label: t('pageToolbar.historyButton', { item: itemLabel }),
         hotkey: getShortcutDisplayLabel('viewer.page.history', isMacOS),
         icon: <History size={18} />,
         variant: 'outline',

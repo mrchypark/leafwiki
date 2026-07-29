@@ -11,7 +11,7 @@ import {
 import type { Page, PageNode } from '@/lib/api/pages'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type React from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TreeNodeActionsMenu from './TreeNodeActionsMenu'
 import { useTreeNodeActionsMenusStore } from './treeNodeActionsMenus'
@@ -172,9 +172,9 @@ describe('TreeNodeActionsMenu', () => {
     expect(
       screen.getByTestId('tree-view-action-button-move'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Copy Page')).toBeInTheDocument()
-    expect(screen.getByText('Add Page')).toBeInTheDocument()
-    expect(screen.getByText('Add Section')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuCopyPage')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuAddPage')).toBeInTheDocument()
+    expect(screen.getByText('treeActions.menuAddSection')).toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('tree-view-action-button-rename'))
     expect(useDialogsStore.getState().dialogProps).toMatchObject({

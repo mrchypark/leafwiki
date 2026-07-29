@@ -1,4 +1,3 @@
-import { FavoriteToggleButton } from '@/features/favorites/FavoriteToggleButton'
 import { TreeViewActionButton } from '@/features/tree/TreeViewActionButton'
 import { DraftBadge } from '@/components/DraftBadge'
 import {
@@ -18,8 +17,9 @@ import { useDraggable, useDroppable } from '@dnd-kit/core'
 import clsx from 'clsx'
 import { ChevronUp, FilePlus, FolderPlus } from 'lucide-react'
 import React, { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { useTreeDnd } from './treeDndContext'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
+import { useTreeDndStore } from './treeDndStore'
 import { useTreeNodeActionsMenusStore } from './treeNodeActionsMenus'
 import TreeNodeActionsMenu from './TreeNodeActionsMenu'
 
@@ -28,6 +28,7 @@ type Props = {
 }
 
 export const TreeNode = React.memo(function TreeNode({ node }: Props) {
+  const { t } = useTranslation('viewer')
   const open = useTreeStore((s) => !!s.openNodeIdSet?.[node.id])
   const isStoreActive = useTreeStore((s) => s.activeNodeId === node.id)
   const toggleNode = useTreeStore((s) => s.toggleNode)
@@ -42,7 +43,11 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
   const isLoggedIn = useSessionStore((s) => s.user !== null)
   const isActive = isStoreActive
 
-  const dnd = useTreeDnd()
+  const dndEnabled = useTreeDndStore((s) => s.enabled)
+  const isDragActive = useTreeDndStore((s) => s.activeId === node.id)
+  const dropZone = useTreeDndStore((s) =>
+    s.dropTarget?.nodeId === node.id ? s.dropTarget.zone : null,
+  )
   const {
     setNodeRef: setDragRef,
     listeners,
@@ -50,18 +55,17 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
   } = useDraggable({
     id: node.id,
     data: { node },
-    disabled: !dnd.enabled,
+    disabled: !dndEnabled,
   })
   const { setNodeRef: setDropRef } = useDroppable({
     id: node.id,
     data: { node },
-    disabled: !dnd.enabled,
+    disabled: !dndEnabled,
   })
   const setRowRef = (el: HTMLElement | null) => {
     setDragRef(el)
     setDropRef(el)
   }
-  const dropTarget = dnd.dropTarget?.nodeId === node.id ? dnd.dropTarget : null
 
   const indent = 4
   const markerOffset = 8 // Distance from left for the vertical line
@@ -81,7 +85,7 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
             'tree-node__title--active': isActive,
           })}
         >
-          {node.title || 'Untitled Page'}
+          {node.title || t('treeActions.untitledPage')}
         </span>
         {isEffectivelyDraft(node) && (
           <DraftBadge inherited={isInheritedDraft(node)} />
@@ -96,25 +100,25 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
     <>
       <div
         ref={setRowRef}
-        {...(dnd.enabled ? listeners : {})}
+        {...(dndEnabled ? listeners : {})}
         className={clsx('tree-node', {
           'tree-node--active': isActive,
           'tree-node--inactive': !isActive,
           'tree-node--dragging': isDragging,
-          'tree-node--drop-inside': dropTarget?.zone === 'inside',
+          'tree-node--drop-inside': dropZone === 'inside',
         })}
         data-testid={`tree-node-${node.id}`}
         style={{ paddingLeft: indent }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        {dropTarget?.zone === 'before' && (
+        {dropZone === 'before' && (
           <div className="tree-node__drop-line tree-node__drop-line--top" />
         )}
-        {dropTarget?.zone === 'after' && (
+        {dropZone === 'after' && (
           <div className="tree-node__drop-line tree-node__drop-line--bottom" />
         )}
-        {dropTarget?.zone === 'inside' && node.kind !== NODE_KIND_SECTION && (
+        {dropZone === 'inside' && node.kind !== NODE_KIND_SECTION && (
           // Nesting into a page converts it into a section on drop
           <FolderPlus size={14} className="tree-node__nest-hint" />
         )}
@@ -148,32 +152,26 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
           {linkText}
           {(isMobile || hovered || isActionsMenuOpen) && (
             <div className={clsx('tree-node__actions', treeActionButtonStyle)}>
-              {isLoggedIn && (
-                <FavoriteToggleButton
-                  pageId={node.id}
-                  className="tree-node__favorite-toggle"
+              {!readOnlyMode && (
+                <TreeViewActionButton
+                  actionName="add"
+                  icon={
+                    <FilePlus
+                      size={18}
+                      className={clsx(
+                        'tree-node__action-icon',
+                        isMobile && 'text-brand/70!',
+                      )}
+                    />
+                  }
+                  tooltip={t('treeActions.createNewPageTooltip')}
+                  onClick={() =>
+                    openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
+                  }
                 />
               )}
-              {!readOnlyMode && (
-                <>
-                  <TreeViewActionButton
-                    actionName="add"
-                    icon={
-                      <FilePlus
-                        size={18}
-                        className={clsx(
-                          'tree-node__action-icon',
-                          isMobile && 'text-brand/70!',
-                        )}
-                      />
-                    }
-                    tooltip="Create new page"
-                    onClick={() =>
-                      openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
-                    }
-                  />
-                  <TreeNodeActionsMenu node={node} />
-                </>
+              {(!readOnlyMode || isLoggedIn) && (
+                <TreeNodeActionsMenu node={node} />
               )}
             </div>
           )}
@@ -183,7 +181,7 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
       <div
         className={clsx('tree-node__children', {
           'tree-node__children--closed': !open,
-          'tree-node__children--dragging': dnd.activeId === node.id,
+          'tree-node__children--dragging': isDragActive,
         })}
       >
         {hasChildren &&

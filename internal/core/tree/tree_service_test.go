@@ -2976,23 +2976,26 @@ func TestTreeService_AcquirePersistence_ReturnsTokenWhenContextCancelsAfterRecei
 	}
 }
 
-func TestTreeService_ReconstructTreeFromFS_ErrorReleasesReaderAndWriterLocks(t *testing.T) {
+func TestTreeService_ReconstructTreeFromFS_SkipsDuplicateIDsAndReleasesLocks(t *testing.T) {
 	svc, storageDir := newLoadedService(t)
 	id, err := svc.CreateNode("editor", nil, "Page", "page", ptrKind(NodeKindPage))
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
-	page, err := svc.GetPage(*id)
-	if err != nil {
-		t.Fatalf("GetPage() error = %v", err)
-	}
 	duplicate := filepath.Join(storageDir, "root", "duplicate.md")
 	mustWriteFile(t, duplicate, fmt.Sprintf("---\nleafwiki_id: %s\n---\n# Duplicate\n", *id), 0o644)
 
-	if err := svc.ReconstructTreeFromFS(); err == nil {
-		t.Fatal("ReconstructTreeFromFS() unexpectedly succeeded with duplicate IDs")
+	if err := svc.ReconstructTreeFromFS(); err != nil {
+		t.Fatalf("ReconstructTreeFromFS() error = %v", err)
 	}
-	assertTreeReaderAndWriterAvailable(t, svc, *id, page.Version())
+	retained, err := svc.GetPage(*id)
+	if err != nil {
+		t.Fatalf("GetPage(retained ID) error = %v", err)
+	}
+	if retained.Title != "Duplicate" || retained.Slug != "duplicate" {
+		t.Fatalf("retained duplicate = (%q, %q), want duplicate.md's deterministic first entry", retained.Title, retained.Slug)
+	}
+	assertTreeReaderAndWriterAvailable(t, svc, *id, retained.Version())
 }
 
 func TestTreeService_ReconstructTreeFromFS_SchemaFailureRollsBackTreeAndReleasesLocks(t *testing.T) {

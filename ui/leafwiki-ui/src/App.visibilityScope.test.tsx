@@ -19,9 +19,9 @@ vi.mock('@/lib/api/favorites', () => ({
 }))
 vi.mock('./useApplyDesignMode', () => ({ default: vi.fn() }))
 
-vi.mock('react-router-dom', async () => {
+vi.mock('react-router/dom', async () => {
   const actual =
-    await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+    await vi.importActual<typeof import('react-router/dom')>('react-router/dom')
   const React = await import('react')
 
   return {
@@ -57,6 +57,7 @@ describe('App visibility scope', () => {
         username: 'editor',
         email: 'editor@example.test',
         role: 'editor',
+        totpEnabled: false,
       },
     })
   })
@@ -86,6 +87,7 @@ describe('App visibility scope', () => {
           username: 'viewer',
           email: 'viewer@example.test',
           role: 'viewer',
+          totpEnabled: false,
         },
       })
     })

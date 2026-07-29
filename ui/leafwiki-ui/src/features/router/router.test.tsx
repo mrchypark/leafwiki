@@ -1,5 +1,5 @@
 import { isValidElement } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import ExternalRedirect from '../auth/ExternalRedirect'
 import { LoginForm } from './lazy-routes'
@@ -13,6 +13,7 @@ function loginRouteElement(
   const router = createLeafWikiRouter(
     false,
     authDisabled,
+    false,
     false,
     '',
     loginUrl,

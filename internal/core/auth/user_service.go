@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/perber/wiki/internal/core/shared"
@@ -15,11 +16,13 @@ const (
 
 type UserService struct {
 	store *UserStore
+	log   *slog.Logger
 }
 
 func NewUserService(store *UserStore) *UserService {
 	return &UserService{
 		store: store,
+		log:   slog.Default().With("component", "UserService"),
 	}
 }
 
@@ -95,6 +98,7 @@ func (s *UserService) CreateUser(username, email, password, role string) (*User,
 		return nil, err
 	}
 
+	s.log.Info("user created", "userID", user.ID, "role", user.Role)
 	return user, nil
 }
 
@@ -147,6 +151,7 @@ func (s *UserService) UpdateUser(id, username, email, password, role string) (*U
 	}
 
 	// Update user fields
+	oldRole := user.Role
 	user.Username = username
 	user.Email = email
 	user.Role = role
@@ -165,6 +170,11 @@ func (s *UserService) UpdateUser(id, username, email, password, role string) (*U
 		return nil, err
 	}
 
+	if oldRole != user.Role {
+		s.log.Info("user role changed", "userID", user.ID, "oldRole", oldRole, "newRole", user.Role)
+	} else {
+		s.log.Info("user updated", "userID", user.ID)
+	}
 	return user, nil
 }
 
@@ -190,20 +200,20 @@ func (s *UserService) UpdatePassword(id string, newpassword string) error {
 	return nil
 }
 
-func (s *UserService) DoesIDAndPasswordMatch(id, password string) (bool, error) {
-	// Check if user exists
+// DoesIDAndPasswordMatch verifies that password matches the stored hash for
+// id, returning the fetched user on success so callers that need it right
+// afterward (e.g. StartTOTPSetup, DisableTOTP) don't have to re-fetch it.
+func (s *UserService) DoesIDAndPasswordMatch(id, password string) (*User, error) {
 	user, err := s.store.GetUserByID(id)
 	if err != nil {
-		return false, ErrUserNotFound
+		return nil, ErrUserNotFound
 	}
 
-	// Check if password is correct
-	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
-	if err != nil {
-		return false, ErrUserInvalidCredentials
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+		return nil, ErrUserInvalidCredentials
 	}
 
-	return true, nil
+	return user, nil
 }
 
 func (s *UserService) DeleteUser(id string) error {
@@ -221,6 +231,7 @@ func (s *UserService) DeleteUser(id string) error {
 	if err != nil {
 		return err
 	}
+	s.log.Info("user deleted", "userID", id)
 	return nil
 }
 
@@ -293,6 +304,7 @@ func (s *UserService) ChangeOwnPassword(id, oldPassword, newPassword string) err
 		return err
 	}
 
+	s.log.Info("password changed", "userID", id)
 	return nil
 }
 
@@ -329,9 +341,42 @@ func (s *UserService) ResetAdminUserPassword(username, email string) (*User, err
 	// Note: I need to return the user with the new password, because the user lost his password
 	adminUser.Password = password // Set the password to the generated one
 
+	s.log.Info("admin password reset", "userID", adminUser.ID)
 	return adminUser, nil
+}
+
+// ConsumeRecoveryCodeHash atomically replaces oldHashes with newHashes for id
+// via compare-and-swap: the write only takes effect if the stored hashes
+// still match oldHashes exactly. Returns swapped=false (with no error) if
+// they no longer match — e.g. a concurrent request already consumed a code —
+// so the caller can re-read the current hashes and retry.
+func (s *UserService) ConsumeRecoveryCodeHash(id string, oldHashes, newHashes []string) (swapped bool, err error) {
+	return s.store.ConsumeRecoveryCodeHash(id, oldHashes, newHashes)
+}
+
+// SetPendingTOTPSecret stores a freshly generated, not-yet-confirmed encrypted
+// TOTP secret for id. TOTP remains disabled until EnableTOTP confirms it.
+func (s *UserService) SetPendingTOTPSecret(id, encryptedSecret string) error {
+	return s.store.SetPendingTOTPSecret(id, encryptedSecret)
+}
+
+// EnableTOTP marks TOTP enabled for id with the confirmed encrypted secret and
+// the hashed recovery codes generated alongside it.
+func (s *UserService) EnableTOTP(id, encryptedSecret string, recoveryCodeHashes []string) error {
+	return s.store.EnableTOTP(id, encryptedSecret, recoveryCodeHashes)
+}
+
+// DisableTOTP clears TOTP secret, enabled flag, and recovery codes for id.
+func (s *UserService) DisableTOTP(id string) error {
+	return s.store.DisableTOTP(id)
 }
 
 func (s *UserService) Close() error {
 	return s.store.Close()
+}
+
+// suspendStore closes the underlying store's DB connection and prevents it
+// from lazily reconnecting — see UserStore.suspend.
+func (s *UserService) suspendStore() error {
+	return s.store.suspend()
 }

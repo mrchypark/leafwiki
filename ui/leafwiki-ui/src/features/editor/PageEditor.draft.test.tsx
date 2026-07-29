@@ -3,7 +3,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePageEditorStore } from './pageEditorStore'
 import { useSessionStore } from '@/stores/session'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PageEditor from './PageEditor'
 import { EditorTitleBar } from './EditorTitleBar'
@@ -56,6 +56,7 @@ describe('PageEditor inherited draft state', () => {
         username: 'editor',
         email: 'editor@example.test',
         role: 'editor',
+        totpEnabled: false,
       },
     })
     usePageEditorStore.setState({

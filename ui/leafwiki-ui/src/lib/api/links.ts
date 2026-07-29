@@ -1,3 +1,4 @@
+import i18next from '@/lib/i18n'
 import { fetchWithAuth } from './auth'
 
 export type Backlink = {
@@ -35,7 +36,8 @@ export async function fetchLinkStatus(
   pageId: string,
   signal?: AbortSignal,
 ): Promise<LinkStatusResult> {
-  if (!pageId) throw new Error('Page ID is required')
+  if (!pageId)
+    throw new Error(i18next.t('backlinks.pageIdRequired', { ns: 'viewer' }))
   return (await fetchWithAuth(`/api/pages/${pageId}/links`, {
     signal,
   })) as LinkStatusResult

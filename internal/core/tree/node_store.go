@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/markdown"
 	"github.com/perber/wiki/internal/core/shared"
 )
@@ -21,16 +22,21 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-func ensureUniqueReconstructedID(seenIDs map[string]string, id string, path string) error {
+// ensureUniqueReconstructedID records id as seen for this reconstruct walk.
+// It returns the path of the earlier occurrence if id is a duplicate (the
+// caller should skip this node rather than add it to the tree), or an error
+// only if id is empty (defensive — callers always default to a freshly
+// generated ID before this is called, so this should be unreachable).
+func ensureUniqueReconstructedID(seenIDs map[string]string, id string, path string) (conflictPath string, err error) {
 	trimmedID := strings.TrimSpace(id)
 	if trimmedID == "" {
-		return fmt.Errorf("reconstruct tree from fs: empty leafwiki_id at %s", path)
+		return "", fmt.Errorf("reconstruct tree from fs: empty leafwiki_id at %s", path)
 	}
 	if existingPath, exists := seenIDs[trimmedID]; exists {
-		return fmt.Errorf("duplicate leafwiki_id %q in %s and %s", trimmedID, existingPath, path)
+		return existingPath, nil
 	}
 	seenIDs[trimmedID] = path
-	return nil
+	return "", nil
 }
 
 func ensureUniqueReconstructedSlug(seenSlugs map[string]string, slug string, path string) error {
@@ -59,9 +65,15 @@ type ResolvedNode struct {
 }
 
 type NodeStore struct {
-	storageDir string
-	log        *slog.Logger
-	slugger    *SlugService
+	storageDir  string
+	log         *slog.Logger
+	slugger     *SlugService
+	ignoreCache *ignore.Cache
+}
+
+// SetIgnoreCache sets the ignore cache to use for multi-level ignore resolution.
+func (f *NodeStore) SetIgnoreCache(ignoreCache *ignore.Cache) {
+	f.ignoreCache = ignoreCache
 }
 
 type nodeContentSnapshot struct {
@@ -333,6 +345,14 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			continue
 		}
 
+		// Check .leafwikiignore
+		if ig := f.getIgnoreForDir(currentPath); ig != nil {
+			relPath, _ := filepath.Rel(filepath.Join(f.storageDir, "root"), filepath.Join(currentPath, name))
+			if relPath != "" && ig.Matches(filepath.ToSlash(relPath), entry.IsDir()) {
+				continue
+			}
+		}
+
 		// defaults
 		title := name
 		id, err := shared.GenerateUniqueID()
@@ -359,6 +379,9 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 					// fall back to default title and generated ID, but still add the section and recurse
 				} else {
 					fm := mdFile.GetFrontmatter()
+					if fm.WasRepaired() {
+						f.log.Warn("frontmatter did not parse as-is and was auto-repaired", "path", indexPath)
+					}
 					metadata = f.metadataFromFrontmatter(fm, reconstructNow, indexPath)
 					title, err = mdFile.GetTitle()
 					if err != nil {
@@ -392,8 +415,14 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filepath.Join(currentPath, name)); err != nil {
 				return err
 			}
-			if err := ensureUniqueReconstructedID(seenIDs, child.ID, indexPath); err != nil {
+			conflictPath, err := ensureUniqueReconstructedID(seenIDs, child.ID, indexPath)
+			if err != nil {
 				return err
+			}
+			if conflictPath != "" {
+				f.log.Warn("skipping section: duplicate leafwiki_id, keeping first occurrence",
+					"leafwikiID", child.ID, "path", indexPath, "conflictingPath", conflictPath)
+				continue
 			}
 			parent.Children = append(parent.Children, child)
 
@@ -437,6 +466,9 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 			continue
 		}
 		fm := mdFile.GetFrontmatter()
+		if fm.WasRepaired() {
+			f.log.Warn("frontmatter did not parse as-is and was auto-repaired", "path", filePath)
+		}
 		metadata = f.metadataFromFrontmatter(fm, reconstructNow, filePath)
 		title, err = mdFile.GetTitle()
 		if err != nil {
@@ -463,8 +495,14 @@ func (f *NodeStore) reconstructTreeRecursive(ctx context.Context, currentPath st
 		if err := ensureUniqueReconstructedSlug(seenSlugs, child.Slug, filePath); err != nil {
 			return err
 		}
-		if err := ensureUniqueReconstructedID(seenIDs, child.ID, filePath); err != nil {
+		conflictPath, err := ensureUniqueReconstructedID(seenIDs, child.ID, filePath)
+		if err != nil {
 			return err
+		}
+		if conflictPath != "" {
+			f.log.Warn("skipping page: duplicate leafwiki_id, keeping first occurrence",
+				"leafwikiID", child.ID, "path", filePath, "conflictingPath", conflictPath)
+			continue
 		}
 		if needsWriteback {
 			f.writeReconstructedFrontmatter(mdFile, child)
@@ -612,6 +650,13 @@ func (f *NodeStore) CreatePage(parentEntry *PageNode, newEntry *PageNode) error 
 
 	// Destination paths
 	destBase := filepath.Join(parentDir, newEntry.Slug)
+
+	// Guard against ignored paths
+	rel, _ := filepath.Rel(filepath.Join(f.storageDir, "root"), destBase)
+	if f.isPathIgnored(rel, false) {
+		return &InvalidOpError{Op: "CreatePage", Reason: "target path matches .leafwikiignore"}
+	}
+
 	destFile := destBase + ".md"
 	destDir := destBase
 
@@ -629,7 +674,7 @@ func (f *NodeStore) CreatePage(parentEntry *PageNode, newEntry *PageNode) error 
 	return nil
 }
 
-// CreateSection creates a new section (folder) under the given parent entry.
+// CreateSection creates a new section (folder) under the given paren
 func (f *NodeStore) CreateSection(parentEntry *PageNode, newEntry *PageNode) error {
 	if parentEntry == nil {
 		return &InvalidOpError{Op: "CreateSection", Reason: errParentEntryRequired}
@@ -662,6 +707,13 @@ func (f *NodeStore) CreateSection(parentEntry *PageNode, newEntry *PageNode) err
 
 	// Destination base paths
 	destBase := filepath.Join(parentDir, newEntry.Slug)
+
+	// Guard against ignored paths
+	rel, _ := filepath.Rel(filepath.Join(f.storageDir, "root"), destBase)
+	if f.isPathIgnored(rel, true) {
+		return &InvalidOpError{Op: "CreateSection", Reason: "target path matches .leafwikiignore"}
+	}
+
 	destFile := destBase + ".md"
 	destDir := destBase
 
@@ -858,6 +910,13 @@ func (f *NodeStore) ValidateMoveNode(entry *PageNode, parentEntry *PageNode) err
 
 	// Destination base path (same slug, under new parent)
 	destBase := filepath.Join(parentDir, entry.Slug)
+
+	// Guard against ignored paths
+	rel, _ := filepath.Rel(filepath.Join(f.storageDir, "root"), destBase)
+	if f.isPathIgnored(rel, entry.Kind == NodeKindSection) {
+		return &InvalidOpError{Op: "MoveNode", Reason: "target path matches .leafwikiignore"}
+	}
+
 	destFile := destBase + ".md"
 	destDir := destBase
 
@@ -1038,6 +1097,12 @@ func (f *NodeStore) RenameNode(entry *PageNode, newSlug string) error {
 
 	// new base path: same parent dir, last segment replaced
 	newBase := filepath.Join(filepath.Dir(oldBase), newSlug)
+
+	// Guard against ignored paths
+	rel, _ := filepath.Rel(filepath.Join(f.storageDir, "root"), newBase)
+	if f.isPathIgnored(rel, entry.Kind == NodeKindSection) {
+		return &InvalidOpError{Op: "RenameNode", Reason: "target path matches .leafwikiignore"}
+	}
 
 	// destination collision checks
 	if fileExists(newBase+".md") || fileExists(newBase) {
@@ -1278,6 +1343,31 @@ func (f *NodeStore) PersistFrontmatterWithDraft(entry *PageNode) error {
 	}
 	_, err = f.ensureSectionIndex(entry)
 	return err
+}
+
+// getIgnoreForDir returns the compiled ignore rules for the given directory,
+// delegating to the shared cache. Returns nil if no rules apply.
+func (f *NodeStore) getIgnoreForDir(dir string) *ignore.IgnoreFile {
+	if f.ignoreCache == nil {
+		return nil
+	}
+	return f.ignoreCache.Get(dir)
+}
+
+// isPathIgnored checks if a relative path matches the ignore rules
+// governed by the nearest .leafwikiignore file.
+func (f *NodeStore) isPathIgnored(relPath string, isDir bool) bool {
+	if relPath == "" {
+		return false
+	}
+	// Resolve the absolute path to find the enclosing directory
+	absPath := filepath.Join(f.storageDir, "root", relPath)
+	dir := filepath.Dir(absPath)
+	ig := f.getIgnoreForDir(dir)
+	if ig == nil {
+		return false
+	}
+	return ig.Matches(filepath.ToSlash(relPath), isDir)
 }
 
 func (f *NodeStore) dirPathForNode(entry *PageNode) (string, error) {

@@ -2,7 +2,7 @@ import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { useDialogsStore } from '@/stores/dialogs'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type React from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { TreeNode } from './TreeNode'
 

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -36,7 +38,9 @@ func TestWriteUsage_UsesLongFlags(t *testing.T) {
 		"--metrics-port",
 		"--data-dir",
 		"--unix-socket",
+		"--log-format",
 		"LEAFWIKI_UNIX_SOCKET",
+		"LEAFWIKI_LOG_FORMAT",
 		"LEAFWIKI_ADMIN_USERNAME",
 		"LEAFWIKI_ADMIN_EMAIL",
 		"LEAFWIKI_ENABLE_METRICS",
@@ -150,6 +154,34 @@ func TestValidateRedirectURL(t *testing.T) {
 	}
 }
 
+// TestValidateRedirectURL_UserManagementURL confirms --user-management-url is
+// validated the same way as --login-url/--logout-url (http(s) only, no relative
+// paths or dangerous schemes) — it's rendered as a plain <a href>, but an
+// unsafe scheme there is still attacker-controlled markup.
+func TestValidateRedirectURL_UserManagementURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"empty", "", false},
+		{"https", "https://idp.example.com/users", false},
+		{"javascript scheme", "javascript:alert(1)", true},
+		{"relative path", "/users", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRedirectURL("user-management-url", tc.url)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateRedirectURL(%q) error = %v, wantErr %v", tc.url, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "user-management-url") {
+				t.Fatalf("validateRedirectURL(%q) error = %v, want it to mention the flag name", tc.url, err)
+			}
+		})
+	}
+}
+
 func TestResolveLogoutURL(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -198,6 +230,96 @@ func TestResolveString_TrimsCLIFlagValue(t *testing.T) {
 	got := resolveString("login-url", " https://idp.example.com/login ", visited, "LEAFWIKI_LOGIN_URL", "")
 	if want := "https://idp.example.com/login"; got != want {
 		t.Fatalf("resolveString() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveLogFormat_Precedence(t *testing.T) {
+	tests := []struct {
+		name     string
+		flagVal  string
+		visited  bool
+		envVal   string
+		wantForm string
+	}{
+		{
+			name:     "neither set falls back to default",
+			wantForm: "text",
+		},
+		{
+			name:     "env var sets json",
+			envVal:   "json",
+			wantForm: "json",
+		},
+		{
+			name:     "env var is case-insensitive",
+			envVal:   "JSON",
+			wantForm: "json",
+		},
+		{
+			name:     "cli flag overrides env var",
+			flagVal:  "text",
+			visited:  true,
+			envVal:   "json",
+			wantForm: "text",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAFWIKI_LOG_FORMAT", tc.envVal)
+			visited := map[string]bool{}
+			if tc.visited {
+				visited["log-format"] = true
+			}
+			got := resolveLogFormat("log-format", tc.flagVal, visited, "LEAFWIKI_LOG_FORMAT", "text")
+			if got != tc.wantForm {
+				t.Fatalf("resolveLogFormat() = %q, want %q", got, tc.wantForm)
+			}
+		})
+	}
+}
+
+func TestSetupLogger_SelectsHandlerByFormat(t *testing.T) {
+	t.Run("text format writes non-JSON output", func(t *testing.T) {
+		var buf bytes.Buffer
+		setupLogger(&buf, "text")
+		slog.Default().Info("hello")
+
+		if json.Valid(buf.Bytes()) {
+			t.Fatalf("expected non-JSON text output, got %q", buf.String())
+		}
+		if !strings.Contains(buf.String(), "msg=hello") {
+			t.Fatalf("expected text output to contain msg=hello, got %q", buf.String())
+		}
+	})
+
+	t.Run("json format writes valid JSON output", func(t *testing.T) {
+		var buf bytes.Buffer
+		setupLogger(&buf, "json")
+		slog.Default().Info("hello")
+
+		if !json.Valid(buf.Bytes()) {
+			t.Fatalf("expected valid JSON output, got %q", buf.String())
+		}
+	})
+}
+
+func TestRunRestoreSnapshotCommand_MissingArg_ReturnsUsageError(t *testing.T) {
+	err := runRestoreSnapshotCommand(t.TempDir(), []string{"restore-snapshot"})
+	if !errors.Is(err, errRestoreSnapshotUsage) {
+		t.Fatalf("runRestoreSnapshotCommand() error = %v, want errRestoreSnapshotUsage", err)
+	}
+}
+
+func TestRunRestoreSnapshotCommand_InvalidZipPath_PropagatesError(t *testing.T) {
+	dataDir := t.TempDir()
+	zipPath := filepath.Join(dataDir, "does-not-exist.zip")
+
+	err := runRestoreSnapshotCommand(dataDir, []string{"restore-snapshot", zipPath})
+	if err == nil {
+		t.Fatal("runRestoreSnapshotCommand() expected an error for a non-existent snapshot zip, got nil")
+	}
+	if errors.Is(err, errRestoreSnapshotUsage) {
+		t.Fatalf("runRestoreSnapshotCommand() error = %v, want a restore error, not the usage error", err)
 	}
 }
 
@@ -301,7 +423,7 @@ func TestRegisterFlags_AcceptsDoubleDashLongFlags(t *testing.T) {
 }
 
 func TestStartMetricsServer_ServesOnlyMetricsEndpoint(t *testing.T) {
-	metrics := httpmetrics.NewHTTPMetrics()
+	metrics := httpmetrics.NewHTTPMetrics("test")
 	stopServer, addr, err := startMetricsServer(metrics, "127.0.0.1", "0")
 	if err != nil {
 		t.Fatalf("startMetricsServer() error = %v", err)
@@ -347,7 +469,9 @@ func TestRemoveStaleUnixSocket_RemovesExistingSocket(t *testing.T) {
 	}
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "leafwiki.sock")
-
+	if len(socketPath) >= 100 {
+		t.Skipf("socket path too long (%d chars) for this platform", len(socketPath))
+	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
@@ -387,7 +511,9 @@ func TestListenOnUnixSocket_CreatesSocketWithExpectedPermissions(t *testing.T) {
 	}
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "leafwiki.sock")
-
+	if len(socketPath) >= 100 {
+		t.Skipf("socket path too long (%d chars) for this platform", len(socketPath))
+	}
 	listener, err := listenOnUnixSocket(socketPath)
 	if err != nil {
 		t.Fatalf("listenOnUnixSocket() error = %v", err)
