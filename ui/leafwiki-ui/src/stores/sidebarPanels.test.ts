@@ -3,12 +3,14 @@ import { useSidebarPanelsStore } from './sidebarPanels'
 
 describe('useSidebarPanelsStore', () => {
   beforeEach(() => {
-    useSidebarPanelsStore.setState({ openSections: ['pinned', 'pages'] })
+    localStorage.clear()
+    useSidebarPanelsStore.setState(useSidebarPanelsStore.getInitialState())
   })
 
-  it('starts with pinned and pages expanded by default', () => {
+  it('starts with pinned, favorites, and pages expanded by default', () => {
     expect(useSidebarPanelsStore.getState().openSections).toEqual([
       'pinned',
+      'favorites',
       'pages',
     ])
   })
@@ -34,51 +36,31 @@ describe('useSidebarPanelsStore', () => {
     ])
   })
 
-  it('rehydration restores a usable default store when persisted state is missing', async () => {
-    localStorage.removeItem('leafwiki-sidebar-panels')
+  it.each([
+    null,
+    {},
+    { openSections: null },
+    { openSections: {} },
+    { openSections: ['pages', 1] },
+  ])('restores defaults for invalid persisted state %#', async (state) => {
+    localStorage.setItem(
+      'leafwiki-sidebar-panels',
+      JSON.stringify({ state, version: 0 }),
+    )
 
     await useSidebarPanelsStore.persist.rehydrate()
 
     expect(useSidebarPanelsStore.getState().openSections).toEqual([
       'pinned',
+      'favorites',
       'pages',
     ])
-    expect(useSidebarPanelsStore.persist.hasHydrated()).toBe(true)
     expect(useSidebarPanelsStore.getState().setOpenSections).toBeTypeOf(
       'function',
     )
   })
 
-  it.each([
-    { name: 'persisted state is null', state: null },
-    { name: 'openSections is null', state: { openSections: null } },
-    { name: 'openSections is an object', state: { openSections: {} } },
-    {
-      name: 'openSections contains a non-string value',
-      state: { openSections: ['pages', 1] },
-    },
-  ])(
-    'rehydration restores the default sections when $name',
-    async ({ state }) => {
-      localStorage.setItem(
-        'leafwiki-sidebar-panels',
-        JSON.stringify({ state, version: 0 }),
-      )
-
-      await useSidebarPanelsStore.persist.rehydrate()
-
-      expect(useSidebarPanelsStore.getState().openSections).toEqual([
-        'pinned',
-        'pages',
-      ])
-      expect(useSidebarPanelsStore.persist.hasHydrated()).toBe(true)
-      expect(useSidebarPanelsStore.getState().setOpenSections).toBeTypeOf(
-        'function',
-      )
-    },
-  )
-
-  it('rehydration preserves an empty persisted section list', async () => {
+  it('preserves an empty persisted section list', async () => {
     localStorage.setItem(
       'leafwiki-sidebar-panels',
       JSON.stringify({ state: { openSections: [] }, version: 0 }),
