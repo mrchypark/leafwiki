@@ -1,13 +1,16 @@
 package restore
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	coreshared "github.com/perber/wiki/internal/core/shared"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 )
 
@@ -114,7 +117,7 @@ func (m *Manager) TriggerRestoreFromUpload(r io.Reader) error {
 
 	m.wg.Go(func() {
 		defer cleanup()
-		m.runGuarded(func() { m.runFromZipPath(zipPath) })
+		m.runGuarded(func() { m.runFromZipPath(zipPath, coreshared.DefaultZipExtractionLimits) })
 	})
 	return nil
 }
@@ -192,7 +195,11 @@ func (m *Manager) SelfRestart() error {
 }
 
 // runLocked resolves the given snapshot id to a zip path and runs the
-// restore sequence against it (see runFromZipPath).
+// restore sequence against it (see runFromZipPath). The snapshot itself was
+// produced by this server's own snapshot machinery, not attacker-controlled
+// input, so extraction runs unrestricted rather than under
+// DefaultZipExtractionLimits — a legitimately large wiki must still be able
+// to restore its own backup.
 func (m *Manager) runLocked(id string) {
 	m.runGuarded(func() {
 		zipPath, err := m.cfg.SnapshotManager.SnapshotZipPath(id)
@@ -201,7 +208,7 @@ func (m *Manager) runLocked(id string) {
 			m.job.Finish(err)
 			return
 		}
-		m.runFromZipPath(zipPath)
+		m.runFromZipPath(zipPath, coreshared.UnrestrictedExtractionLimits)
 	})
 }
 
@@ -223,10 +230,13 @@ func (m *Manager) runGuarded(fn func()) {
 // runFromZipPath performs the full validate -> gate -> swap -> reopen-auth ->
 // invalidate-sessions -> reload-branding -> commit -> resync sequence against
 // an already-resolved zip file on disk. Shared by the by-id and by-upload
-// restore entrypoints once each has produced a concrete zipPath.
-func (m *Manager) runFromZipPath(zipPath string) {
+// restore entrypoints once each has produced a concrete zipPath; limits is
+// coreshared.DefaultZipExtractionLimits for the by-upload path (untrusted
+// input) and coreshared.UnrestrictedExtractionLimits for the by-id path
+// (the server's own snapshot).
+func (m *Manager) runFromZipPath(zipPath string, limits coreshared.ExtractionLimits) {
 	m.job.SetPhase(PhaseValidating)
-	stagingDir, meta, err := extractAndValidate(zipPath, m.cfg.DataDir)
+	stagingDir, meta, err := extractAndValidateWithLimits(zipPath, m.cfg.DataDir, limits)
 	if err != nil {
 		m.job.Finish(fmt.Errorf("snapshot validation failed: %w", err))
 		return
@@ -243,24 +253,80 @@ func (m *Manager) runFromZipPath(zipPath string) {
 		slog.Default().Warn("restore: timed out waiting for in-flight requests to drain, proceeding anyway")
 	}
 
-	// AuthService's user store must release its OS-level handle on users.db
-	// before SwapAll renames it — on Windows an open handle (even one a GET
-	// request lazily reopened mid-swap) blocks the rename with a sharing
-	// violation, which POSIX doesn't have. Nothing on disk has been touched
-	// yet, so a failure here doesn't need a rollback — but PauseUserStoreForSwap
-	// (UserStore.suspend) marks the store suspended even when it fails, so
-	// AuthService is left unable to serve any request until something re-opens
-	// it. Recover that here by re-opening a fresh store before reporting the
-	// (retryable) failure — only if that recovery itself fails does this need
-	// NeedsIntervention, since at that point AuthService has no working store.
+	// Each store's OS-level handle must be released before SwapAll renames
+	// its file — on Windows an open handle (even one a GET request lazily
+	// reopened mid-swap) blocks the rename with a sharing violation, which
+	// POSIX doesn't have. Nothing on disk has been touched yet at this
+	// point, so a pause failure doesn't need a rollback — but PauseForSwap /
+	// PauseUserStoreForSwap marks a store suspended even when it fails, so a
+	// failed pause here would otherwise leave that store (and every store
+	// paused before it) permanently unable to serve requests. Recover via
+	// reopenAllStores before reporting the (retryable) failure; only if that
+	// recovery itself fails does this need NeedsIntervention.
 	if m.cfg.AuthService != nil {
 		if err := m.cfg.AuthService.PauseUserStoreForSwap(); err != nil {
 			m.cfg.WriteGate.Disengage()
-			if repErr := m.cfg.AuthService.ReplaceUserStore(m.cfg.DataDir); repErr != nil {
-				m.job.FinishNeedsIntervention(fmt.Errorf("failed to release users.db before swap: %w (and failed to recover the user store: %v)", err, repErr))
+			if repErr := m.reopenAllStores(); repErr != nil {
+				m.job.FinishNeedsIntervention(fmt.Errorf("failed to release users.db before swap: %w (and failed to recover stores: %v)", err, repErr))
 				return
 			}
 			m.job.Finish(fmt.Errorf("failed to release users.db before swap: %w", err))
+			return
+		}
+	}
+	if m.cfg.APIKeyService != nil {
+		if err := m.cfg.APIKeyService.PauseForSwap(); err != nil {
+			m.cfg.WriteGate.Disengage()
+			if repErr := m.reopenAllStores(); repErr != nil {
+				m.job.FinishNeedsIntervention(fmt.Errorf("failed to release api_keys.db before swap: %w (and failed to recover stores: %v)", err, repErr))
+				return
+			}
+			m.job.Finish(fmt.Errorf("failed to release api_keys.db before swap: %w", err))
+			return
+		}
+	}
+	if m.cfg.Favorites != nil {
+		if err := m.cfg.Favorites.PauseForSwap(); err != nil {
+			m.cfg.WriteGate.Disengage()
+			if repErr := m.reopenAllStores(); repErr != nil {
+				m.job.FinishNeedsIntervention(fmt.Errorf("failed to release favorites.db before swap: %w (and failed to recover stores: %v)", err, repErr))
+				return
+			}
+			m.job.Finish(fmt.Errorf("failed to release favorites.db before swap: %w", err))
+			return
+		}
+	}
+	if m.cfg.UserSettings != nil {
+		if err := m.cfg.UserSettings.PauseForSwap(); err != nil {
+			m.cfg.WriteGate.Disengage()
+			if repErr := m.reopenAllStores(); repErr != nil {
+				m.job.FinishNeedsIntervention(fmt.Errorf("failed to release usersettings.db before swap: %w (and failed to recover stores: %v)", err, repErr))
+				return
+			}
+			m.job.Finish(fmt.Errorf("failed to release usersettings.db before swap: %w", err))
+			return
+		}
+	}
+
+	// Nothing on disk has been touched yet at this point (the pause calls
+	// above only close each store's in-process connection), so a failure
+	// here is recovered the same way as a pause failure, without needing a
+	// rollback. See removeStaleWALSidecars for why this runs before SwapAll.
+	// Only a database this snapshot actually staged gets its live sidecars
+	// cleaned. A database SwapAll will leave untouched (see newSwapper's doc
+	// comment) may have a live WAL holding real committed-but-uncheckpointed
+	// data, which deleting the sidecar would discard for good.
+	for _, name := range walSidecarDBNames {
+		if _, err := os.Stat(filepath.Join(stagingDir, name)); err != nil {
+			continue
+		}
+		if err := removeStaleWALSidecars(filepath.Join(m.cfg.DataDir, name)); err != nil {
+			m.cfg.WriteGate.Disengage()
+			if repErr := m.reopenAllStores(); repErr != nil {
+				m.job.FinishNeedsIntervention(fmt.Errorf("failed to clean up stale %s WAL files before swap: %w (and failed to recover stores: %v)", name, err, repErr))
+				return
+			}
+			m.job.Finish(fmt.Errorf("failed to clean up stale %s WAL files before swap: %w", name, err))
 			return
 		}
 	}
@@ -286,6 +352,41 @@ func (m *Manager) runFromZipPath(zipPath string) {
 			// doesn't leave restored data inconsistent — log and continue rather
 			// than rolling back an otherwise-successful restore over it.
 			slog.Default().Warn("restore: failed to invalidate sessions", "error", err)
+		}
+
+		// UserResolver.userService already tracks AuthService's swapped
+		// pointer live, but its own in-memory author-label cache doesn't —
+		// reload it so labels resolved before the restore don't linger.
+		// Same non-fatal treatment as InvalidateAllSessions above: stale
+		// author-name labels are a cosmetic papercut, not a data-integrity
+		// problem worth failing an otherwise-successful restore over.
+		if m.cfg.UserResolver != nil {
+			if err := m.cfg.UserResolver.Reload(); err != nil {
+				slog.Default().Warn("restore: failed to reload user resolver cache", "error", err)
+			}
+		}
+	}
+
+	// APIKeyService is nil when API key management is disabled — independent
+	// of AuthService's nil-ness (either can be enabled without the other).
+	if m.cfg.APIKeyService != nil {
+		if err := m.cfg.APIKeyService.Replace(m.cfg.DataDir); err != nil {
+			m.rollbackOrIntervene(sw, fmt.Errorf("failed to reopen api key database: %w", err))
+			return
+		}
+	}
+
+	if m.cfg.Favorites != nil {
+		if err := m.cfg.Favorites.Replace(m.cfg.DataDir); err != nil {
+			m.rollbackOrIntervene(sw, fmt.Errorf("failed to reopen favorites database: %w", err))
+			return
+		}
+	}
+
+	if m.cfg.UserSettings != nil {
+		if err := m.cfg.UserSettings.Replace(m.cfg.DataDir); err != nil {
+			m.rollbackOrIntervene(sw, fmt.Errorf("failed to reopen user settings database: %w", err))
+			return
 		}
 	}
 
@@ -313,6 +414,16 @@ func (m *Manager) runFromZipPath(zipPath string) {
 // is marked NeedsIntervention — self-restart (a fresh cold boot reading
 // whatever is actually on disk) is the supported way out.
 func (m *Manager) rollbackOrIntervene(sw *swapper, cause error) {
+	// By the time this runs, each store is either still suspended from
+	// before SwapAll, or — if a later phase (e.g. branding-reload) is what
+	// failed — already reopened against the swapped-in files. RollbackAll
+	// renames/removes those live files next; an already-reopened store still
+	// holding an open handle to one would block that on Windows (POSIX
+	// allows renaming/removing an open file, which is why this was never an
+	// issue there). Pausing again is a safe no-op for a store that's already
+	// suspended.
+	m.pauseAllStoresForRollback()
+
 	if rbErr := sw.RollbackAll(); rbErr != nil {
 		slog.Default().Error("restore: rollback failed after a failed restore phase, instance needs manual intervention",
 			"cause", cause, "rollback_error", rbErr)
@@ -320,25 +431,87 @@ func (m *Manager) rollbackOrIntervene(sw *swapper, cause error) {
 		return
 	}
 
-	// By the time this runs, AuthService's user store is always at least
-	// suspended (PauseUserStoreForSwap, before SwapAll) and possibly already
-	// pointed at the swapped-in file (ReplaceUserStore, if a later phase like
-	// branding-reload is what failed) — POSIX keeps an already-open fd valid
-	// against its now-unlinked inode, so in the latter case it would keep
-	// silently serving the rolled-back content instead of the original.
-	// Re-point it at whatever is actually on disk now (the just-restored
-	// original) so it can never drift from disk reality. Safe to call
-	// regardless of which of those two states auth was left in (falls back to
-	// the file that's already there — the original).
-	if m.cfg.AuthService != nil {
-		if err := m.cfg.AuthService.ReplaceUserStore(m.cfg.DataDir); err != nil {
-			slog.Default().Error("restore: rollback succeeded but re-syncing AuthService against the restored files failed, instance needs manual intervention",
-				"cause", cause, "resync_error", err)
-			m.job.FinishNeedsIntervention(fmt.Errorf("%w (rollback succeeded but AuthService re-sync failed: %v)", cause, err))
-			return
-		}
+	// Re-point every store at whatever is actually on disk now (the
+	// just-restored originals) so none of them can drift from disk reality.
+	if err := m.reopenAllStores(); err != nil {
+		slog.Default().Error("restore: rollback succeeded but re-syncing stores against the restored files failed, instance needs manual intervention",
+			"cause", cause, "resync_error", err)
+		m.job.FinishNeedsIntervention(fmt.Errorf("%w (rollback succeeded but re-syncing stores failed: %v)", cause, err))
+		return
 	}
 
 	m.cfg.WriteGate.Disengage()
 	m.job.Finish(cause)
+}
+
+// pauseAllStoresForRollback closes every configured store's OS-level handle
+// (nil-safe, one per store) before a rollback renames files back to their
+// pre-restore originals — see rollbackOrIntervene. Best-effort: a failure to
+// pause one store is logged and doesn't stop the others, since RollbackAll
+// itself already tolerates and accumulates per-item failures rather than
+// requiring every pre-condition to be perfect.
+func (m *Manager) pauseAllStoresForRollback() {
+	if m.cfg.AuthService != nil {
+		if err := m.cfg.AuthService.PauseUserStoreForSwap(); err != nil {
+			slog.Default().Warn("restore: failed to pause user store before rollback", "error", err)
+		}
+	}
+	if m.cfg.APIKeyService != nil {
+		if err := m.cfg.APIKeyService.PauseForSwap(); err != nil {
+			slog.Default().Warn("restore: failed to pause api key store before rollback", "error", err)
+		}
+	}
+	if m.cfg.Favorites != nil {
+		if err := m.cfg.Favorites.PauseForSwap(); err != nil {
+			slog.Default().Warn("restore: failed to pause favorites store before rollback", "error", err)
+		}
+	}
+	if m.cfg.UserSettings != nil {
+		if err := m.cfg.UserSettings.PauseForSwap(); err != nil {
+			slog.Default().Warn("restore: failed to pause user settings store before rollback", "error", err)
+		}
+	}
+}
+
+// reopenAllStores re-opens every configured store (nil-safe, one per store)
+// against whatever is currently on disk at m.cfg.DataDir, accumulating every
+// failure rather than stopping at the first. Safe to call on a store that
+// was never paused or already reopened: Replace/ReplaceUserStore open a
+// fresh *sql.DB first and only close the old one after swapping the pointer
+// in, so there's briefly two connections to the same file — SQLite supports
+// concurrent connections to one file natively on both POSIX and Windows,
+// which is a different concern than the OS-level "rename an open file"
+// problem PauseForSwap/PauseUserStoreForSwap exist for. Used to recover from
+// a pause or WAL-cleanup failure (nothing on disk touched yet) and, after a
+// successful rollback, to re-sync every store against the restored files.
+func (m *Manager) reopenAllStores() error {
+	var errs []error
+	if m.cfg.AuthService != nil {
+		if err := m.cfg.AuthService.ReplaceUserStore(m.cfg.DataDir); err != nil {
+			errs = append(errs, fmt.Errorf("user store: %w", err))
+		} else if m.cfg.UserResolver != nil {
+			// UserResolver.userService already tracks AuthService's swapped
+			// pointer live, but its own in-memory author-label cache
+			// doesn't — reload it so stale labels don't linger.
+			if err := m.cfg.UserResolver.Reload(); err != nil {
+				slog.Default().Warn("restore: failed to reload user resolver cache", "error", err)
+			}
+		}
+	}
+	if m.cfg.APIKeyService != nil {
+		if err := m.cfg.APIKeyService.Replace(m.cfg.DataDir); err != nil {
+			errs = append(errs, fmt.Errorf("api key store: %w", err))
+		}
+	}
+	if m.cfg.Favorites != nil {
+		if err := m.cfg.Favorites.Replace(m.cfg.DataDir); err != nil {
+			errs = append(errs, fmt.Errorf("favorites store: %w", err))
+		}
+	}
+	if m.cfg.UserSettings != nil {
+		if err := m.cfg.UserSettings.Replace(m.cfg.DataDir); err != nil {
+			errs = append(errs, fmt.Errorf("user settings store: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }

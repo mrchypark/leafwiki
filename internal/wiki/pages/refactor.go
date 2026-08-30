@@ -65,6 +65,7 @@ type RefactorApplyInput struct {
 	Properties   map[string]string
 	Draft        *bool
 	DraftAllowed bool
+	Position     *int
 	RefactorPreviewInput
 	RewriteLinks bool
 }
@@ -352,6 +353,7 @@ func (uc *ApplyPageRefactorUseCase) Execute(ctx context.Context, in RefactorAppl
 	var updated *tree.Page
 	switch in.Kind {
 	case RefactorKindRename:
+		stepStarted := time.Now()
 		updateUC := NewUpdatePageUseCase(uc.tree, uc.slug, uc.orchestrator, uc.log)
 		result, err := updateUC.Execute(ctx, UpdatePageInput{
 			UserID:       in.UserID,
@@ -368,6 +370,7 @@ func (uc *ApplyPageRefactorUseCase) Execute(ctx context.Context, in RefactorAppl
 				ExpectedSourcePath: plan.oldPath,
 			},
 		})
+		uc.metrics.ObserveRefactorStep(in.Kind, "update_target_page", stepStarted)
 		if err != nil {
 			return nil, err
 		}
@@ -378,14 +381,17 @@ func (uc *ApplyPageRefactorUseCase) Execute(ctx context.Context, in RefactorAppl
 		if in.NewParentID != nil {
 			parentID = *in.NewParentID
 		}
+		stepStarted := time.Now()
 		moveUC := NewMovePageUseCase(uc.tree, uc.orchestrator, uc.log)
-		if err := moveUC.Execute(ctx, MovePageInput{
-			UserID: in.UserID, ID: in.PageID, Version: in.Version, ParentID: parentID,
+		err := moveUC.Execute(ctx, MovePageInput{
+			UserID: in.UserID, ID: in.PageID, Version: in.Version, ParentID: parentID, Position: in.Position,
 			PathPreconditions: &tree.PathPreconditions{
 				ExpectedSourcePath:            plan.oldPath,
 				ExpectedDestinationParentPath: plan.destinationParentPath,
 			},
-		}); err != nil {
+		})
+		uc.metrics.ObserveRefactorStep(in.Kind, "move_target_page", stepStarted)
+		if err != nil {
 			return nil, err
 		}
 		updated, err = uc.tree.GetPage(in.PageID)
@@ -399,11 +405,17 @@ func (uc *ApplyPageRefactorUseCase) Execute(ctx context.Context, in RefactorAppl
 
 	rewriteIncoming := in.RewriteLinks && !pagevisibility.IsInDraftSubtree(updated.PageNode)
 	if rewriteIncoming {
-		if err := uc.rewriteAffectedPages(in.UserID, plan.affectedPageIDs, rewriteRules); err != nil {
+		stepStarted := time.Now()
+		err := uc.rewriteAffectedPages(in.Kind, in.UserID, plan.affectedPageIDs, rewriteRules)
+		uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_affected_pages", stepStarted)
+		if err != nil {
 			return nil, err
 		}
 	}
-	if err := uc.rewritePathChangedSubtree(in.UserID, snapshots, plan.oldPath, plan.newPath); err != nil {
+	stepStarted := time.Now()
+	err = uc.rewritePathChangedSubtree(in.UserID, snapshots, plan.oldPath, plan.newPath)
+	uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_path_changed_subtree", stepStarted)
+	if err != nil {
 		return nil, err
 	}
 	return uc.tree.GetPage(updated.ID)
@@ -540,7 +552,7 @@ func captureSnapshots(page *tree.Page) []pathChangeSnapshot {
 	return snapshots
 }
 
-func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(userID string, affectedPageIDs []string, rules []links.RewriteRule) error {
+func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(kind, userID string, affectedPageIDs []string, rules []links.RewriteRule) error {
 	engine := links.NewMarkdownRefactorEngine()
 	compiledWikiRewrites := links.CompileWikiLinkRewrites(rules)
 
@@ -584,7 +596,9 @@ func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(userID string, affected
 		}
 		updatedPageIDs = append(updatedPageIDs, pageID)
 	}
+	stepStarted := time.Now()
 	uc.runPostRewriteEffects(userID, updatedPageIDs)
+	uc.metrics.ObserveRefactorStep(kind, "refresh_affected_links", stepStarted)
 	return rewriteErr
 }
 

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -10,13 +11,16 @@ type UserLabel struct {
 }
 
 type UserResolver struct {
-	userService *UserService
+	// userService is resolved on every call rather than cached, so ResolveUserLabel/
+	// Reload automatically track a live restore's AuthService.ReplaceUserStore swap
+	// instead of going stale — mirrors AuthService.UserService() itself.
+	userService func() *UserService
 	resolved    map[string]*UserLabel
 	mu          sync.RWMutex
 }
 
-func NewUserResolver(userService *UserService) (*UserResolver, error) {
-	users, err := userService.GetUsers() // preload users
+func NewUserResolver(userService func() *UserService) (*UserResolver, error) {
+	users, err := userService().GetUsers() // preload users
 	if err != nil {
 		// Not logged here: the error is returned to the caller (wiki.go's
 		// NewWiki), which propagates it up to main.go's own top-level
@@ -53,8 +57,25 @@ func (r *UserResolver) ResolveUserLabel(userID string) (*UserLabel, error) {
 	r.mu.RUnlock()
 
 	// fetch
-	user, err := r.userService.GetUserByID(userID)
+	user, err := r.userService().GetUserByID(userID)
 	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			// Cache the miss: genuinely no such user, so an unresolvable ID
+			// won't resolve differently on a later call without a Reload().
+			// Without this, any reference to a nonexistent/deleted user
+			// (e.g. a page's creatorID after its author account was
+			// deleted) would hit userService/the store on every call,
+			// forever.
+			r.mu.Lock()
+			if _, ok := r.resolved[userID]; !ok {
+				r.resolved[userID] = nil
+			}
+			r.mu.Unlock()
+		}
+		// A transient error (e.g. the store suspended for an in-progress
+		// live restore, see GetUserByID/mapUserLookupErr) is deliberately
+		// NOT cached — the next call should retry against the store rather
+		// than being permanently told "not found".
 		return nil, err
 	}
 	label := &UserLabel{ID: user.ID, Username: user.Username}
@@ -72,7 +93,7 @@ func (r *UserResolver) ResolveUserLabel(userID string) (*UserLabel, error) {
 }
 
 func (r *UserResolver) Reload() error {
-	users, err := r.userService.GetUsers()
+	users, err := r.userService().GetUsers()
 	if err != nil {
 		return err
 	}

@@ -3,12 +3,16 @@ package restore
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/perber/wiki/internal/core/shared"
 	snapshotSvc "github.com/perber/wiki/internal/snapshot"
 	"github.com/perber/wiki/internal/test_utils"
 )
@@ -80,6 +84,320 @@ func TestExtractAndValidate_RejectsCorruptUsersDB(t *testing.T) {
 
 	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
 		t.Fatal("expected error for a users.db that fails the sanity query")
+	}
+}
+
+// TestExtractAndValidate_RejectsCorruptFavoritesDB and
+// TestExtractAndValidate_RejectsCorruptUserSettingsDB are regression tests
+// for a real bug found in review: favorites.db/usersettings.db weren't
+// sanity-checked at all, unlike users.db. Both stores open via
+// sqliteutil.RetryOnCorruption (see NewFavoritesStore/NewUserSettingsStore),
+// which silently deletes and recreates a corrupt database file on open — so
+// without this check, a corrupt staged favorites.db/usersettings.db would
+// get swapped in, then silently wiped empty the moment Manager.Replace
+// reopens it, while the restore itself reports success.
+func TestExtractAndValidate_RejectsCorruptFavoritesDB(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(validUsersDBBytes(t)),
+		"favorites.db":     "this is not a sqlite database",
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected error for a favorites.db that fails the sanity query")
+	}
+}
+
+// TestExtractAndValidate_RejectsCorruptAPIKeysDB is the regression test for
+// a real bug found in review: extractAndValidateWithLimits sanity-checked
+// users.db/favorites.db/usersettings.db but never api_keys.db, even though
+// it's just as much a staged optional database — a corrupt or wrong-schema
+// api_keys.db would pass validation, get swapped in by SwapAll, and only
+// fail later inside APIKeyService.Replace() after Auth/Favorites/UserSettings
+// had already been paused and swapped, forcing the NeedsIntervention/rollback
+// path instead of being rejected cleanly up front.
+func TestExtractAndValidate_RejectsCorruptAPIKeysDB(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(validUsersDBBytes(t)),
+		"api_keys.db":      "this is not a sqlite database",
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected error for an api_keys.db that fails the sanity query")
+	}
+}
+
+func TestExtractAndValidate_RejectsCorruptUserSettingsDB(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(validUsersDBBytes(t)),
+		"usersettings.db":  "this is not a sqlite database",
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected error for a usersettings.db that fails the sanity query")
+	}
+}
+
+// TestExtractAndValidate_RejectsUserSettingsDBWithWrongSchema is the
+// regression test for a real bug found in review: a valid SQLite file whose
+// user_settings table exists but has different columns than expected (e.g.
+// CREATE TABLE user_settings (x TEXT)) used to pass the old
+// "SELECT count(*) FROM user_settings" sanity check — that query only
+// proves the table exists, not that it has the right shape — and would then
+// get swapped in, with every real query against it failing afterward
+// because the expected columns simply aren't there.
+func TestExtractAndValidate_RejectsUserSettingsDBWithWrongSchema(t *testing.T) {
+	wrongSchemaPath := filepath.Join(t.TempDir(), "usersettings.db")
+	db, err := sql.Open("sqlite", wrongSchemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE user_settings (x TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wrongSchemaBytes, err := os.ReadFile(wrongSchemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(validUsersDBBytes(t)),
+		"usersettings.db":  string(wrongSchemaBytes),
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected error for a usersettings.db whose user_settings table has the wrong columns")
+	}
+}
+
+// TestExtractAndValidate_AcceptsUsersDBPredatingTOTPMigration pins down
+// usersRequiredColumns' compatibility contract: a users.db from before the
+// totp_*/must_set_password columns existed must still validate — Replace's
+// fresh UserStore reopen additively migrates those columns back in
+// afterward (see UserStore.ensureTOTPColumns/ensureMustSetPasswordColumn).
+// Requiring those columns in the restore sanity check would reject a
+// legitimately-restorable old backup before it ever gets that chance.
+func TestExtractAndValidate_AcceptsUsersDBPredatingTOTPMigration(t *testing.T) {
+	oldSchemaPath := filepath.Join(t.TempDir(), "users.db")
+	db, err := sql.Open("sqlite", oldSchemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (
+		id TEXT PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		password TEXT NOT NULL,
+		email TEXT NOT NULL UNIQUE,
+		role TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, username, password, email, role) VALUES ('u1', 'admin', 'hash', 'admin@example.com', 'admin')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oldSchemaBytes, err := os.ReadFile(oldSchemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(oldSchemaBytes),
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err != nil {
+		t.Fatalf("expected a pre-TOTP-migration users.db to still pass validation, got: %v", err)
+	}
+}
+
+// TestExtractAndValidate_RejectsStructurallyCorruptedUsersDB is the
+// regression test for the other half of the same review finding: a
+// structurally corrupt SQLite file (bad page/index data, not just "not a
+// database at all") can still have a table that exists with the expected
+// columns — a schema probe alone wouldn't catch this, only
+// PRAGMA integrity_check does.
+func TestExtractAndValidate_RejectsStructurallyCorruptedUsersDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (
+		id TEXT PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		password TEXT NOT NULL,
+		email TEXT NOT NULL UNIQUE,
+		role TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	// Enough rows to span multiple pages, so corrupting a later page still
+	// leaves the schema-defining first page (and thus the column probe)
+	// intact — this must be caught by the integrity check, not the probe.
+	for i := 0; i < 500; i++ {
+		if _, err := db.Exec(`INSERT INTO users (id, username, password, email, role) VALUES (?, ?, 'hash', ?, 'admin')`,
+			fmt.Sprintf("u%d", i), fmt.Sprintf("user%d", i), fmt.Sprintf("user%d@example.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pageSize = 4096
+	if len(raw) < 2*pageSize {
+		t.Fatalf("fixture too small to corrupt a later page safely: %d bytes", len(raw))
+	}
+	corrupted := append([]byte(nil), raw...)
+	for i := pageSize; i < 2*pageSize; i++ {
+		corrupted[i] ^= 0xFF
+	}
+
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         string(corrupted),
+	})
+
+	if _, _, err := extractAndValidate(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected a structurally corrupted users.db to fail the integrity check")
+	}
+}
+
+// validUsersDBBytes returns the raw bytes of a users.db that passes
+// sanityCheckSQLiteDB, so tests targeting a different staged file's
+// corruption don't fail earlier at the (already-covered) users.db check.
+func validUsersDBBytes(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "users.db")
+	createTestUsersDB(t, path, "a@example.com")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read fixture users.db: %v", err)
+	}
+	return b
+}
+
+// Regression tests for the zip-bomb unbounded-decompression DoS (CWE-409):
+// extractAndValidateWithLimits must enforce a per-file cap, a
+// cumulative-per-archive cap, and a decompression-ratio cap during restore
+// extraction, mirroring internal/importer's fix for the same gap.
+
+func TestExtractAndValidateWithLimits_RejectsEntryLargerThanPerFileLimit(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         "irrelevant here, per-file cap trips first",
+		"big.txt":          strings.Repeat("A", 200),
+	})
+	limits := shared.ExtractionLimits{
+		MaxEntryBytes:   100,
+		MaxTotalBytes:   1 << 30,
+		MaxRatio:        1 << 30,
+		RatioFloorBytes: 1 << 30,
+	}
+
+	if _, _, err := extractAndValidateWithLimits(zipPath, t.TempDir(), limits); !errors.Is(err, shared.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got: %v", err)
+	}
+}
+
+func TestExtractAndValidateWithLimits_RejectsManyFilesSummingPastCumulativeLimit(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         "irrelevant here, cumulative cap trips first",
+		"a.txt":            strings.Repeat("A", 60),
+		"b.txt":            strings.Repeat("B", 60),
+		"c.txt":            strings.Repeat("C", 60),
+	})
+	limits := shared.ExtractionLimits{
+		MaxEntryBytes:   1 << 30,
+		MaxTotalBytes:   100,
+		MaxRatio:        1 << 30,
+		RatioFloorBytes: 1 << 30,
+	}
+
+	if _, _, err := extractAndValidateWithLimits(zipPath, t.TempDir(), limits); !errors.Is(err, shared.ErrCumulativeSizeTooLarge) {
+		t.Fatalf("expected ErrCumulativeSizeTooLarge, got: %v", err)
+	}
+}
+
+func TestExtractAndValidateWithLimits_RejectsHighDecompressionRatio(t *testing.T) {
+	zipPath := writeRawZip(t, map[string]string{
+		"backup-meta.json": `{"id":"x","version":"v1"}`,
+		"users.db":         "irrelevant here, ratio cap trips first",
+		"bomb.txt":         strings.Repeat("A", 5000),
+	})
+	limits := shared.ExtractionLimits{
+		MaxEntryBytes:   1 << 30,
+		MaxTotalBytes:   1 << 30,
+		MaxRatio:        3,
+		RatioFloorBytes: 50,
+	}
+
+	if _, _, err := extractAndValidateWithLimits(zipPath, t.TempDir(), limits); !errors.Is(err, shared.ErrDecompressionRatioTooHigh) {
+		t.Fatalf("expected ErrDecompressionRatioTooHigh, got: %v", err)
+	}
+}
+
+func TestExtractAndValidateWithLimits_AllowsLowRatioContentUnderFloor(t *testing.T) {
+	// A real fixture snapshot's users.db decompresses to ~20 KiB — comfortably
+	// under a 64 KiB floor, so even a deliberately low MaxRatio (3:1) must not
+	// false-positive on it: the floor, not the ratio, is what lets it through.
+	zipPath := buildFixtureSnapshot(t, "v1.2.3")
+	limits := shared.ExtractionLimits{
+		MaxEntryBytes:   1 << 30,
+		MaxTotalBytes:   1 << 30,
+		MaxRatio:        3,
+		RatioFloorBytes: 64 * 1024,
+	}
+
+	if _, _, err := extractAndValidateWithLimits(zipPath, t.TempDir(), limits); err != nil {
+		t.Fatalf("expected success for a real, small snapshot fixture under the ratio floor, got: %v", err)
+	}
+}
+
+func TestRemoveStaleWALSidecars_RemovesWALAndSHMButNotTheMainFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "users.db")
+	test_utils.WriteFile(t, dir, "users.db", "irrelevant content, never opened as sqlite here")
+	test_utils.WriteFile(t, dir, "users.db-wal", "stale wal content")
+	test_utils.WriteFile(t, dir, "users.db-shm", "stale shm content")
+
+	if err := removeStaleWALSidecars(dbPath); err != nil {
+		t.Fatalf("removeStaleWALSidecars: %v", err)
+	}
+
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(dbPath + suffix); !os.IsNotExist(err) {
+			t.Errorf("expected %s%s to be removed, stat err=%v", dbPath, suffix, err)
+		}
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("expected dbPath itself to remain untouched: %v", err)
+	}
+}
+
+func TestRemoveStaleWALSidecars_NoSidecarsPresentIsNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "users.db")
+	test_utils.WriteFile(t, dir, "users.db", "irrelevant content, never opened as sqlite here")
+
+	if err := removeStaleWALSidecars(dbPath); err != nil {
+		t.Fatalf("removeStaleWALSidecars with no sidecars present: %v", err)
 	}
 }
 

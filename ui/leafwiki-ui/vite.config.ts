@@ -1,27 +1,31 @@
-import fs from 'fs'
 import { execSync } from 'child_process'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import { defineConfig, type ConfigEnv } from 'vite'
 
-const packageJson = JSON.parse(
-  fs.readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
-) as { version: string }
-
-function resolveAppVersion(): string {
+// Mirrors scripts/resolve-version.sh's own env-var-override branch before
+// falling back to invoking the script. This isn't just an optimization: the
+// Docker frontend-build stage only COPYs ./ui/leafwiki-ui/, so the repo-root
+// scripts/ directory (and even bash, on node:*-alpine) generally isn't
+// present there. Every real build always sets APP_VERSION via --build-arg,
+// so checking it first keeps that path working without depending on the
+// script being reachable at all; the script invocation remains as the local
+// `npm run build`/`npm run dev` fallback (git describe), where the full repo
+// and a real shell are available.
+export function resolveAppVersion(): string {
   const envVersion = process.env.APP_VERSION?.trim()
   if (envVersion) {
     return envVersion
   }
 
   try {
-    return execSync('git describe --tags --abbrev=0', {
-      cwd: __dirname,
+    return execSync('./scripts/resolve-version.sh', {
+      cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
   } catch {
-    return packageJson.version
+    return 'v0.1.0'
   }
 }
 

@@ -30,17 +30,20 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import remarkFlexibleMarkers from 'remark-flexible-markers'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { extractTocEntries } from './extractTocEntries'
 import Headline from './Headline'
 import MarkdownCodeBlock from './MarkdownCodeBlock'
+import MarkdownInlineCode from './MarkdownInlineCode'
 import { MarkdownImage } from './MarkdownImage'
 import { MarkdownLink } from './MarkdownLink'
 import './markdownPreviewCodeTheme.css'
 import MermaidBlock from './MermaidBlock'
 import { normalizeMarkdownListIndentation } from './normalizeMarkdownListIndentation'
-import { normalizeMarkdownShoutouts } from './normalizeMarkdownShoutouts'
+import { normalizeMarkdownBlocks } from './normalizeMarkdownBlocks'
+import { rehypeCodeFenceLineNumbers } from './rehypeCodeFenceLineNumbers'
 import { rehypeLineNumber } from './rehypeLineNumber'
 import { rehypeWhitelistStyles } from './rehypeWhitelistStyles'
 import { syntaxHighlightLanguages } from './syntaxHighlightLanguages'
@@ -58,7 +61,7 @@ const schema = {
     ],
     src: [...(defaultSchema.protocols?.src ?? []), 'http', 'https'],
   },
-  tagNames: [...(defaultSchema.tagNames || []), 'audio', 'video'],
+  tagNames: [...(defaultSchema.tagNames || []), 'audio', 'video', 'mark'],
   attributes: {
     ...defaultSchema.attributes,
     '*': [
@@ -67,7 +70,15 @@ const schema = {
       'className',
       'data-leafwiki-generated-id',
       'data-line',
+      'data-line-numbers',
       'style',
+    ],
+    code: [
+      ...(defaultSchema.attributes?.code || []),
+      'className',
+      'class',
+      'data-line',
+      'data-line-numbers',
     ],
     audio: [...(defaultSchema.attributes?.audio || []), 'controls', 'src'],
     video: [
@@ -531,7 +542,10 @@ export default function MarkdownPreview({
       }: MarkdownNodeProp &
         JSX.IntrinsicAttributes &
         ClassAttributes<HTMLElement> &
-        HTMLAttributes<HTMLElement> & { 'data-line'?: string }) => {
+        HTMLAttributes<HTMLElement> & {
+          'data-line'?: string
+          'data-line-numbers'?: string | boolean
+        }) => {
         void node
         const { className, children, 'data-line': dataLine } = props
         if (className?.includes('language-mermaid')) {
@@ -560,9 +574,9 @@ export default function MarkdownPreview({
           return <code data-line={dataLine}>{children}</code>
         }
         return (
-          <code data-line={dataLine} className="inline-code">
+          <MarkdownInlineCode data-line={dataLine} className={className}>
             {children}
-          </code>
+          </MarkdownInlineCode>
         )
       },
     }),
@@ -572,7 +586,7 @@ export default function MarkdownPreview({
   const normalizedContent = useMemo(
     () =>
       normalizeMarkdownListIndentation(
-        normalizeMarkdownShoutouts(
+        normalizeMarkdownBlocks(
           preprocessWikilinks(content, (title) => {
             const lower = title.toLowerCase()
             return Object.values(treeById).filter(
@@ -623,10 +637,12 @@ export default function MarkdownPreview({
             remarkPlugins={[
               [remarkMath, { singleDollarTextMath: false }],
               remarkGfm,
+              remarkFlexibleMarkers,
             ]}
             rehypePlugins={[
               rehypeRaw,
               rehypeLineNumber,
+              rehypeCodeFenceLineNumbers,
               rehypeWhitelistStyles,
               [rehypeKatex, { output: 'html', strict: 'ignore' }],
               [rehypeSanitize, schema],

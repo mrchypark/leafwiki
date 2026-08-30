@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -124,6 +126,31 @@ func TestValidateHTTPRemoteUserConfig(t *testing.T) {
 			err := validateHTTPRemoteUserConfig(tc.enabled, tc.trustedProxyIPs)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validateHTTPRemoteUserConfig(%v, %q) error = %v, wantErr %v", tc.enabled, tc.trustedProxyIPs, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPRemoteUserAutoCreateConfig(t *testing.T) {
+	tests := []struct {
+		name              string
+		autoCreateEnabled bool
+		remoteUserEnabled bool
+		defaultRole       string
+		wantErr           bool
+	}{
+		{"auto-create disabled, everything else irrelevant", false, false, "", false},
+		{"auto-create enabled, remote-user disabled", true, false, "viewer", true},
+		{"auto-create enabled, remote-user enabled, valid role", true, true, "viewer", false},
+		{"auto-create enabled, remote-user enabled, editor role", true, true, "editor", false},
+		{"auto-create enabled, remote-user enabled, admin role forbidden", true, true, "admin", true},
+		{"auto-create enabled, remote-user enabled, invalid role", true, true, "superuser", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHTTPRemoteUserAutoCreateConfig(tc.autoCreateEnabled, tc.remoteUserEnabled, tc.defaultRole)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateHTTPRemoteUserAutoCreateConfig(%v, %v, %q) error = %v, wantErr %v", tc.autoCreateEnabled, tc.remoteUserEnabled, tc.defaultRole, err, tc.wantErr)
 			}
 		})
 	}
@@ -320,6 +347,53 @@ func TestRunRestoreSnapshotCommand_InvalidZipPath_PropagatesError(t *testing.T) 
 	}
 	if errors.Is(err, errRestoreSnapshotUsage) {
 		t.Fatalf("runRestoreSnapshotCommand() error = %v, want a restore error, not the usage error", err)
+	}
+}
+
+func TestValidateGitBackupRemote(t *testing.T) {
+	const (
+		sshKey   = "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n"
+		keyPath  = "/etc/leafwiki/id_ed25519"
+		user     = "jochumdev"
+		password = "github_pat_secret"
+	)
+	tests := []struct {
+		name         string
+		remote       string
+		sshKey       string
+		sshKeyPath   string
+		httpUsername string
+		httpPassword string
+		wantErr      bool
+	}{
+		{name: "no remote is local-only and needs no credentials"},
+
+		{name: "ssh remote with inline key", remote: "git@github.com:user/repo.git", sshKey: sshKey},
+		{name: "ssh remote with key path", remote: "git@github.com:user/repo.git", sshKeyPath: keyPath},
+		{name: "ssh url with key", remote: "ssh://git@github.com/user/repo.git", sshKey: sshKey},
+		{name: "ssh remote without key", remote: "git@github.com:user/repo.git", wantErr: true},
+		{name: "ssh remote with only http credentials", remote: "git@github.com:user/repo.git", httpUsername: user, httpPassword: password, wantErr: true},
+
+		{name: "https remote with username and password", remote: "https://github.com/user/repo.git", httpUsername: user, httpPassword: password},
+		{name: "http remote with username and password", remote: "http://gitea.internal/user/repo.git", httpUsername: user, httpPassword: password},
+		{name: "uppercase https scheme", remote: "HTTPS://github.com/user/repo.git", httpUsername: user, httpPassword: password},
+		{name: "https remote with credentials embedded in the URL", remote: "https://jochumdev:github_pat_secret@github.com/user/repo.git"},
+		{name: "https remote without any credentials", remote: "https://github.com/user/repo.git", wantErr: true},
+		{name: "https remote with username only", remote: "https://github.com/user/repo.git", httpUsername: user, wantErr: true},
+		{name: "https remote with password only", remote: "https://github.com/user/repo.git", httpPassword: password, wantErr: true},
+		// An SSH key is not a substitute for HTTP credentials.
+		{name: "https remote with only an ssh key", remote: "https://github.com/user/repo.git", sshKey: sshKey, wantErr: true},
+
+		{name: "file remote is not supported", remote: "file:///srv/backup.git", sshKey: sshKey, wantErr: true},
+		{name: "bare path is not supported", remote: "/srv/backup.git", sshKey: sshKey, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateGitBackupRemote(tc.remote, tc.sshKey, tc.sshKeyPath, tc.httpUsername, tc.httpPassword)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateGitBackupRemote(%q, ...) error = %v, wantErr %v", tc.remote, err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -829,5 +903,207 @@ func TestServeWithLifecycle_ShutdownDoesNotWaitForInFlightReload(t *testing.T) {
 	case <-reloadFinished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("reload did not finish after release")
+	}
+}
+
+// goBuildLdflagsLine extracts the `go build ... -ldflags="..."` line from a
+// Dockerfile so tests can assert on exactly what gets baked into the binary.
+func goBuildLdflagsLine(t *testing.T, dockerfilePath string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dockerfilePath, err)
+	}
+
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.Contains(line, "-ldflags=") {
+			return line
+		}
+	}
+
+	t.Fatalf("no -ldflags line found in %s", dockerfilePath)
+	return ""
+}
+
+// TestDockerfile_GoBuildLdflags_InjectsAppVersion pins the bug where
+// Dockerfile declared ARG APP_VERSION and threaded it into the frontend
+// build, but never into the Go binary's -ldflags — so every release image
+// silently shipped main.Version's "dev" default (e.g. into the
+// leafwiki_build_info metric).
+func TestDockerfile_GoBuildLdflags_InjectsAppVersion(t *testing.T) {
+	line := goBuildLdflagsLine(t, filepath.Join("..", "..", "Dockerfile"))
+
+	if !strings.Contains(line, "-X main.Version=${APP_VERSION}") {
+		t.Fatalf("expected Dockerfile go build ldflags to inject main.Version from APP_VERSION, got: %s", line)
+	}
+}
+
+// TestDockerfileBuilder_GoBuildLdflags_InjectsAppVersion is the same
+// regression check for Dockerfile.builder, used by `make release` to
+// produce the binaries attached to GitHub Releases.
+func TestDockerfileBuilder_GoBuildLdflags_InjectsAppVersion(t *testing.T) {
+	line := goBuildLdflagsLine(t, filepath.Join("..", "..", "Dockerfile.builder"))
+
+	if !strings.Contains(line, "-X main.Version=${APP_VERSION}") {
+		t.Fatalf("expected Dockerfile.builder go build ldflags to inject main.Version from APP_VERSION, got: %s", line)
+	}
+}
+
+// dockerBuildStageDeclaresArg checks that the multi-stage Docker build
+// stage containing marker (e.g. the `go build` line) is preceded by its own
+// `ARG argName` declaration *within that stage*. Docker scopes ARG per
+// build stage: an ARG declared in an earlier stage does not carry into a
+// later one, even though `${argName}` still substitutes silently as an
+// empty string there instead of failing the build.
+func dockerBuildStageDeclaresArg(t *testing.T, dockerfilePath, marker, argName string) bool {
+	t.Helper()
+
+	content, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dockerfilePath, err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+
+	markerIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			markerIdx = i
+			break
+		}
+	}
+	if markerIdx == -1 {
+		t.Fatalf("no line containing %q found in %s", marker, dockerfilePath)
+	}
+
+	stageStart := 0
+	for i := markerIdx; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "FROM ") {
+			stageStart = i
+			break
+		}
+	}
+
+	for _, line := range lines[stageStart:markerIdx] {
+		if strings.TrimSpace(line) == "ARG "+argName {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDockerfile_GoBuildStage_DeclaresAppVersionArg pins the bug where
+// Dockerfile's backend-build stage used ${APP_VERSION} in its go build
+// -ldflags without re-declaring `ARG APP_VERSION` in that stage (it was
+// only declared in the earlier frontend-build stage). Docker scopes ARG per
+// stage, so the ldflags line silently baked in an empty version string
+// instead of failing the build — every v0.12.x release image/binary shipped
+// main.Version="" (visible in the leafwiki_build_info metric and in the
+// snapshot/restore version-mismatch check, which silently no-ops when
+// WikiVersion is empty).
+func TestDockerfile_GoBuildStage_DeclaresAppVersionArg(t *testing.T) {
+	if !dockerBuildStageDeclaresArg(t, filepath.Join("..", "..", "Dockerfile"), "go build", "APP_VERSION") {
+		t.Fatal("Dockerfile's go build stage uses ${APP_VERSION} without declaring ARG APP_VERSION in that stage")
+	}
+}
+
+// TestDockerfileBuilder_GoBuildStage_DeclaresAppVersionArg is the same
+// regression check for Dockerfile.builder's builder stage.
+func TestDockerfileBuilder_GoBuildStage_DeclaresAppVersionArg(t *testing.T) {
+	if !dockerBuildStageDeclaresArg(t, filepath.Join("..", "..", "Dockerfile.builder"), "go build", "APP_VERSION") {
+		t.Fatal("Dockerfile.builder's builder stage uses ${APP_VERSION} without declaring ARG APP_VERSION in that stage")
+	}
+}
+
+// TestResolveVersionScript_AppVersionEnvOverride_ReturnsEnvValue exercises
+// the deterministic branch of scripts/resolve-version.sh (the shared
+// algorithm used by both `make build`/`make run` and vite.config.ts). The
+// git-describe fallback branch is intentionally not tested here since its
+// output depends on the local repo's tag state and CI checkout depth.
+func TestResolveVersionScript_AppVersionEnvOverride_ReturnsEnvValue(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "scripts", "resolve-version.sh")
+
+	cmd := exec.Command(scriptPath)
+	cmd.Env = append(os.Environ(), "APP_VERSION=v9.9.9-test")
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve-version.sh failed: %v", err)
+	}
+
+	if got := strings.TrimSpace(string(out)); got != "v9.9.9-test" {
+		t.Fatalf("expected resolve-version.sh to echo APP_VERSION override, got: %q", got)
+	}
+}
+
+// TestMakefile_BuildAndRunTargets_InjectVersionLdflags pins that the local
+// `make build`/`make run` targets inject main.Version the same way the
+// release/Docker targets do, instead of leaving local builds on the "dev"
+// default silently.
+func TestMakefile_BuildAndRunTargets_InjectVersionLdflags(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatalf("failed to read Makefile: %v", err)
+	}
+	content := string(raw)
+
+	for _, target := range []string{"build:", "run:"} {
+		idx := strings.Index(content, target)
+		if idx == -1 {
+			t.Fatalf("Makefile target %q not found", target)
+		}
+
+		recipeEnd := strings.Index(content[idx:], "\n\n")
+		if recipeEnd == -1 {
+			recipeEnd = len(content) - idx
+		}
+		recipe := content[idx : idx+recipeEnd]
+
+		if !strings.Contains(resolveMakeVars(content, recipe), "-X main.Version=$(VERSION)") {
+			t.Fatalf("expected Makefile %q recipe to inject main.Version from $(VERSION), got: %s", target, recipe)
+		}
+	}
+}
+
+var makeVarAssignment = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|\?=|=)\s*(.*)$`)
+
+// resolveMakeVars expands $(NAME) references in s using NAME's assignment
+// elsewhere in the Makefile, so the check above still works when a recipe
+// builds its ldflags from a variable (e.g. $(LDFLAGS)) instead of a literal
+// string. $(VERSION) itself is left unresolved since the test asserts on
+// that exact reference.
+func resolveMakeVars(content, s string) string {
+	assignments := map[string]string{}
+	for _, m := range makeVarAssignment.FindAllStringSubmatch(content, -1) {
+		assignments[m[1]] = m[2]
+	}
+	delete(assignments, "VERSION")
+
+	for changed := true; changed; {
+		changed = false
+		for name, value := range assignments {
+			token := "$(" + name + ")"
+			if strings.Contains(s, token) {
+				s = strings.ReplaceAll(s, token, value)
+				changed = true
+			}
+		}
+	}
+	return s
+}
+
+// TestViteConfig_ResolvesVersionViaSharedScript pins that the frontend
+// build resolves its version through the same scripts/resolve-version.sh
+// used by the Go build, rather than a second, independently-drifting
+// git-describe implementation in JS.
+func TestViteConfig_ResolvesVersionViaSharedScript(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "ui", "leafwiki-ui", "vite.config.ts"))
+	if err != nil {
+		t.Fatalf("failed to read vite.config.ts: %v", err)
+	}
+
+	if !strings.Contains(string(content), "scripts/resolve-version.sh") {
+		t.Fatalf("expected vite.config.ts to resolve its version via scripts/resolve-version.sh, got:\n%s", content)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 type apiKeyFixture struct {
 	userService *coreauth.UserService
+	authService *coreauth.AuthService
 	keyService  *coreauth.APIKeyService
 	owner       *coreauth.User
 	closeAll    func() error
@@ -33,18 +34,27 @@ func createAPIKeyFixture(t *testing.T) *apiKeyFixture {
 		t.Fatalf("create owner user: %v", err)
 	}
 
+	sessionStore, err := coreauth.NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create session store: %v", err)
+	}
+	sessions := coreauth.NewSessionManager(sessionStore, "test-secret-key-for-unit-tests-1", time.Hour, 24*time.Hour)
+	authService := coreauth.NewAuthService(userService, sessions, nil)
+
 	keyStore, err := coreauth.NewAPIKeyStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("create api key store: %v", err)
 	}
-	keyService := coreauth.NewAPIKeyService(keyStore, userService)
+	keyService := coreauth.NewAPIKeyService(keyStore, authService)
 
 	return &apiKeyFixture{
 		userService: userService,
+		authService: authService,
 		keyService:  keyService,
 		owner:       owner,
 		closeAll: func() error {
 			_ = keyStore.Close()
+			_ = sessionStore.Close()
 			return userStore.Close()
 		},
 	}
@@ -203,6 +213,98 @@ func TestInjectAPIKeyUser_RevokedKeyRejected(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for revoked key, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Regression tests for the bug where InjectAPIKeyUser mapped Resolve's
+// store-unavailable LocalizedError (see APIKeyService.IsStoreUnavailableErr)
+// to the same generic 401 as a genuinely invalid key, so a client landing in
+// a live restore's brief suspend window saw a confusing "invalid or expired
+// API key" instead of "restore in progress, retry" — and had the attempt
+// counted against its rate-limit budget on top of that.
+
+func TestInjectAPIKeyUser_KeyStoreSuspended_Returns503(t *testing.T) {
+	f := createAPIKeyFixture(t)
+	cleanupWithErrorCheck(t, "api key fixture", f.closeAll)
+
+	_, token, err := f.keyService.CreateAPIKey(coreauth.CreateAPIKeyParams{
+		Name: "k", UserID: f.owner.ID, CreatedBy: "admin1",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey err: %v", err)
+	}
+
+	if err := f.keyService.PauseForSwap(); err != nil {
+		t.Fatalf("PauseForSwap failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	apiKeyRouter(authmw.APIKeyConfig{Service: f.keyService}, nil).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for a suspended api key store, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInjectAPIKeyUser_UserStoreSuspended_Returns503(t *testing.T) {
+	f := createAPIKeyFixture(t)
+	cleanupWithErrorCheck(t, "api key fixture", f.closeAll)
+
+	_, token, err := f.keyService.CreateAPIKey(coreauth.CreateAPIKeyParams{
+		Name: "k", UserID: f.owner.ID, CreatedBy: "admin1",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey err: %v", err)
+	}
+
+	if err := f.authService.PauseUserStoreForSwap(); err != nil {
+		t.Fatalf("PauseUserStoreForSwap failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	apiKeyRouter(authmw.APIKeyConfig{Service: f.keyService}, nil).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for a suspended user store, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInjectAPIKeyUser_StoreUnavailable_NotCountedAsFailedAttempt verifies a
+// store-unavailable response never burns rate-limit budget: a legitimate
+// client backing off and retrying during a live restore's brief suspend
+// window must never get 429'd for doing exactly what the 503 asked it to do.
+func TestInjectAPIKeyUser_StoreUnavailable_NotCountedAsFailedAttempt(t *testing.T) {
+	f := createAPIKeyFixture(t)
+	cleanupWithErrorCheck(t, "api key fixture", f.closeAll)
+
+	_, token, err := f.keyService.CreateAPIKey(coreauth.CreateAPIKeyParams{
+		Name: "k", UserID: f.owner.ID, CreatedBy: "admin1",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey err: %v", err)
+	}
+
+	if err := f.keyService.PauseForSwap(); err != nil {
+		t.Fatalf("PauseForSwap failed: %v", err)
+	}
+
+	limiter := security.NewKeyedLimiter(1, time.Minute, true)
+	router := apiKeyRouter(authmw.APIKeyConfig{Service: f.keyService, RateLimiter: limiter}, nil)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d: expected 503, got %d: %s", i+1, w.Code, w.Body.String())
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { getResyncStatus, triggerResync } from '@/lib/api/resync'
 import i18next from '@/lib/i18n'
+import { sleep } from '@/lib/sleep'
 
 const POLL_INTERVAL_MS = 800
 const POLL_ERROR_LIMIT = 3
@@ -9,10 +10,6 @@ interface ResyncState {
   isLoading: boolean
   phase: string | null
   trigger: () => Promise<void>
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 export const useResyncStore = create<ResyncState>((set) => ({
@@ -63,7 +60,9 @@ export const useResyncStore = create<ResyncState>((set) => ({
       // running=false without done=true means the job was lost (server restart).
       if (!status.running) {
         set({ isLoading: false, phase: null })
-        throw new Error(i18next.t('syncJobLostFallback', { ns: 'maintenance' }))
+        throw new Error(
+          i18next.t('toolbar.syncJobLostFallback', { ns: 'viewer' }),
+        )
       }
     }
   },

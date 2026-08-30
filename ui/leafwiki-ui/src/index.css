@@ -14,7 +14,9 @@
 ------------------------------------------------------- */
 @theme {
   /* Typography + Radii */
-  --font-sans: InterVariable, system-ui, sans-serif;
+  --font-sans:
+    InterVariable, system-ui, 'Segoe UI Emoji', 'Apple Color Emoji',
+    'Noto Color Emoji', sans-serif;
   --radius: 0.5rem;
   --radius-lg: 0.5rem;
   --radius-md: 0.375rem;
@@ -694,32 +696,32 @@
     @apply bg-primary/10 border-primary/30 text-interface-text rounded border px-2 py-1 text-xs shadow-sm;
   }
 
-  /* UserToolbar Component */
-  .user-toolbar {
+  /* UserMenu Component */
+  .user-menu {
     @apply ml-auto flex items-center gap-4;
   }
 
-  .user-toolbar__avatar {
+  .user-menu__avatar {
     @apply h-5 w-5 max-sm:h-7 max-sm:w-7;
   }
 
-  .user-toolbar__avatar > span {
+  .user-menu__avatar > span {
     @apply bg-avatar-bg! text-avatar-foreground!;
   }
 
-  .user-toolbar__avatar-fallback {
+  .user-menu__avatar-fallback {
     @apply text-muted-foreground font-medium;
   }
 
-  .user-toolbar__not-logged-in {
+  .user-menu__not-logged-in {
     @apply text-error text-sm;
   }
 
-  .user-toolbar__menu-item {
+  .user-menu__menu-item {
     @apply text-interface-text hover:bg-surface-alt cursor-pointer;
   }
 
-  .user-toolbar-dropdown-trigger {
+  .user-menu__dropdown-trigger {
     @apply flex items-center space-x-2 focus:outline-hidden;
   }
 
@@ -867,6 +869,10 @@
 
   .login__totp-back {
     @apply mt-2 w-full;
+  }
+
+  .login__forgot-password {
+    @apply text-muted-foreground hover:text-interface-text mb-4 block text-sm underline-offset-2 hover:underline;
   }
 
   /* TOTP setup dialog */
@@ -1685,14 +1691,24 @@
      .app-layout__toc-pane's own width (same 200ms/values) so the two stay
      aligned mid-animation, not just at rest. */
   @media (min-width: 1280px) {
+    /* transition lives on the base rule, not the reserved/collapsed
+       variants below, so it survives class removal (e.g. navigating to a
+       page without a toc). If it lived on the variant class instead, React
+       removing that class would remove the transition instruction in the
+       same commit as the padding-right change, and the browser would have
+       nothing left to animate from — an instant snap instead of an
+       animation. Mirrors .app-layout__toc-pane, which puts its width
+       transition on the always-present base class for the same reason. */
+    .page-viewer__subheader {
+      transition: padding-right 200ms ease;
+    }
+
     .page-viewer__subheader--toc-reserved {
       padding-right: 16rem;
-      transition: padding-right 200ms ease;
     }
 
     .page-viewer__subheader--toc-reserved-collapsed {
       padding-right: 3rem;
-      transition: padding-right 200ms ease;
     }
   }
 
@@ -2299,7 +2315,7 @@
   }
 
   .table-wrapper table {
-    @apply w-full border-collapse;
+    @apply w-fit max-w-full border-collapse;
   }
 
   .table-wrapper tbody tr:nth-child(odd) {
@@ -2418,6 +2434,12 @@
     @apply ml-0.5 text-[0.7em];
   }
 
+  .markdown-editor__preview mark,
+  .page-viewer__content mark,
+  .page-history__preview-body mark {
+    @apply bg-warning/25 rounded-sm px-0.5 text-inherit;
+  }
+
   .markdown-editor__preview .markdown-shoutout,
   .page-viewer__content .markdown-shoutout,
   .page-history__preview-body .markdown-shoutout {
@@ -2526,6 +2548,53 @@
     @apply border-orange-500/30 bg-orange-500/10;
   }
 
+  .markdown-editor__preview .markdown-collapsible,
+  .page-viewer__content .markdown-collapsible,
+  .page-history__preview-body .markdown-collapsible {
+    @apply border-border/70 bg-surface-alt text-page-text my-6 rounded-lg border px-4 py-3;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > summary,
+  .page-viewer__content .markdown-collapsible > summary,
+  .page-history__preview-body .markdown-collapsible > summary {
+    @apply -mx-4 -my-3 flex cursor-pointer list-none items-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold select-none;
+  }
+
+  .markdown-editor__preview
+    .markdown-collapsible
+    > summary::-webkit-details-marker,
+  .page-viewer__content .markdown-collapsible > summary::-webkit-details-marker,
+  .page-history__preview-body
+    .markdown-collapsible
+    > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > summary::before,
+  .page-viewer__content .markdown-collapsible > summary::before,
+  .page-history__preview-body .markdown-collapsible > summary::before {
+    content: '';
+    @apply border-muted h-1.5 w-1.5 shrink-0 -rotate-45 border-r-2 border-b-2 transition-transform duration-200;
+  }
+
+  .markdown-editor__preview .markdown-collapsible[open] > summary::before,
+  .page-viewer__content .markdown-collapsible[open] > summary::before,
+  .page-history__preview-body .markdown-collapsible[open] > summary::before {
+    @apply rotate-45;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > summary + *,
+  .page-viewer__content .markdown-collapsible > summary + *,
+  .page-history__preview-body .markdown-collapsible > summary + * {
+    @apply mt-3;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > :last-child,
+  .page-viewer__content .markdown-collapsible > :last-child,
+  .page-history__preview-body .markdown-collapsible > :last-child {
+    @apply mb-0;
+  }
+
   .tree-view {
     @apply w-full;
   }
@@ -2535,7 +2604,11 @@
   }
 
   .sidebar-accordion-section__title {
-    @apply text-muted flex items-center gap-1 text-xs font-medium tracking-wide uppercase select-none;
+    @apply text-muted hover:text-interface-text flex cursor-pointer items-center gap-1 text-xs font-medium tracking-wide uppercase select-none;
+    background: none;
+    border: none;
+    padding: 0;
+    text-align: left;
   }
 
   .sidebar-accordion-section__count {
@@ -2807,16 +2880,25 @@
     @apply mx-auto w-full max-w-4xl px-4 pt-4 pb-4 sm:px-8 sm:pt-8;
   }
 
-  .settings-nav {
-    @apply border-surface-border mb-6 flex flex-wrap gap-1 border-b pb-3;
+  .settings-nav .list-view__header {
+    @apply border-b-surface-border bg-surface h-12 min-h-0 border-b px-2;
   }
 
-  .settings-nav__link {
-    @apply text-muted-foreground hover:text-foreground rounded-md px-3 py-1.5 text-sm no-underline transition-colors;
+  .settings-nav .list-view__title {
+    @apply text-brand inline-flex items-center gap-1 px-3 py-1.5 text-sm font-normal;
   }
 
-  .settings-nav__link--active {
-    @apply bg-accent text-foreground font-medium;
+  .settings-nav .list-view__content {
+    @apply p-2;
+  }
+
+  .settings-nav .list-view__item {
+    @apply flex items-center gap-2.5 rounded-none text-sm;
+  }
+
+  .settings-nav .list-view__item--active {
+    @apply border-surface-border/0 bg-surface-alt text-brand;
+    box-shadow: inset 3px 0 0 hsl(var(--brand));
   }
 
   .settings__title {
@@ -2837,6 +2919,14 @@
 
   .settings__field {
     @apply mb-4;
+  }
+
+  .settings__checkbox-label {
+    @apply flex items-center gap-2;
+  }
+
+  .settings__field-label {
+    @apply text-interface-text mb-2 block text-sm font-medium;
   }
 
   .settings__preview {

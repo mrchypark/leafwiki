@@ -87,7 +87,7 @@ func TestPageResponse_ReturnsNotFoundWhenPageIsInvisible(t *testing.T) {
 func TestListFavoritesRoute_DisablesSharedCaching(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	treeService := newLoadedRouteTree(t)
-	store, err := favorites.NewFavoritesStore(t.TempDir())
+	store, err := favorites.NewFavoritesStore(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewFavoritesStore: %v", err)
 	}

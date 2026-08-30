@@ -42,6 +42,15 @@ func (a *AuthService) users() *UserService {
 	return a.userService
 }
 
+// UserService returns the current *UserService (exported alias of users, for
+// callers outside this package). APIKeyService depends on this rather than
+// caching its own *UserService, so its owner lookups (Resolve) automatically
+// track ReplaceUserStore swaps after a live restore instead of going stale —
+// api_keys.db is the only user data APIKeyService owns and hot-swaps itself.
+func (a *AuthService) UserService() *UserService {
+	return a.users()
+}
+
 // ReplaceUserStore opens a fresh UserStore/UserService against
 // storageDir/users.db and swaps it in, closing the previous one afterward.
 // Used by a live restore after users.db has been swapped in on disk. Requests
@@ -59,6 +68,11 @@ func (a *AuthService) ReplaceUserStore(storageDir string) error {
 
 	a.mu.Lock()
 	old := a.userService
+	// Preserve the plan's editor limit across the swap — a restore changes
+	// user data, not which plan tier this instance is running under.
+	if old != nil {
+		newUserService.SetEditorLimit(old.editorLimit)
+	}
 	a.userService = newUserService
 	a.mu.Unlock()
 
@@ -198,6 +212,23 @@ func (a *AuthService) Login(identifier, password string) (*AuthToken, error) {
 	return a.sessions.IssueSession(user)
 }
 
+// IssueSessionForUser issues a fresh access/refresh token pair for userID
+// without a password check — used when a caller has already established
+// trust some other way. Currently only the invite-accept flow does this (see
+// wiki/auth's ConfirmInviteUseCase): a freshly invited user has just proven
+// control of their invite link and set a password, so a second login
+// immediately afterward would be redundant. Mirrors Login's final step,
+// skipping credential verification and any TOTP challenge (an invited user
+// has neither TOTP nor a failed-attempt history yet).
+func (a *AuthService) IssueSessionForUser(userID string) (*AuthToken, error) {
+	user, err := a.users().GetUserByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	user.Password = ""
+	return a.sessions.IssueSession(user)
+}
+
 // CompleteTOTPLogin finishes a login handshake started by Login when a user
 // has TOTP enabled. It validates challengeToken (single use, short-lived) and
 // then code as either a current TOTP code or an unused recovery code; only on
@@ -235,7 +266,7 @@ func (a *AuthService) CompleteTOTPLogin(challengeToken, code string) (*AuthToken
 	users := a.users()
 	user, err := users.GetUserByID(userID)
 	if err != nil {
-		return nil, ErrUserNotFound
+		return nil, err
 	}
 	if !user.TOTPEnabled || user.TOTPSecretEncrypted == "" {
 		// TOTP was disabled after the challenge was issued; it can no longer be completed.
@@ -474,13 +505,18 @@ func (a *AuthService) verifyTOTPOrRecoveryCode(users *UserService, user *User, c
 	return false, false, nil
 }
 
+// userStoreUnavailableCode identifies errUserStoreUnavailable's LocalizedError
+// so callers (e.g. UserService.mapUserLookupErr) can pass it through instead
+// of collapsing it into ErrUserNotFound.
+const userStoreUnavailableCode = "auth_user_store_unavailable"
+
 // errUserStoreUnavailable is returned while the user store is suspended for
 // an in-progress live restore (see UserStore.suspend / PauseUserStoreForSwap).
 // A GET request landing in that window gets this immediately instead of
 // racing a reconnect against the file swap.
 func errUserStoreUnavailable() error {
 	return sharederrors.NewLocalizedError(
-		"auth_user_store_unavailable",
+		userStoreUnavailableCode,
 		"The server is restoring from a backup — please try again in a moment",
 		"user store is suspended for an in-progress restore",
 		nil,

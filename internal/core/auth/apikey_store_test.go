@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/test_utils"
 )
 
@@ -16,6 +19,21 @@ func setupTestAPIKeyStore(t *testing.T) *APIKeyStore {
 		t.Fatalf("Failed to create api key store: %v", err)
 	}
 	return store
+}
+
+func TestAPIKeyStore_UsesWALJournalMode(t *testing.T) {
+	store := setupTestAPIKeyStore(t)
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	var mode string
+	if err := store.withDB(func(db *sql.DB) error {
+		return db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
+	}); err != nil {
+		t.Fatalf("failed to read journal_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode = %q, want %q", mode, "wal")
+	}
 }
 
 func TestAPIKeyStore_CreatesDatabaseInStorageDir(t *testing.T) {
@@ -122,6 +140,41 @@ func TestAPIKeyStore_ListAll_OrderedNewestFirst(t *testing.T) {
 	}
 }
 
+func TestAPIKeyStore_DeleteAllForUser_RemovesOnlyThatUsersKeys(t *testing.T) {
+	store := setupTestAPIKeyStore(t)
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	u1Key := &APIKey{ID: "k1", Name: "u1 key", UserID: "u1", Prefix: "p1", KeyHash: "h1", Role: RoleViewer, CreatedBy: "admin1", CreatedAt: time.Now()}
+	u2Key := &APIKey{ID: "k2", Name: "u2 key", UserID: "u2", Prefix: "p2", KeyHash: "h2", Role: RoleViewer, CreatedBy: "admin1", CreatedAt: time.Now()}
+	if err := store.CreateAPIKey(u1Key); err != nil {
+		t.Fatalf("CreateAPIKey err: %v", err)
+	}
+	if err := store.CreateAPIKey(u2Key); err != nil {
+		t.Fatalf("CreateAPIKey err: %v", err)
+	}
+
+	if err := store.DeleteAllForUser("u1"); err != nil {
+		t.Fatalf("DeleteAllForUser err: %v", err)
+	}
+
+	keys, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll err: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != "k2" {
+		t.Fatalf("expected only u2's key to remain, got %v", keys)
+	}
+}
+
+func TestAPIKeyStore_DeleteAllForUser_NoKeysIsNotAnError(t *testing.T) {
+	store := setupTestAPIKeyStore(t)
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	if err := store.DeleteAllForUser("no-such-user"); err != nil {
+		t.Fatalf("DeleteAllForUser err: %v", err)
+	}
+}
+
 func TestAPIKeyStore_Revoke(t *testing.T) {
 	store := setupTestAPIKeyStore(t)
 	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
@@ -200,6 +253,54 @@ func TestAPIKeyStore_TouchLastUsed(t *testing.T) {
 	}
 	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(time.Unix(now.Unix(), 0)) {
 		t.Fatalf("expected LastUsedAt ~= %v, got %v", now, got.LastUsedAt)
+	}
+}
+
+// TestAPIKeyStore_Suspend_ClosesDBAndBlocksReconnect mirrors
+// TestUserStore_Suspend_ClosesDBAndBlocksReconnect: suspend() must close the
+// connection AND make withDB refuse to reopen it, so a query landing during
+// the restore swap window (Windows rename-of-open-file sharing violation)
+// fails fast instead of silently grabbing a fresh OS-level file handle.
+func TestAPIKeyStore_Suspend_ClosesDBAndBlocksReconnect(t *testing.T) {
+	store := setupTestAPIKeyStore(t)
+
+	key := &APIKey{
+		ID:        "k1",
+		Name:      "agent key",
+		UserID:    "u1",
+		Prefix:    "ab12cd",
+		KeyHash:   "hashed",
+		Role:      RoleViewer,
+		CreatedBy: "admin1",
+		CreatedAt: time.Now(),
+	}
+	if err := store.CreateAPIKey(key); err != nil {
+		t.Fatalf("CreateAPIKey failed: %v", err)
+	}
+
+	if err := store.suspend(); err != nil {
+		t.Fatalf("suspend failed: %v", err)
+	}
+	if store.db != nil {
+		t.Fatal("expected db to be nil immediately after suspend")
+	}
+
+	_, err := store.GetByPrefix("ab12cd")
+	if err == nil {
+		t.Fatal("expected a query against a suspended store to fail, not silently reconnect")
+	}
+	localized, ok := sharederrors.AsLocalizedError(err)
+	if !ok || localized.Code != "apikey_store_unavailable" {
+		t.Fatalf("expected apikey_store_unavailable, got %v", err)
+	}
+	if store.db != nil {
+		t.Fatal("expected the failed query to NOT have reopened db — that's exactly the race this fix prevents")
+	}
+
+	// suspend must be idempotent — Manager.rollbackOrIntervene's cleanup
+	// paths may end up calling code that touches an already-suspended store.
+	if err := store.suspend(); err != nil {
+		t.Fatalf("expected a second suspend call to be a safe no-op, got: %v", err)
 	}
 }
 

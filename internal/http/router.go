@@ -77,15 +77,21 @@ func disableClientCache(c *gin.Context) {
 
 // HTTPRemoteUserConfig configures reverse-proxy-based authentication.
 type HTTPRemoteUserConfig struct {
-	Enabled        bool
-	HeaderName     string
-	TrustedProxies *auth_middleware.TrustedProxies
-	UserService    *coreauth.UserService
+	Enabled         bool
+	HeaderName      string
+	AutoCreate      bool   // Whether to auto-provision users asserted by the proxy but unknown to LeafWiki
+	EmailHeaderName string // Optional header supplying the email for auto-created users
+	DefaultRole     string // Role assigned to auto-created users
+	TrustedProxies  *auth_middleware.TrustedProxies
+	// UserService is resolved on every request rather than captured once
+	// here — see auth_middleware.RemoteUserConfig.UserService.
+	UserService func() *coreauth.UserService
 }
 
 // RouterOptions holds global HTTP server configuration shared across all domains.
 type RouterOptions struct {
 	PublicAccess            bool                     // Whether the wiki allows public read access
+	EditorLimit             int                      // Max admin+editor users allowed; 0 = unlimited
 	InjectCodeInHeader      string                   // Raw HTML/JS code to inject into the <head> tag
 	CustomStylesheet        string                   // Path to a custom CSS file (resolved by wiki before passing)
 	AllowInsecure           bool                     // Whether to allow insecure HTTP connections
@@ -101,11 +107,13 @@ type RouterOptions struct {
 	Metrics                 *httpmetrics.HTTPMetrics // Optional Prometheus HTTP metrics collector; nil disables request instrumentation
 	GitBackupEnabled        bool                     // Whether git backup is enabled (surfaced to admin UI via /api/config)
 	SnapshotEnabled         bool                     // Whether full-backup (snapshot) is enabled (surfaced to admin UI via /api/config)
+	SMTPEnabled             bool                     // Whether SMTP (password reset / user invite email) is configured (surfaced to UI via /api/config)
 	TOTPAvailable           bool                     // Whether a TOTP encryption key is configured, i.e. TOTP self-service can be offered (surfaced to UI via /api/config)
 	HTTPRemoteUser          HTTPRemoteUserConfig     // Reverse-proxy authentication via HTTP header
 	APIKeyService           *coreauth.APIKeyService  // Bearer API-key authentication; nil disables the feature
 	DisableRequestLog       bool                     // Whether to suppress per-request access log lines
 	UserManagementURL       string                   // Optional URL; when set, the frontend replaces in-app user management with a link to this URL
+	DefaultLanguage         string                   // Optional default UI language code (e.g. "de"); frontend applies it only if it matches a language it ships
 	LoginURL                string                   // Optional URL the frontend redirects to instead of showing the built-in login form
 	LogoutURL               string                   // Optional URL the frontend redirects to after logout
 	WriteGate               *restore.WriteGate       // Optional; when set, gates mutating requests while a restore is in progress. nil disables the middleware entirely (no snapshot/restore enabled)
@@ -159,10 +167,13 @@ func NewRouter(registrars []RouteRegistrar, frontendCfg FrontendConfig, opts Rou
 
 	if opts.HTTPRemoteUser.Enabled {
 		base.Use(auth_middleware.InjectRemoteUser(auth_middleware.RemoteUserConfig{
-			Enabled:        opts.HTTPRemoteUser.Enabled,
-			HeaderName:     opts.HTTPRemoteUser.HeaderName,
-			TrustedProxies: opts.HTTPRemoteUser.TrustedProxies,
-			UserService:    opts.HTTPRemoteUser.UserService,
+			Enabled:         opts.HTTPRemoteUser.Enabled,
+			HeaderName:      opts.HTTPRemoteUser.HeaderName,
+			AutoCreate:      opts.HTTPRemoteUser.AutoCreate,
+			EmailHeaderName: opts.HTTPRemoteUser.EmailHeaderName,
+			DefaultRole:     opts.HTTPRemoteUser.DefaultRole,
+			TrustedProxies:  opts.HTTPRemoteUser.TrustedProxies,
+			UserService:     opts.HTTPRemoteUser.UserService,
 		}))
 	}
 

@@ -6,6 +6,7 @@ import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
 import { Pencil } from 'lucide-react'
 import { DraftBadge } from '@/components/DraftBadge'
+import { useTranslation } from 'react-i18next'
 import { TooltipWrapper } from '../../components/TooltipWrapper'
 import {
   isDirtyState,
@@ -14,6 +15,7 @@ import {
 } from './pageEditorStore'
 
 export function EditorTitleBar() {
+  const { t } = useTranslation('editor')
   const isMobile = useIsMobile()
   const appMode = useAppMode()
   const page = usePageEditorStore((state) => state.page)
@@ -72,7 +74,9 @@ export function EditorTitleBar() {
           {effectiveDraft && <DraftBadge inherited={!draft} />}
           <Pencil size={16} className="editor-title-bar__icon" />
           {dirty && !isMobile && (
-            <span className="editor-title-bar__dirty-indicator">(Changes)</span>
+            <span className="editor-title-bar__dirty-indicator">
+              {t('titleBar.dirtyIndicator')}
+            </span>
           )}
 
           {dirty && isMobile && (

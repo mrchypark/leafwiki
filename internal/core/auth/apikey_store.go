@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	_ "modernc.org/sqlite"
 )
 
@@ -43,6 +44,9 @@ type APIKeyStore struct {
 	storageDir string
 	filename   string
 	db         *sql.DB
+	// suspended is set by suspend() and makes withDB refuse to lazily reopen
+	// db — see suspend's doc comment.
+	suspended bool
 }
 
 func NewAPIKeyStore(storageDir string) (*APIKeyStore, error) {
@@ -62,8 +66,12 @@ func (s *APIKeyStore) withDB(fn func(db *sql.DB) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.suspended {
+		return errAPIKeyStoreUnavailable()
+	}
+
 	if s.db == nil {
-		db, err := sql.Open("sqlite", databasePath(s.storageDir, s.filename))
+		db, err := sql.Open("sqlite", databasePath(s.storageDir, s.filename)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 		if err != nil {
 			return err
 		}
@@ -71,6 +79,50 @@ func (s *APIKeyStore) withDB(fn func(db *sql.DB) error) error {
 	}
 
 	return fn(s.db)
+}
+
+// suspend closes db (if open) and marks the store so withDB refuses to
+// lazily reopen it — unlike a plain Close(), whose reconnect-on-next-query
+// behavior would otherwise defeat the point of suspending. Used by
+// APIKeyService.PauseForSwap before a live restore renames api_keys.db out
+// from under this store: on Windows, an open file handle (or one silently
+// reopened by a query landing mid-swap) blocks the rename with a sharing
+// violation, which POSIX doesn't have. Mirrors UserStore.suspend exactly —
+// see that doc comment for the full rationale. suspend is permanent for this
+// *APIKeyStore instance; restore always continues with a brand new one
+// afterward (see APIKeyService.Replace), so there's no un-suspend. Idempotent:
+// a second call is a safe no-op.
+func (s *APIKeyStore) suspend() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suspended = true
+	if s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
+}
+
+// ErrCodeAPIKeyStoreUnavailable identifies errAPIKeyStoreUnavailable's
+// LocalizedError so callers (e.g. APIKeyService.AsStoreUnavailableErr, or the
+// wiki/apikeys HTTP layer's status mapping) can pass it through instead of
+// collapsing it into ErrAPIKeyInvalid. Exported — the sole source of truth
+// for this code, so no other layer needs its own copy of the literal.
+// Mirrors userStoreUnavailableCode.
+const ErrCodeAPIKeyStoreUnavailable = "apikey_store_unavailable"
+
+// errAPIKeyStoreUnavailable is returned while the store is suspended for an
+// in-progress live restore (see APIKeyStore.suspend / APIKeyService.PauseForSwap).
+// A request landing in that window gets this immediately instead of racing a
+// reconnect against the file swap. Mirrors errUserStoreUnavailable.
+func errAPIKeyStoreUnavailable() error {
+	return sharederrors.NewLocalizedError(
+		ErrCodeAPIKeyStoreUnavailable,
+		"The server is restoring from a backup — please try again in a moment",
+		"api key store is suspended for an in-progress restore",
+		nil,
+	)
 }
 
 func (s *APIKeyStore) ensureSchema() error {
@@ -205,6 +257,17 @@ func (s *APIKeyStore) Revoke(id string) error {
 			SET revoked_at = ?
 			WHERE id = ? AND revoked_at IS NULL;
 		`, time.Now().Unix(), id)
+		return err
+	})
+}
+
+// DeleteAllForUser removes every API key owned by userID. Called on user
+// delete — the key is already unusable for auth immediately once its owner
+// is gone (APIKeyService.Resolve re-validates the owner on every use), so
+// this is orphaned-row hygiene rather than a security-critical revocation.
+func (s *APIKeyStore) DeleteAllForUser(userID string) error {
+	return s.withDB(func(db *sql.DB) error {
+		_, err := db.Exec(`DELETE FROM api_keys WHERE user_id = ?;`, userID)
 		return err
 	})
 }

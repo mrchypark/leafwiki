@@ -83,7 +83,7 @@ start_docker() {
     --revision-coalesce-window=0 \
     --jwt-secret=e2e-tests-secret \
     --totp-encryption-key=e2e-tests-totp-encryption-key-32 \
-    --admin-password=admin
+    --admin-password=admine2epassword
 
   echo "✅ Container started on $app_url"
 }
@@ -120,7 +120,7 @@ start_local() {
       --revision-coalesce-window=0 \
       --jwt-secret=e2e-tests-secret \
       --totp-encryption-key=e2e-tests-totp-encryption-key-32 \
-      --admin-password=admin
+      --admin-password=admine2epassword
   ) >"$server_log" 2>&1 &
 
   server_pid=$!
@@ -175,7 +175,7 @@ run_playwright_tests() {
     if command -v stdbuf >/dev/null 2>&1; then
       E2E_BASE_URL="$app_url" \
       E2E_ADMIN_USER="${E2E_ADMIN_USER:-admin}" \
-      E2E_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-admin}" \
+      E2E_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-admine2epassword}" \
       E2E_CONTAINER_NAME="$container_name" \
       E2E_PUBLIC_ACCESS="$public_access" \
       PLAYWRIGHT_FORCE_TTY=1 \
@@ -183,7 +183,7 @@ run_playwright_tests() {
     else
       E2E_BASE_URL="$app_url" \
       E2E_ADMIN_USER="${E2E_ADMIN_USER:-admin}" \
-      E2E_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-admin}" \
+      E2E_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-admine2epassword}" \
       E2E_CONTAINER_NAME="$container_name" \
       E2E_PUBLIC_ACCESS="$public_access" \
       PLAYWRIGHT_FORCE_TTY=1 \

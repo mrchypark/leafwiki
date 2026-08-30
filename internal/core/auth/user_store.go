@@ -68,7 +68,18 @@ func (f *UserStore) Connect() error {
 	// consume the same TOTP recovery code via ConsumeRecoveryCodeHash) block
 	// and retry internally for up to 5s instead of failing immediately with
 	// SQLITE_BUSY, which ConsumeRecoveryCodeHash's caller does not retry on.
-	db, err := sql.Open("sqlite", databasePath(f.storageDir, f.filename)+"?_pragma=busy_timeout(5000)")
+	// journal_mode(WAL) is load-test-verified: GetUserByID runs on every
+	// authenticated request (RequireAuth -> ValidateToken), and under the
+	// previous rollback-journal mode a handful of concurrent writes to this
+	// store (role/profile updates) measurably stalled reads system-wide
+	// (p95 +120-180ms at just 3 concurrent writers) via SQLite's file-level
+	// commit lock — WAL lets readers proceed without blocking on a writer's
+	// commit. Because this store (unlike search/tags/links) is
+	// non-derived source-of-truth data, enabling WAL here also required
+	// restore/swap.go to explicitly clean up -wal/-shm sidecars before a
+	// live or offline restore swap (see removeStaleWALSidecars) — read that
+	// comment before touching this pragma.
+	db, err := sql.Open("sqlite", databasePath(f.storageDir, f.filename)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return err
 	}
@@ -117,13 +128,34 @@ func (f *UserStore) ensureSchema() error {
 			totp_enabled INTEGER NOT NULL DEFAULT 0,
 			totp_recovery_codes_json TEXT NOT NULL DEFAULT '[]',
 			totp_enabled_at TIMESTAMP NULL,
-			totp_last_reset_at TIMESTAMP NULL
+			totp_last_reset_at TIMESTAMP NULL,
+			must_set_password INTEGER NOT NULL DEFAULT 0
 		);
 	`)
 	if err != nil {
 		return err
 	}
-	return f.ensureTOTPColumns()
+	if err := f.ensureTOTPColumns(); err != nil {
+		return err
+	}
+	return f.ensureMustSetPasswordColumn()
+}
+
+// ensureMustSetPasswordColumn additively migrates a pre-invite users.db by
+// adding must_set_password if missing. Same idempotent pattern as
+// ensureTOTPColumns.
+func (f *UserStore) ensureMustSetPasswordColumn() error {
+	existing, err := f.existingColumns()
+	if err != nil {
+		return err
+	}
+	if existing["must_set_password"] {
+		return nil
+	}
+	if _, err := f.db.Exec(`ALTER TABLE users ADD COLUMN must_set_password INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("failed to add column must_set_password to users table: %w", err)
+	}
+	return nil
 }
 
 // ensureTOTPColumns additively migrates a pre-TOTP users.db by adding any
@@ -214,7 +246,8 @@ func (f *UserStore) CreateUser(user *User) error {
 }
 
 const userColumns = `id, username, password, email, role,
-		totp_secret_encrypted, totp_enabled, totp_recovery_codes_json, totp_enabled_at, totp_last_reset_at`
+		totp_secret_encrypted, totp_enabled, totp_recovery_codes_json, totp_enabled_at, totp_last_reset_at,
+		must_set_password`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -224,19 +257,21 @@ type scanner interface {
 // scanUser scans a row produced by a query selecting userColumns into a User.
 func scanUser(row scanner) (*User, error) {
 	user := &User{}
-	var totpEnabledInt int
+	var totpEnabledInt, mustSetPasswordInt int
 	var recoveryCodesJSON string
 	var enabledAt, lastResetAt sql.NullString
 
 	err := row.Scan(
 		&user.ID, &user.Username, &user.Password, &user.Email, &user.Role,
 		&user.TOTPSecretEncrypted, &totpEnabledInt, &recoveryCodesJSON, &enabledAt, &lastResetAt,
+		&mustSetPasswordInt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	user.TOTPEnabled = totpEnabledInt != 0
+	user.MustSetPassword = mustSetPasswordInt != 0
 	if recoveryCodesJSON != "" {
 		if err := json.Unmarshal([]byte(recoveryCodesJSON), &user.TOTPRecoveryCodeHashes); err != nil {
 			return nil, fmt.Errorf("failed to parse stored recovery codes for user %s: %w", user.ID, err)
@@ -455,6 +490,22 @@ func (f *UserStore) CountAdminUsers() (int, error) {
 	return count, nil
 }
 
+// CountEditorUsers counts users with role admin or editor — the same
+// "editor" definition used across the plan-tier pricing (viewers are always
+// unlimited, admin+editor together count against the plan's editor limit).
+func (f *UserStore) CountEditorUsers() (int, error) {
+	err := f.Connect()
+	if err != nil {
+		return 0, err
+	}
+	row := f.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role IN ('admin', 'editor');`)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (f *UserStore) GetUserCount() (int, error) {
 	// Ensure the database is connected
 	err := f.Connect()
@@ -624,4 +675,27 @@ func (f *UserStore) ConsumeRecoveryCodeHash(userID string, oldHashes, newHashes 
 		return false, err
 	}
 	return rowsAffected == 1, nil
+}
+
+// SetMustSetPassword flips the must_set_password flag for userID — set to
+// true by InviteUser at creation, cleared by CompleteInvite once the invite
+// is accepted.
+func (f *UserStore) SetMustSetPassword(userID string, value bool) error {
+	if err := f.Connect(); err != nil {
+		return err
+	}
+	if _, err := f.GetUserByID(userID); err != nil {
+		return err
+	}
+
+	v := 0
+	if value {
+		v = 1
+	}
+	_, err := f.db.Exec(`
+		UPDATE users
+		SET must_set_password = ?
+		WHERE id = ?;
+	`, v, userID)
+	return err
 }

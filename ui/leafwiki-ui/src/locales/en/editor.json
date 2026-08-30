@@ -28,6 +28,7 @@
     "boldTooltip": "Bold (Ctrl+B)",
     "italicTooltip": "Italic (Ctrl+I)",
     "strikethroughTooltip": "Strikethrough",
+    "highlightTooltip": "Highlight",
     "linkTooltip": "Link (Ctrl+K)",
     "heading1Tooltip": "Heading 1 (Ctrl+Alt+1)",
     "heading2Tooltip": "Heading 2 (Ctrl+Alt+2)",
@@ -54,6 +55,7 @@
     "pastePlain": "Paste without formatting",
     "pasteClipboardError": "Could not read clipboard contents",
     "strikethrough": "Strikethrough",
+    "highlight": "Highlight",
     "heading1": "Heading 1",
     "heading2": "Heading 2",
     "heading3": "Heading 3",
@@ -97,7 +99,11 @@
     "inheritedDraft": "Inherited draft",
     "published": "Published",
     "visibilityHeading": "Visibility",
-    "keepDraftWhenParentPublished": "Keep draft when parent is published"
+    "keepDraftWhenParentPublished": "Keep draft when parent is published",
+    "internalFieldsToggle": "Internal fields",
+    "addPropertyButton": "Add property",
+    "flatHint": "Keep fields flat for now. If you need nested metadata later, use dot keys like <code>seo.title</code>.",
+    "unsupportedNotice": "Existing advanced frontmatter is preserved in the background but not editable in this compact view yet."
   },
   "tagInput": {
     "loading": "Loading…",
@@ -116,5 +122,19 @@
     "savedToast": "Saved",
     "versionConflictToast": "Auto-save paused — page was changed by another user. Save manually to continue.",
     "errorFallback": "Auto-save failed"
+  },
+  "frontmatterValidation": {
+    "tagsWhitespace": "Tags must not contain leading or trailing whitespace.",
+    "tagsEmpty": "Tags must not be empty.",
+    "tagsUnique": "Tags must be unique.",
+    "keyEmpty": "Property key must not be empty.",
+    "keyWhitespace": "Property key must not contain leading or trailing whitespace.",
+    "keyReservedPrefix": "Property key uses a reserved prefix.",
+    "keyReserved": "Property key is reserved.",
+    "keyUnique": "Property key must be unique.",
+    "valueType": "Property value must be a string, number, boolean, or flat list."
+  },
+  "titleBar": {
+    "dirtyIndicator": "(Changes)"
   }
 }

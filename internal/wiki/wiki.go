@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/perber/wiki/internal/avatar"
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/email"
 	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
@@ -22,9 +24,11 @@ import (
 	"github.com/perber/wiki/internal/properties"
 	"github.com/perber/wiki/internal/search"
 	"github.com/perber/wiki/internal/tags"
+	"github.com/perber/wiki/internal/usersettings"
 	wikiapikeys "github.com/perber/wiki/internal/wiki/apikeys"
 	wikiassets "github.com/perber/wiki/internal/wiki/assets"
 	wikiauth "github.com/perber/wiki/internal/wiki/auth"
+	wikiavatar "github.com/perber/wiki/internal/wiki/avatar"
 	wikibackup "github.com/perber/wiki/internal/wiki/backup"
 	wikibranding "github.com/perber/wiki/internal/wiki/branding"
 	wikihealth "github.com/perber/wiki/internal/wiki/health"
@@ -39,55 +43,62 @@ import (
 	wikisearch "github.com/perber/wiki/internal/wiki/search"
 	wikisnapshot "github.com/perber/wiki/internal/wiki/snapshot"
 	wikitags "github.com/perber/wiki/internal/wiki/tags"
+	wikiusersettings "github.com/perber/wiki/internal/wiki/usersettings"
 )
 
 type Wiki struct {
-	tree         *tree.TreeService
-	slug         *tree.SlugService
-	auth         *auth.AuthService
-	userResolver *auth.UserResolver
-	user         *auth.UserService
-	apiKeys      *auth.APIKeyService
-	totp         *auth.TOTPService
-	asset        *assets.AssetService
-	branding     *branding.BrandingService
-	searchIndex  *search.SQLiteIndex
-	status       *search.IndexingStatus
-	storageDir   string
+	tree              *tree.TreeService
+	slug              *tree.SlugService
+	auth              *auth.AuthService
+	userResolver      *auth.UserResolver
+	user              *auth.UserService
+	apiKeys           *auth.APIKeyService
+	totp              *auth.TOTPService
+	emailTokenStore   *auth.EmailTokenStore
+	emailTokenService *auth.EmailTokenService
+	asset             *assets.AssetService
+	branding          *branding.BrandingService
+	avatar            *avatar.AvatarService
+	searchIndex       *search.SQLiteIndex
+	status            *search.IndexingStatus
+	storageDir        string
 
 	// Domain route registrars (populated by NewWiki).
-	pagesRoutes      *wikipages.Routes
-	authRoutes       *wikiauth.Routes
-	assetsRoutes     *wikiassets.Routes
-	revisionsRoutes  *wikirevisions.Routes
-	searchRoutes     *wikisearch.Routes
-	linksRoutes      *wikilinks.Routes
-	tagsRoutes       *wikitags.Routes
-	propertiesRoutes *wikiproperties.Routes
-	brandingRoutes   *wikibranding.Routes
-	apiKeysRoutes    *wikiapikeys.Routes
-	importerRoutes   *wikiimporter.Routes
-	healthRoutes     *wikihealth.Routes
-	revision         *revision.Service
-	links            *links.LinkService
-	tags             *tags.TagsService
-	props            *properties.PropertiesService
-	searchEffect     *pagesave.SearchIndexSideEffect
-	tagsEffect       *pagesave.TagsSideEffect
-	propertiesEffect *pagesave.PropertiesSideEffect
-	favorites        *favorites.FavoritesStore
-	backupRoutes     *wikibackup.Routes
-	snapshotRoutes   *wikisnapshot.Routes
-	restoreRoutes    *wikirestore.Routes
-	resyncRoutes     *wikiresync.Routes
-	resyncJob        *wikiresync.ResyncJob
-	ignoreCache      *ignore.Cache
-	reloadMu         sync.Mutex
-	reloadWG         sync.WaitGroup
-	shutdownCtx      context.Context
-	shutdownCancel   context.CancelFunc
-	log              *slog.Logger
-	metrics          *httpmetrics.HTTPMetrics
+	pagesRoutes        *wikipages.Routes
+	authRoutes         *wikiauth.Routes
+	assetsRoutes       *wikiassets.Routes
+	revisionsRoutes    *wikirevisions.Routes
+	searchRoutes       *wikisearch.Routes
+	linksRoutes        *wikilinks.Routes
+	tagsRoutes         *wikitags.Routes
+	propertiesRoutes   *wikiproperties.Routes
+	brandingRoutes     *wikibranding.Routes
+	avatarRoutes       *wikiavatar.Routes
+	apiKeysRoutes      *wikiapikeys.Routes
+	importerRoutes     *wikiimporter.Routes
+	healthRoutes       *wikihealth.Routes
+	revision           *revision.Service
+	links              *links.LinkService
+	tags               *tags.TagsService
+	props              *properties.PropertiesService
+	searchEffect       *pagesave.SearchIndexSideEffect
+	tagsEffect         *pagesave.TagsSideEffect
+	propertiesEffect   *pagesave.PropertiesSideEffect
+	favorites          *favorites.FavoritesStore
+	userSettings       *usersettings.UserSettingsService
+	userSettingsRoutes *wikiusersettings.Routes
+	backupRoutes       *wikibackup.Routes
+	snapshotRoutes     *wikisnapshot.Routes
+	restoreRoutes      *wikirestore.Routes
+	resyncRoutes       *wikiresync.Routes
+	resyncJob          *wikiresync.ResyncJob
+	ignoreCache        *ignore.Cache
+	reloadMu           sync.Mutex
+	reloadWG           sync.WaitGroup
+	shutdownCtx        context.Context
+	shutdownCancel     context.CancelFunc
+	log                *slog.Logger
+	metrics            *httpmetrics.HTTPMetrics
 }
 
 const SYSTEM_USER_ID = "system"
@@ -104,9 +115,11 @@ type WikiOptions struct {
 	EnableRevision          bool          // Whether revision recording/storage is enabled
 	EnableAPIKeyManagement  bool          // Whether the experimental API key management feature is enabled
 	MaxRevisionHistory      int           // Max revisions kept per page; 0 = unlimited
+	EditorLimit             int           // Max admin+editor users allowed; 0 = unlimited
 	MaxAssetUploadSizeBytes int64         // Maximum allowed size in bytes for asset/import uploads; 0 = default
 	RevisionCoalesceWindow  time.Duration // Window for coalescing rapid successive saves; 0 = disabled
 	TOTPEncryptionKey       string        // Key used to encrypt per-user TOTP secrets at rest; empty disables TOTP self-service
+	SMTP                    email.Config  // SMTP config for password-reset/invite email; SMTP.Enabled()==false disables the feature entirely
 	Metrics                 *httpmetrics.HTTPMetrics
 }
 
@@ -121,6 +134,9 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 		metrics:        options.Metrics,
 	}
 	if err := w.initAuth(options); err != nil {
+		return nil, err
+	}
+	if err := w.initEmail(options); err != nil {
 		return nil, err
 	}
 	if err := w.initCoreServices(options); err != nil {
@@ -138,11 +154,17 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 	if err := w.initFavoritesService(); err != nil {
 		return nil, err
 	}
+	if err := w.initUserSettingsService(); err != nil {
+		return nil, err
+	}
 	w.bootstrapTagsAndProperties(w.shutdownCtx)
 	if err := w.initSearch(); err != nil {
 		return nil, err
 	}
 	if err := w.initBranding(); err != nil {
+		return nil, err
+	}
+	if err := w.initAvatarService(); err != nil {
 		return nil, err
 	}
 	// Welcome page must exist before the revision service starts recording.
@@ -203,12 +225,13 @@ func (w *Wiki) initAuth(options *WikiOptions) error {
 		return err
 	}
 	w.user = auth.NewUserService(store)
+	w.user.SetEditorLimit(options.EditorLimit)
 	if !options.AuthDisabled {
 		if err := w.user.InitDefaultAdmin(options.AdminUsername, options.AdminEmail, options.AdminPassword); err != nil {
 			return err
 		}
 	}
-	w.userResolver, err = auth.NewUserResolver(w.user)
+	w.userResolver, err = auth.NewUserResolver(w.UserService)
 	if err != nil {
 		return err
 	}
@@ -246,9 +269,31 @@ func (w *Wiki) initAuth(options *WikiOptions) error {
 			if err != nil {
 				return err
 			}
-			w.apiKeys = auth.NewAPIKeyService(apiKeyStore, w.user)
+			w.apiKeys = auth.NewAPIKeyService(apiKeyStore, w.auth)
 		}
 	}
+	return nil
+}
+
+// initEmail constructs the password-reset/invite token service when both
+// SMTP is configured and auth is enabled — mirroring the EnableAPIKeyManagement
+// block above, this keeps w.emailTokenService nil (and the corresponding
+// routes returning ErrEmailDisabled) whenever either precondition is false,
+// rather than constructing something unusable. Must run after initAuth,
+// which sets w.user and w.auth.
+func (w *Wiki) initEmail(options *WikiOptions) error {
+	if !options.SMTP.Enabled() || options.AuthDisabled {
+		return nil
+	}
+
+	store, err := auth.NewEmailTokenStore(w.storageDir)
+	if err != nil {
+		return err
+	}
+	w.emailTokenStore = store
+
+	mailer := email.NewService(options.SMTP)
+	w.emailTokenService = auth.NewEmailTokenService(store, w.user, w.auth, mailer, options.SMTP.PublicURL)
 	return nil
 }
 
@@ -302,11 +347,20 @@ func (w *Wiki) initPropertiesService() error {
 }
 
 func (w *Wiki) initFavoritesService() error {
-	store, err := favorites.NewFavoritesStore(w.storageDir)
+	store, err := favorites.NewFavoritesStore(w.storageDir, w.log)
 	if err != nil {
 		return fmt.Errorf("failed to init favorites store: %w", err)
 	}
 	w.favorites = store
+	return nil
+}
+
+func (w *Wiki) initUserSettingsService() error {
+	store, err := usersettings.NewUserSettingsStore(w.storageDir, w.log)
+	if err != nil {
+		return fmt.Errorf("failed to init user settings store: %w", err)
+	}
+	w.userSettings = usersettings.NewUserSettingsService(store)
 	return nil
 }
 
@@ -352,6 +406,15 @@ func (w *Wiki) initBranding() error {
 	return nil
 }
 
+func (w *Wiki) initAvatarService() error {
+	var err error
+	w.avatar, err = avatar.NewAvatarService(w.storageDir)
+	if err != nil {
+		return fmt.Errorf("failed to init avatar service: %w", err)
+	}
+	return nil
+}
+
 func (w *Wiki) buildRoutes(options *WikiOptions) {
 	w.pagesRoutes = w.buildPagesRoutes()
 	w.authRoutes = w.buildAuthRoutes()
@@ -362,6 +425,8 @@ func (w *Wiki) buildRoutes(options *WikiOptions) {
 	w.tagsRoutes = w.buildTagsRoutes()
 	w.propertiesRoutes = w.buildPropertiesRoutes()
 	w.brandingRoutes = w.buildBrandingRoutes()
+	w.avatarRoutes = w.buildAvatarRoutes()
+	w.userSettingsRoutes = w.buildUserSettingsRoutes()
 	w.apiKeysRoutes = w.buildAPIKeysRoutes()
 	w.importerRoutes = w.buildImporterRoutes(options)
 	w.healthRoutes = wikihealth.NewRoutes(wikihealth.RoutesConfig{
@@ -424,17 +489,23 @@ func (w *Wiki) buildAuthRoutes() *wikiauth.Routes {
 		CompleteTOTPLogin: wikiauth.NewCompleteTOTPLoginUseCase(w.auth, w.metrics),
 		Logout:            wikiauth.NewLogoutUseCase(w.auth, w.metrics),
 		RefreshToken:      wikiauth.NewRefreshTokenUseCase(w.auth, w.metrics),
-		CreateUser:        wikiauth.NewCreateUserUseCase(w.user, w.userResolver, w.log),
-		UpdateUser:        wikiauth.NewUpdateUserUseCase(w.user, w.userResolver, w.log),
-		ChangeOwnPassword: wikiauth.NewChangeOwnPasswordUseCase(w.user),
-		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.user, w.userResolver, w.favorites, w.log),
-		GetUsers:          wikiauth.NewGetUsersUseCase(w.user),
-		GetUserByID:       wikiauth.NewGetUserByIDUseCase(w.user),
+		CreateUser:        wikiauth.NewCreateUserUseCase(w.UserService, w.userResolver, w.log),
+		UpdateUser:        wikiauth.NewUpdateUserUseCase(w.UserService, w.userResolver, w.log),
+		ChangeOwnPassword: wikiauth.NewChangeOwnPasswordUseCase(w.UserService),
+		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.UserService, w.userResolver, w.favorites, w.userSettings, w.apiKeys, w.log),
+		GetUsers:          wikiauth.NewGetUsersUseCase(w.UserService),
+		GetUserByID:       wikiauth.NewGetUserByIDUseCase(w.UserService),
 		StartTOTPSetup:    wikiauth.NewStartTOTPSetupUseCase(w.auth),
 		ConfirmTOTPSetup:  wikiauth.NewConfirmTOTPSetupUseCase(w.auth, w.metrics),
 		DisableTOTP:       wikiauth.NewDisableTOTPUseCase(w.auth, w.metrics),
 		GetTOTPStatus:     wikiauth.NewGetTOTPStatusUseCase(w.auth),
 		AuthService:       w.auth,
+
+		RequestPasswordReset: wikiauth.NewRequestPasswordResetUseCase(w.EmailTokenService),
+		ConfirmPasswordReset: wikiauth.NewConfirmPasswordResetUseCase(w.EmailTokenService),
+		InviteUser:           wikiauth.NewInviteUserUseCase(w.UserService, w.EmailTokenService, w.userResolver, w.log),
+		ResendInvite:         wikiauth.NewResendInviteUseCase(w.UserService, w.EmailTokenService),
+		ConfirmInvite:        wikiauth.NewConfirmInviteUseCase(w.EmailTokenService, w.auth),
 	})
 }
 
@@ -511,6 +582,23 @@ func (w *Wiki) buildBrandingRoutes() *wikibranding.Routes {
 	})
 }
 
+func (w *Wiki) buildAvatarRoutes() *wikiavatar.Routes {
+	return wikiavatar.NewRoutes(wikiavatar.RoutesConfig{
+		UploadAvatar:  wikiavatar.NewUploadAvatarUseCase(w.avatar),
+		DeleteAvatar:  wikiavatar.NewDeleteAvatarUseCase(w.avatar),
+		AvatarService: w.avatar,
+		AuthService:   w.auth,
+	})
+}
+
+func (w *Wiki) buildUserSettingsRoutes() *wikiusersettings.Routes {
+	return wikiusersettings.NewRoutes(wikiusersettings.RoutesConfig{
+		GetUserSettings:    wikiusersettings.NewGetUserSettingsUseCase(w.userSettings),
+		UpdateUserSettings: wikiusersettings.NewUpdateUserSettingsUseCase(w.userSettings),
+		AuthService:        w.auth,
+	})
+}
+
 func (w *Wiki) buildAPIKeysRoutes() *wikiapikeys.Routes {
 	return wikiapikeys.NewRoutes(wikiapikeys.RoutesConfig{
 		CreateAPIKey: wikiapikeys.NewCreateAPIKeyUseCase(w.apiKeys),
@@ -553,6 +641,8 @@ func (w *Wiki) Registrars() []httpinternal.RouteRegistrar {
 		w.tagsRoutes,
 		w.propertiesRoutes,
 		w.brandingRoutes,
+		w.avatarRoutes,
+		w.userSettingsRoutes,
 		w.apiKeysRoutes,
 		w.importerRoutes,
 		w.healthRoutes,
@@ -838,13 +928,47 @@ func (w *Wiki) GetStorageDir() string {
 	return w.storageDir
 }
 
+// UserService returns the current *auth.UserService: AuthService's live,
+// restore-swap-tracking one when auth is enabled (see AuthService.UserService),
+// falling back to the UserService constructed in initAuth when auth is
+// disabled — in that mode there's no AuthService and, per
+// internal/restore/manager.go's AuthService-nil guards, a live restore never
+// swaps this store either, so the fallback is never stale.
 func (w *Wiki) UserService() *auth.UserService {
+	if w.auth != nil {
+		return w.auth.UserService()
+	}
 	return w.user
+}
+
+// UserResolver returns the author-label resolver shared across page/tag/
+// property routes and the user-management use cases.
+func (w *Wiki) UserResolver() *auth.UserResolver {
+	return w.userResolver
 }
 
 // APIKeyService returns the API key service used for Bearer authentication.
 func (w *Wiki) APIKeyService() *auth.APIKeyService {
 	return w.apiKeys
+}
+
+// Favorites returns the favorites store, e.g. for wiring into restore.Config.
+func (w *Wiki) Favorites() *favorites.FavoritesStore {
+	return w.favorites
+}
+
+// UserSettingsService returns the user settings service, e.g. for wiring
+// into restore.Config.
+func (w *Wiki) UserSettingsService() *usersettings.UserSettingsService {
+	return w.userSettings
+}
+
+// EmailTokenService returns the password-reset/invite token service, or nil
+// if SMTP isn't configured or auth is disabled (see initEmail). Every use
+// case that resolves this via the func()-based pattern (like UserService)
+// nil-checks it and returns ErrEmailDisabled.
+func (w *Wiki) EmailTokenService() *auth.EmailTokenService {
+	return w.emailTokenService
 }
 
 func (w *Wiki) Close() error {
@@ -868,14 +992,29 @@ func (w *Wiki) Close() error {
 		}
 	}
 
+	if w.emailTokenService != nil {
+		w.emailTokenService.Close() // drains in-flight fire-and-forget password-reset sends
+	}
+	if w.emailTokenStore != nil {
+		if err := w.emailTokenStore.Close(); err != nil {
+			w.log.Error("error closing email token store", "error", err)
+		}
+	}
+
 	if w.links != nil {
 		if err := w.links.Close(); err != nil {
 			w.log.Error("error closing links", "error", err)
 		}
 	}
+	if w.userSettings != nil {
+		if err := w.userSettings.Close(); err != nil {
+			w.log.Error("error closing user settings store", "error", err)
+		}
+	}
+
 	if w.favorites != nil {
 		if err := w.favorites.Close(); err != nil {
-			w.log.Error("error closing favorites", "error", err)
+			w.log.Error("error closing favorites store", "error", err)
 		}
 	}
 

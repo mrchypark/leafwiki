@@ -197,3 +197,27 @@ func TestTagsSideEffect_Move_ReevaluatesDraftVisibility(t *testing.T) {
 		t.Fatalf("visible affected page was not indexed after move: %v", ids)
 	}
 }
+
+func TestTagsSideEffect_Apply_Delete_RemovesTagsForAllAffectedPages(t *testing.T) {
+	treeSvc, tagsSvc, effect := setupTagsEffectTest(t)
+	pageA := createPageWithFrontmatter(t, treeSvc, "Subtree A", "subtree-a", "---\ntags:\n  - subtree\n---\n\nA.")
+	pageB := createPageWithFrontmatter(t, treeSvc, "Subtree B", "subtree-b", "---\ntags:\n  - subtree\n---\n\nB.")
+
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: pageA})
+	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: pageB})
+	if err := treeSvc.DeleteNode("system", pageA.ID, false, pageA.Version()); err != nil {
+		t.Fatalf("DeleteNode pageA: %v", err)
+	}
+	if err := treeSvc.DeleteNode("system", pageB.ID, false, pageB.Version()); err != nil {
+		t.Fatalf("DeleteNode pageB: %v", err)
+	}
+	effect.Apply(PageSaveEvent{Operation: PageOperationDelete, AffectedPages: []*tree.Page{pageA, pageB}})
+
+	ids, err := tagsSvc.GetPageIDsByTags([]string{"subtree"})
+	if err != nil {
+		t.Fatalf("GetPageIDsByTags: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected both pages' tags to be removed after batch delete, got %v", ids)
+	}
+}

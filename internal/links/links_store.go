@@ -15,7 +15,7 @@ import (
 )
 
 type LinksStore struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	storageDir string
 	filename   string
 	db         *sql.DB
@@ -69,7 +69,7 @@ func (s *LinksStore) Connect() error {
 		return nil
 	}
 	// Connect to the database
-	db, err := sql.Open("sqlite", linksDatabasePath(s.storageDir, s.filename))
+	db, err := sql.Open("sqlite", linksDatabasePath(s.storageDir, s.filename)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return err
 	}
@@ -344,8 +344,8 @@ func (s *LinksStore) replaceLinksAndHealTx(tx *sql.Tx, updates []PageLinkUpdate)
 }
 
 func (s *LinksStore) GetBacklinksForPage(pageID string) ([]Backlink, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rows, err := s.db.Query(`SELECT from_page_id, to_page_id, from_title FROM links WHERE to_page_id = ? and broken = 0`, pageID)
 	if err != nil {
 		return nil, err
@@ -378,8 +378,8 @@ func (s *LinksStore) GetBacklinksForPage(pageID string) ([]Backlink, error) {
 }
 
 func (s *LinksStore) GetOutgoingLinksForPage(pageID string) ([]Outgoing, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
         SELECT from_page_id, to_page_id, to_path, from_title, broken
@@ -422,8 +422,8 @@ func (s *LinksStore) GetOutgoingLinksForPage(pageID string) ([]Outgoing, error) 
 }
 
 func (s *LinksStore) GetOutgoingLinksForPages(pageIDs []string) (map[string][]Outgoing, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if len(pageIDs) == 0 {
 		return map[string][]Outgoing{}, nil
@@ -486,8 +486,8 @@ func (s *LinksStore) appendOutgoingLinksForPageBatch(outgoingByPageID map[string
 }
 
 func (s *LinksStore) GetRefactorMatchesForPrefix(oldPrefix string) ([]RefactorLinkMatch, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
 		SELECT from_page_id, from_title, to_path, broken
@@ -521,8 +521,8 @@ func (s *LinksStore) GetRefactorMatchesForPrefix(oldPrefix string) ([]RefactorLi
 }
 
 func (s *LinksStore) GetRefactorSourcePageIDsForPrefix(oldPrefix string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
 		SELECT DISTINCT from_page_id
@@ -554,8 +554,8 @@ func (s *LinksStore) GetRefactorSourcePageIDsForPrefix(oldPrefix string) ([]stri
 }
 
 func (s *LinksStore) GetRefactorSourcePageIDsForWikiLinkTitle(title string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
 		SELECT DISTINCT from_page_id
@@ -587,8 +587,8 @@ func (s *LinksStore) GetRefactorSourcePageIDsForWikiLinkTitle(title string) ([]s
 }
 
 func (s *LinksStore) GetBrokenIncomingForPath(toPath string) ([]Backlink, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
 		SELECT from_page_id, to_page_id, from_title

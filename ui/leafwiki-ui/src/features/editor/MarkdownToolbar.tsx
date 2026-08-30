@@ -20,6 +20,7 @@ import {
   Code2,
   Columns2,
   Eye,
+  Highlighter,
   Image,
   Italic,
   Link,
@@ -34,6 +35,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEditorStore } from '@/stores/editor'
+import { useUserSettingsStore } from '@/stores/userSettings'
 import { MarkdownEditorRef } from './MarkdownEditor'
 
 type Props = {
@@ -59,8 +61,8 @@ export default function MarkdownToolbar({
   const openDialog = useDialogsStore((state) => state.openDialog)
   const lineWrap = useEditorStore((s) => s.lineWrap)
   const toggleLineWrap = useEditorStore((s) => s.toggleLineWrap)
-  const autoSave = useEditorStore((s) => s.autoSave)
-  const toggleAutoSave = useEditorStore((s) => s.toggleAutoSave)
+  const autoSave = useUserSettingsStore((s) => s.autoSave)
+  const toggleAutoSave = useUserSettingsStore((s) => s.toggleAutoSave)
   const autoSaveStatus = useEditorStore((s) => s.autoSaveStatus)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
@@ -146,6 +148,23 @@ export default function MarkdownToolbar({
               className="markdown-toolbar__button"
             >
               <Strikethrough className="markdown-toolbar__icon" />
+            </Button>
+          </TooltipWrapper>
+        )}
+        {!isMobile && (
+          <TooltipWrapper
+            label={t('toolbar.highlightTooltip')}
+            side="top"
+            align="center"
+          >
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => editorRef.current?.insertWrappedText('==')}
+              className="markdown-toolbar__button"
+              data-testid="format-highlight-button"
+            >
+              <Highlighter className="markdown-toolbar__icon" />
             </Button>
           </TooltipWrapper>
         )}
@@ -454,6 +473,12 @@ export default function MarkdownToolbar({
               >
                 <Strikethrough size={14} />
                 {t('toolbar.strikethrough')}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => editorRef.current?.insertWrappedText('==')}
+              >
+                <Highlighter size={14} />
+                {t('toolbar.highlight')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

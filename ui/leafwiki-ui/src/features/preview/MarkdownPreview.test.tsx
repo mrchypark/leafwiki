@@ -1,14 +1,23 @@
 import { render } from '@testing-library/react'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { useDesignModeStore } from '@/features/designtoggle/designmode'
 import MarkdownPreview from './MarkdownPreview'
+
+function renderPreview(content: string) {
+  return render(
+    <TooltipProvider>
+      <MarkdownPreview content={content} />
+    </TooltipProvider>,
+  )
+}
 
 describe('MarkdownPreview syntax highlighting', () => {
   beforeEach(() => {
     localStorage.setItem('design-mode', 'light')
     useDesignModeStore.setState({ mode: 'light' })
-    window.matchMedia = vi.fn().mockImplementation(() => ({
-      matches: true,
-      media: '(prefers-color-scheme: light)',
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(prefers-color-scheme: light)',
+      media: query,
       onchange: null,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -34,7 +43,7 @@ if (Test-Path $path) {
 }
 \`\`\``
 
-    const { container } = render(<MarkdownPreview content={content} />)
+    const { container } = renderPreview(content)
 
     const bashCodeBlock = container.querySelector('code.language-bash.hljs')
     expect(bashCodeBlock).not.toBeNull()
@@ -61,7 +70,7 @@ if WinExist("Untitled - Notepad") {
 }
 \`\`\``
 
-    const { container } = render(<MarkdownPreview content={content} />)
+    const { container } = renderPreview(content)
 
     const autohotkeyCodeBlock = container.querySelector(
       'code.language-autohotkey.hljs',
@@ -71,9 +80,49 @@ if WinExist("Untitled - Notepad") {
     expect(autohotkeyCodeBlock?.querySelector('.hljs-string')).not.toBeNull()
   })
 
+  it('shows line numbers when the fence language ends with =', () => {
+    const content = `\`\`\`bash=
+echo one
+echo two
+echo three
+\`\`\``
+
+    const { container } = renderPreview(content)
+
+    const block = container.querySelector('.markdown-code-block--line-numbers')
+    expect(block).not.toBeNull()
+
+    const lineNumbers = container.querySelectorAll(
+      '.markdown-code-block__line-number',
+    )
+    expect(lineNumbers).toHaveLength(3)
+    expect(lineNumbers[0]?.textContent).toBe('1')
+    expect(lineNumbers[2]?.textContent).toBe('3')
+
+    const highlighted = container.querySelector('code.language-bash.hljs')
+    expect(highlighted).not.toBeNull()
+    expect(highlighted?.getAttribute('data-line-numbers')).toBe('true')
+  })
+
+  it('does not show line numbers for ordinary fences', () => {
+    const content = `\`\`\`bash
+echo one
+echo two
+\`\`\``
+
+    const { container } = renderPreview(content)
+
+    expect(
+      container.querySelector('.markdown-code-block--line-numbers'),
+    ).toBeNull()
+    expect(
+      container.querySelector('.markdown-code-block__line-number'),
+    ).toBeNull()
+  })
+
   it('renders external images from markdown image syntax', () => {
-    const { container } = render(
-      <MarkdownPreview content="![Remote diagram](https://example.com/diagram.png)" />,
+    const { container } = renderPreview(
+      '![Remote diagram](https://example.com/diagram.png)',
     )
 
     const image = container.querySelector('img')
@@ -83,13 +132,56 @@ if WinExist("Untitled - Notepad") {
   })
 
   it('renders external images from sanitized inline html', () => {
-    const { container } = render(
-      <MarkdownPreview content='<img src="https://example.com/banner.png" alt="Remote banner" />' />,
+    const { container } = renderPreview(
+      '<img src="https://example.com/banner.png" alt="Remote banner" />',
     )
 
     const image = container.querySelector('img')
     expect(image).not.toBeNull()
     expect(image?.getAttribute('src')).toBe('https://example.com/banner.png')
     expect(image?.getAttribute('alt')).toBe('Remote banner')
+  })
+
+  it('renders inline code with its copy action', () => {
+    const { container } = renderPreview('Use `npm run build` here.')
+
+    const inlineCode = container.querySelector('.markdown-inline-code')
+    expect(inlineCode?.textContent).toContain('npm run build')
+    expect(
+      inlineCode?.querySelector(
+        '[data-testid="markdown-inline-code-copy-button"]',
+      ),
+    ).not.toBeNull()
+  })
+
+  it('renders ==text== as a mark element', () => {
+    const { container } = renderPreview('Some ==highlighted== text.')
+
+    const mark = container.querySelector('mark')
+    expect(mark).not.toBeNull()
+    expect(mark?.textContent).toBe('highlighted')
+  })
+
+  it('supports nested formatting inside a highlighted span', () => {
+    const { container } = renderPreview('==**bold highlight**==')
+
+    const mark = container.querySelector('mark')
+    expect(mark).not.toBeNull()
+    expect(mark?.querySelector('strong')?.textContent).toBe('bold highlight')
+  })
+
+  it('does not convert == inside inline code or fenced code blocks', () => {
+    const content = [
+      'Use `==` as a diff marker.',
+      '',
+      '```',
+      'a == b',
+      '```',
+    ].join('\n')
+
+    const { container } = renderPreview(content)
+
+    expect(container.querySelector('mark')).toBeNull()
+    expect(container.querySelector('code')?.textContent).toContain('==')
   })
 })

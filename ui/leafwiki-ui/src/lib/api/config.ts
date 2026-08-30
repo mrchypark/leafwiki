@@ -14,19 +14,24 @@ type ConfigErrorResponse = {
 
 export type Config = {
   publicAccess: boolean
+  editorLimit: number
   hideLinkMetadataSection: boolean
   authDisabled: boolean
   maxAssetUploadSizeBytes: number
+  maxAvatarUploadSizeBytes: number
+  avatarAllowedExts: string[]
   enableRevision: boolean
   enableLinkRefactor: boolean
   enableApiKeyManagement: boolean
   gitBackupEnabled: boolean
   snapshotEnabled: boolean
+  smtpEnabled: boolean
   totpAvailable: boolean
   httpRemoteUserEnabled: boolean
   loginUrl: string
   logoutUrl: string
   userManagementUrl: string
+  defaultLanguage: string
 }
 
 export async function getConfig(): Promise<Config> {

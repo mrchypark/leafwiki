@@ -10,11 +10,52 @@
   font-weight: 500;
 }
 
-.page-viewer__content .inline-code::after,
+/* Tailwind Typography's `prose` class wraps inline `code` in backticks via
+   ::before/::after; the pill styling above already sets code apart visually,
+   so drop the redundant backticks here. */
 .page-viewer__content .inline-code::before,
-.markdown-editor__preview .inline-code::after,
-.markdown-editor__preview .inline-code::before {
-  content: '';
+.page-viewer__content .inline-code::after,
+.markdown-editor__preview .inline-code::before,
+.markdown-editor__preview .inline-code::after {
+  content: none;
+}
+
+.markdown-inline-code {
+  position: relative;
+  display: inline-block;
+}
+
+.markdown-inline-code__copy-button {
+  position: absolute;
+  top: 50%;
+  right: 0.25rem;
+  height: 1.25rem;
+  width: 1.25rem;
+  transform: translateY(-50%);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  border-color: color-mix(in oklab, var(--hljs-foreground) 12%, transparent);
+  background: color-mix(in oklab, var(--hljs-background) 92%, transparent);
+  color: var(--hljs-foreground);
+  opacity: 0;
+  box-shadow: none;
+  transition: opacity 200ms;
+}
+
+.markdown-inline-code__copy-button:hover {
+  background: color-mix(in oklab, var(--hljs-background) 82%, white 10%);
+  color: var(--hljs-foreground);
+}
+
+.markdown-inline-code:hover .markdown-inline-code__copy-button,
+.markdown-inline-code:focus-within .markdown-inline-code__copy-button {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .markdown-inline-code__copy-button {
+    opacity: 0.7;
+  }
 }
 
 :root:not(.dark) .page-viewer__content .inline-code,
@@ -153,6 +194,53 @@
 .markdown-editor__preview .markdown-code-block pre code.hljs,
 .page-history__preview-body .markdown-code-block pre code.hljs {
   padding-right: 3.5rem;
+}
+
+.page-viewer__content .markdown-code-block--line-numbers pre code,
+.markdown-editor__preview .markdown-code-block--line-numbers pre code,
+.page-history__preview-body .markdown-code-block--line-numbers pre code {
+  padding-left: 0;
+}
+
+.page-viewer__content .markdown-code-block__lines,
+.markdown-editor__preview .markdown-code-block__lines,
+.page-history__preview-body .markdown-code-block__lines {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: start;
+  min-width: max-content;
+}
+
+.page-viewer__content .markdown-code-block__line,
+.markdown-editor__preview .markdown-code-block__line,
+.page-history__preview-body .markdown-code-block__line {
+  display: contents;
+}
+
+.page-viewer__content .markdown-code-block__line-number,
+.markdown-editor__preview .markdown-code-block__line-number,
+.page-history__preview-body .markdown-code-block__line-number {
+  position: sticky;
+  left: 0;
+  min-width: 2.5rem;
+  min-height: 1.35em;
+  padding: 0 0.75rem 0 1em;
+  text-align: right;
+  user-select: none;
+  opacity: 0.45;
+  font: inherit;
+  line-height: inherit;
+  background: var(--hljs-background);
+  border-right: 1px solid
+    color-mix(in oklab, var(--hljs-foreground) 12%, transparent);
+}
+
+.page-viewer__content .markdown-code-block__line-content,
+.markdown-editor__preview .markdown-code-block__line-content,
+.page-history__preview-body .markdown-code-block__line-content {
+  min-height: 1.35em;
+  padding-left: 0.85rem;
+  white-space: pre;
 }
 
 .page-viewer__content pre,
