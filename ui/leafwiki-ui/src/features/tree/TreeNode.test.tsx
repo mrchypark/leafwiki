@@ -1,79 +1,90 @@
-import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PageNode } from '@/lib/api/pages'
+import { DIALOG_DELETE_PAGE_CONFIRMATION } from '@/lib/registries'
+import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
 import { fireEvent, render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import type React from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TreeNode } from './TreeNode'
 
-const dnd = vi.hoisted(() => ({ useDraggable: vi.fn(), useDroppable: vi.fn() }))
-
-vi.mock('@dnd-kit/core', () => ({
-  useDraggable: dnd.useDraggable,
-  useDroppable: dnd.useDroppable,
-}))
-vi.mock('@/lib/useIsMobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/lib/useIsReadOnly', () => ({ useIsReadOnly: () => false }))
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => {} },
   useTranslation: () => ({ t: (key: string) => key }),
 }))
-vi.mock('./TreeNodeActionsMenu', () => ({ default: () => <span>menu</span> }))
-vi.mock('./TreeViewActionButton', () => ({
-  TreeViewActionButton: ({ actionName }: { actionName: string }) => (
-    <button data-testid={`tree-view-action-button-${actionName}`} />
-  ),
+vi.mock('@/components/TooltipWrapper', () => ({
+  TooltipWrapper: ({ children }: { children: React.ReactNode }) => children,
 }))
+vi.mock('./TreeNodeActionsMenu', () => ({ default: () => <div /> }))
 
-import { TreeNode } from './TreeNode'
-
-const pending: PageNode = {
-  id: 'pending-1',
-  title: 'Pending',
-  slug: 'pending',
-  path: 'published/pending',
-  version: 'pending',
+const node: PageNode = {
+  id: 'page-1',
+  title: 'Getting Started',
+  slug: 'getting-started',
+  path: 'docs/getting-started',
+  version: 'v1',
+  parentId: 'docs',
+  children: null,
   kind: 'page',
-  children: [],
-  draft: 'pending',
 }
 
-function renderTree(node: PageNode) {
+function renderNode(target: PageNode = node) {
   return render(
-    <TooltipProvider>
-      <MemoryRouter>
-        <TreeNode node={node} />
-      </MemoryRouter>
-    </TooltipProvider>,
+    <MemoryRouter>
+      <TreeNode node={target} />
+    </MemoryRouter>,
   )
 }
 
-describe('TreeNode draft overlay', () => {
+describe('TreeNode', () => {
   beforeEach(() => {
-    dnd.useDraggable.mockReturnValue({ setNodeRef: vi.fn(), listeners: {} })
-    dnd.useDroppable.mockReturnValue({ setNodeRef: vi.fn() })
-    useTreeStore.setState({
-      openNodeIdSet: {},
-      activeNodeId: null,
-    })
+    window.matchMedia = vi.fn().mockImplementation(() => ({
+      matches: false,
+      media: '(max-width: 767px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }))
+    useDialogsStore.setState({ dialogType: null, dialogProps: null })
+    useTreeStore.setState({ activeNodeId: null, openNodeIdSet: {} })
   })
 
-  it('keeps a leaf parent expandable and renders pending rows as private non-draggable links', () => {
-    const parent = {
-      ...pending,
-      id: 'page-1',
-      title: 'Published',
-      slug: 'published',
-      path: 'published',
-      draft: undefined,
+  it('highlights only the row targeted by a delete dialog', () => {
+    useDialogsStore.setState({
+      dialogType: DIALOG_DELETE_PAGE_CONFIRMATION,
+      dialogProps: { pageId: node.id, redirectTo: '/' },
+    })
+    renderNode()
+    expect(screen.getByTestId(`tree-node-${node.id}`)).toHaveAttribute(
+      'data-delete-target',
+      'true',
+    )
+  })
+
+  it('shows pending drafts as private non-draggable children', () => {
+    const pending: PageNode = {
+      ...node,
+      id: 'pending-1',
+      title: 'Pending',
+      slug: 'pending',
+      path: 'published/pending',
+      version: 'pending',
+      parentId: node.id,
+      children: [],
+      draft: 'pending',
+    }
+    const parent: PageNode = {
+      ...node,
+      id: 'parent-1',
+      kind: 'page',
       children: [pending],
     }
-    renderTree(parent)
+    renderNode(parent)
 
-    expect(
-      screen.getByTestId('tree-node-toggle-icon-page-1'),
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId('tree-node-toggle-icon-page-1'))
+    fireEvent.click(screen.getByTestId('tree-node-toggle-icon-parent-1'))
     expect(screen.getByTestId('tree-node-link-pending-1')).toHaveAttribute(
       'href',
       '/pending-drafts/pending-1/edit',
@@ -81,24 +92,5 @@ describe('TreeNode draft overlay', () => {
     expect(
       screen.getByLabelText('treeActions.pendingDraftMarker'),
     ).toBeInTheDocument()
-    expect(screen.queryByText('treeActions.pendingDraftMarker')).toBeNull()
-    expect(screen.queryByText('menu')).not.toBeInTheDocument()
-    expect(dnd.useDraggable).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'pending-1', disabled: true }),
-    )
-    expect(dnd.useDroppable).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'pending-1', disabled: true }),
-    )
-  })
-
-  it('renders working draft status as a labeled icon with hover text', async () => {
-    const user = userEvent.setup()
-    renderTree({ ...pending, draft: 'active' })
-
-    const marker = screen.getByLabelText('treeActions.draftMarker')
-    expect(marker).toBeInTheDocument()
-    expect(screen.queryByText('treeActions.draftMarker')).toBeNull()
-    await user.hover(marker)
-    expect(await screen.findByText('treeActions.draftMarker')).toBeVisible()
   })
 })

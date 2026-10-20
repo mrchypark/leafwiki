@@ -14,6 +14,14 @@ type ConfigErrorResponse = {
 
 export type Config = {
   publicAccess: boolean
+  // True when public mode is pinned by --public-access / LEAFWIKI_PUBLIC_ACCESS
+  // (or forced by --disable-auth): the Settings UI then shows a read-only
+  // status view instead of a toggle.
+  publicAccessEnvManaged: boolean
+  // Whether the TOC panel/dropdown should always be shown, regardless of
+  // heading count (instance-wide admin toggle, see Settings > Table of
+  // Contents).
+  alwaysShowToc: boolean
   editorLimit: number
   hideLinkMetadataSection: boolean
   authDisabled: boolean
@@ -24,6 +32,8 @@ export type Config = {
   enableLinkRefactor: boolean
   enableApiKeyManagement: boolean
   gitBackupEnabled: boolean
+  gitBackupEnvManaged: boolean
+  gitBackupConfigured: boolean
   snapshotEnabled: boolean
   smtpEnabled: boolean
   totpAvailable: boolean

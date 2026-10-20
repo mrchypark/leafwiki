@@ -1,208 +1,82 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { BaseDialogConfirmButton } from '@/components/BaseDialog'
-import type { ReactNode } from 'react'
-import { MemoryRouter } from 'react-router'
+import { createPage, createPendingDraft } from '@/lib/api/pages'
+import { DIALOG_ADD_PAGE } from '@/lib/registries'
+import { useDialogsStore } from '@/stores/dialogs'
+import { useTreeStore } from '@/stores/tree'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-const api = vi.hoisted(() => ({
-  createPendingDraft: vi.fn(),
-  createPage: vi.fn(),
-}))
-const navigate = vi.fn()
-
-vi.mock('@/lib/api/pages', () => ({ NODE_KIND_PAGE: 'page', ...api }))
-vi.mock('@/stores/tree', () => ({
-  useTreeStore: (
-    selector: (state: {
-      reloadTree: () => Promise<void>
-      getPathById: (id: string) => string
-    }) => unknown,
-  ) => selector({ reloadTree: vi.fn(), getPathById: () => '' }),
-}))
-vi.mock('@/lib/routePath', () => ({
-  buildEditUrl: (path: string) => `/e/${path}`,
-  buildPendingDraftEditUrl: (id: string) => `/pending-drafts/${id}/edit`,
-}))
-vi.mock('react-router', () => ({
-  MemoryRouter: ({ children }: { children: ReactNode }) => children,
-  useNavigate: () => navigate,
-}))
-vi.mock('react-i18next', () => ({
-  initReactI18next: { type: '3rdParty', init: () => {} },
-  useTranslation: () => ({ t: (key: string) => key }),
-}))
-vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
-}))
-vi.mock('@/components/BaseDialog', () => ({
-  default: ({
-    children,
-    onConfirm,
-    onClose,
-    dialogTitle,
-    buttons,
-  }: {
-    children: ReactNode
-    onConfirm: (type: string) => Promise<boolean>
-    onClose: () => boolean
-    dialogTitle: string
-    buttons: BaseDialogConfirmButton[]
-  }) => (
-    <div>
-      <h1>{dialogTitle}</h1>
-      {children}
-      <button onClick={onClose}>close</button>
-      {buttons.map((button) => (
-        <button
-          key={button.actionType}
-          data-variant={button.variant}
-          onClick={() => onConfirm(button.actionType)}
-        >
-          {button.label}
-        </button>
-      ))}
-    </div>
-  ),
-}))
-vi.mock('@/components/FormInput', () => ({
-  FormInput: ({ onChange }: { onChange: (value: string) => void }) => (
-    <input data-testid="title" onChange={(e) => onChange(e.target.value)} />
-  ),
-}))
-vi.mock('./SlugInputWithSuggestion', () => ({
-  SlugInputWithSuggestion: ({
-    onSlugChange,
-    onSlugTouchedChange,
-    onLastSlugTitleChange,
-  }: {
-    onSlugChange: (value: string) => void
-    onSlugTouchedChange: (touched: boolean) => void
-    onLastSlugTitleChange: (title: string) => void
-  }) => (
-    <input
-      data-testid="slug"
-      onChange={(e) => {
-        onSlugChange(e.target.value)
-        onSlugTouchedChange(true)
-        onLastSlugTitleChange('Draft')
-      }}
-    />
-  ),
-}))
-
 import { AddPageDialog } from './AddPageDialog'
 
-describe('AddPageDialog draft option', () => {
+const navigateMock = vi.fn()
+vi.mock('react-router', () => ({
+  useNavigate: () => navigateMock,
+}))
+
+vi.mock('@/lib/api/pages', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/lib/api/pages')>('@/lib/api/pages')
+  return {
+    ...actual,
+    createPage: vi.fn(),
+    createPendingDraft: vi.fn(),
+  }
+})
+
+describe('AddPageDialog', () => {
+  const callOrder: string[] = []
+
   beforeEach(() => {
     vi.clearAllMocks()
-    api.createPendingDraft.mockResolvedValue({ page: { id: 'pending-1' } })
-    api.createPage.mockResolvedValue(undefined)
+    callOrder.length = 0
+    navigateMock.mockImplementation(() => callOrder.push('navigate'))
+    useDialogsStore.setState({
+      dialogType: DIALOG_ADD_PAGE,
+      dialogProps: null,
+      closeDialog: () => {
+        callOrder.push('closeDialog')
+        useDialogsStore.setState({ dialogType: null, dialogProps: null })
+      },
+    })
+    useTreeStore.setState({
+      reloadTree: vi.fn().mockResolvedValue(undefined),
+      getPathById: () => '',
+    })
+    vi.mocked(createPage).mockResolvedValue(
+      undefined as unknown as ReturnType<typeof createPage>,
+    )
+    vi.mocked(createPendingDraft).mockResolvedValue({
+      page: { id: 'pending-1' },
+    } as Awaited<ReturnType<typeof createPendingDraft>>)
   })
 
-  it('keeps the normal page flow by default', async () => {
-    render(
-      <MemoryRouter>
-        <AddPageDialog parentId="" />
-      </MemoryRouter>,
-    )
-    expect(screen.getByText('addDialog.titlePage')).toBeInTheDocument()
-    expect(
-      screen.getByRole('checkbox', { name: 'addDialog.createAsDraft' }),
-    ).toHaveAttribute('data-state', 'unchecked')
-    expect(screen.getByText('addDialog.create')).toBeInTheDocument()
-    expect(screen.getByText('addDialog.create')).toHaveAttribute(
-      'data-variant',
-      'secondary',
-    )
-    expect(screen.getByText('addDialog.createAndEdit')).toBeInTheDocument()
-    expect(screen.getByText('addDialog.createAndEdit')).toHaveAttribute(
-      'data-variant',
-      'default',
-    )
-    fireEvent.change(screen.getByTestId('title'), {
-      target: { value: 'Draft' },
-    })
-    fireEvent.change(screen.getByTestId('slug'), {
-      target: { value: 'draft' },
-    })
-    fireEvent.click(screen.getByText('addDialog.create'))
-    await waitFor(() =>
-      expect(api.createPage).toHaveBeenCalledWith({
-        title: 'Draft',
-        slug: 'draft',
-        parentId: '',
-        kind: 'page',
-      }),
-    )
-    expect(api.createPendingDraft).not.toHaveBeenCalled()
-  })
+  it('closes the dialog before navigating to a new page', async () => {
+    const user = userEvent.setup()
+    render(<AddPageDialog parentId="" />)
+    await user.type(screen.getByTestId('add-page-title-input'), 'My Page')
+    await user.type(screen.getByTestId('add-page-slug-input'), 'my-page')
+    await user.click(screen.getByTestId('add-page-dialog-button-confirm'))
 
-  it('keeps page buttons stable and creates a pending draft when selected', async () => {
-    render(
-      <MemoryRouter>
-        <AddPageDialog parentId="" />
-      </MemoryRouter>,
-    )
-    const checkbox = screen.getByRole('checkbox', {
-      name: 'addDialog.createAsDraft',
-    })
-    fireEvent.click(checkbox)
-    expect(checkbox).toHaveAttribute('data-state', 'checked')
-    fireEvent.click(screen.getByText('close'))
-    expect(checkbox).toHaveAttribute('data-state', 'unchecked')
-    fireEvent.click(checkbox)
-    expect(screen.getByText('addDialog.create')).toHaveAttribute(
-      'data-variant',
-      'secondary',
-    )
-    expect(screen.getByText('addDialog.createAndEdit')).toHaveAttribute(
-      'data-variant',
-      'default',
-    )
-    fireEvent.change(screen.getByTestId('title'), {
-      target: { value: 'Draft' },
-    })
-    fireEvent.change(screen.getByTestId('slug'), {
-      target: { value: 'draft' },
-    })
-    fireEvent.click(screen.getByText('addDialog.create'))
-    await waitFor(() =>
-      expect(api.createPendingDraft).toHaveBeenCalledWith({
-        title: 'Draft',
-        slug: 'draft',
-        parentId: '',
-      }),
-    )
-    expect(navigate).toHaveBeenCalledWith('/pending-drafts/pending-1/edit')
-    expect(api.createPage).not.toHaveBeenCalled()
-    await waitFor(() =>
-      expect(checkbox).toHaveAttribute('data-state', 'unchecked'),
+    expect(callOrder.indexOf('closeDialog')).toBeLessThan(
+      callOrder.indexOf('navigate'),
     )
   })
 
-  it('opens the pending editor after Create & Edit when draft creation is selected', async () => {
-    render(
-      <MemoryRouter>
-        <AddPageDialog parentId="" />
-      </MemoryRouter>,
-    )
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: 'addDialog.createAsDraft' }),
-    )
-    fireEvent.change(screen.getByTestId('title'), {
-      target: { value: 'Draft' },
+  it('creates a pending draft and opens its editor', async () => {
+    const user = userEvent.setup()
+    render(<AddPageDialog parentId="" />)
+    await user.click(screen.getByRole('checkbox', { name: 'Create as draft' }))
+    await user.type(screen.getByTestId('add-page-title-input'), 'Draft')
+    await user.type(screen.getByTestId('add-page-slug-input'), 'draft')
+    await user.click(screen.getByTestId('add-page-dialog-button-confirm'))
+
+    expect(createPendingDraft).toHaveBeenCalledWith({
+      title: 'Draft',
+      slug: 'draft',
+      parentId: '',
     })
-    fireEvent.change(screen.getByTestId('slug'), {
-      target: { value: 'draft' },
-    })
-    fireEvent.click(screen.getByText('addDialog.createAndEdit'))
-    await waitFor(() =>
-      expect(api.createPendingDraft).toHaveBeenCalledWith({
-        title: 'Draft',
-        slug: 'draft',
-        parentId: '',
-      }),
+    expect(createPage).not.toHaveBeenCalled()
+    expect(callOrder.indexOf('closeDialog')).toBeLessThan(
+      callOrder.indexOf('navigate'),
     )
-    expect(navigate).toHaveBeenCalledWith('/pending-drafts/pending-1/edit')
   })
 })

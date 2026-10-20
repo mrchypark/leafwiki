@@ -1,7 +1,9 @@
 import { useDesignModeStore } from '@/features/designtoggle/designmode'
-import i18next from '@/lib/i18n'
-import { preprocessWikilinks } from '@/lib/preprocessWikilinks'
-import { withBasePath } from '@/lib/routePath'
+import { normalizeAssetSrc } from '@/lib/assetSrc'
+import {
+  buildWikiTitleIndex,
+  preprocessWikilinks,
+} from '@/lib/preprocessWikilinks'
 import { useTreeStore } from '@/stores/tree'
 import 'katex/dist/katex.min.css'
 import {
@@ -10,11 +12,8 @@ import {
   BlockquoteHTMLAttributes,
   Children,
   ClassAttributes,
-  Component,
-  ErrorInfo,
   HTMLAttributes,
-  ReactElement,
-  ReactNode,
+  ImgHTMLAttributes,
   VideoHTMLAttributes,
   isValidElement,
   useCallback,
@@ -24,12 +23,12 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
+import ReactMarkdown from 'react-markdown'
 import { JSX } from 'react/jsx-runtime'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkFlexibleMarkers from 'remark-flexible-markers'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -39,6 +38,7 @@ import MarkdownCodeBlock from './MarkdownCodeBlock'
 import MarkdownInlineCode from './MarkdownInlineCode'
 import { MarkdownImage } from './MarkdownImage'
 import { MarkdownLink } from './MarkdownLink'
+import { MarkdownPdfEmbed } from './MarkdownPdfEmbed'
 import './markdownPreviewCodeTheme.css'
 import MermaidBlock from './MermaidBlock'
 import { normalizeMarkdownListIndentation } from './normalizeMarkdownListIndentation'
@@ -48,47 +48,19 @@ import { rehypeLineNumber } from './rehypeLineNumber'
 import { rehypeWhitelistStyles } from './rehypeWhitelistStyles'
 import { syntaxHighlightLanguages } from './syntaxHighlightLanguages'
 import { TocDropdownButton } from './TocDropdownButton'
-
-const schema = {
-  ...defaultSchema,
-  clobberPrefix: '',
-  protocols: {
-    ...defaultSchema.protocols,
-    href: [
-      ...(defaultSchema.protocols?.href ?? []),
-      'wikilink-notfound',
-      'wikilink-ambiguous',
-    ],
-    src: [...(defaultSchema.protocols?.src ?? []), 'http', 'https'],
-  },
-  tagNames: [...(defaultSchema.tagNames || []), 'audio', 'video', 'mark'],
-  attributes: {
-    ...defaultSchema.attributes,
-    '*': [
-      ...(defaultSchema.attributes?.['*'] || []),
-      'class',
-      'className',
-      'data-leafwiki-generated-id',
-      'data-line',
-      'data-line-numbers',
-      'style',
-    ],
-    code: [
-      ...(defaultSchema.attributes?.code || []),
-      'className',
-      'class',
-      'data-line',
-      'data-line-numbers',
-    ],
-    audio: [...(defaultSchema.attributes?.audio || []), 'controls', 'src'],
-    video: [
-      ...(defaultSchema.attributes?.video || []),
-      'controls',
-      'src',
-      'preload',
-    ],
-  },
-}
+import { remarkImageSize } from './remarkImageSize'
+import { MarkdownPreviewErrorBoundary } from './MarkdownPreviewErrorBoundary'
+import {
+  findScrollParent,
+  getSemanticShoutoutTitle,
+  getShoutoutConfig,
+  isPdfSrc,
+  isPlainListParagraph,
+  normalizeFootnoteHref,
+  transformMarkdownUrl,
+  type MarkdownNodeProp,
+} from './previewHelpers'
+import { previewSanitizeSchema } from './previewSanitizeSchema'
 
 type Props = {
   content: string
@@ -98,172 +70,6 @@ type Props = {
   showToc?: boolean
   tocClickable?: boolean
   onStickyTocChange?: (show: boolean) => void
-}
-
-type MarkdownPreviewErrorBoundaryState = {
-  hasError: boolean
-}
-
-const CLOBBER_PREFIX = ''
-const FOOTNOTE_TARGET_PREFIX = '#user-content-fn'
-const WIKILINK_PROTOCOLS = [
-  'wikilink-notfound:',
-  'wikilink-ambiguous:',
-] as const
-
-type MarkdownNodeProp = {
-  node?: unknown
-}
-
-type SemanticAlertKind = 'info' | 'success' | 'warning' | 'error'
-
-type ShoutoutConfig = {
-  kind: string
-}
-
-function getTextContent(node: ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') {
-    return String(node)
-  }
-
-  if (Array.isArray(node)) {
-    return node.map(getTextContent).join('')
-  }
-
-  if (isValidElement<{ children?: ReactNode }>(node)) {
-    return getTextContent(node.props.children)
-  }
-
-  return ''
-}
-
-function getShoutoutConfig(children: ReactNode): ShoutoutConfig | null {
-  const childArray = Children.toArray(children)
-  const firstChild = childArray.find(
-    (child) => typeof child !== 'string' || child.trim() !== '',
-  )
-
-  if (!isValidElement<{ children?: ReactNode }>(firstChild)) {
-    return null
-  }
-
-  if (firstChild.type !== 'p') {
-    return null
-  }
-
-  const marker = getTextContent(firstChild.props.children).trim()
-  const match = marker.match(/^\[!(?<kind>[A-Z][A-Z0-9_-]*)\]$/)
-  if (!match?.groups?.kind) {
-    return null
-  }
-
-  const kind = match.groups.kind.toLowerCase()
-
-  return { kind }
-}
-
-function getAlertLabel(kind: SemanticAlertKind) {
-  if (kind === 'info') return 'Info'
-  if (kind === 'success') return 'Success'
-  if (kind === 'warning') return 'Warning'
-  return 'Error'
-}
-
-function getSemanticShoutoutTitle(kind: string) {
-  if (
-    kind === 'info' ||
-    kind === 'success' ||
-    kind === 'warning' ||
-    kind === 'error'
-  ) {
-    return getAlertLabel(kind)
-  }
-
-  return null
-}
-
-class MarkdownPreviewErrorBoundary extends Component<
-  { children: ReactNode; resetKey: string },
-  MarkdownPreviewErrorBoundaryState
-> {
-  state: MarkdownPreviewErrorBoundaryState = { hasError: false }
-
-  static getDerivedStateFromError(): MarkdownPreviewErrorBoundaryState {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Markdown preview failed to render', error, errorInfo)
-  }
-
-  componentDidUpdate(prevProps: { children: ReactNode; resetKey: string }) {
-    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
-      this.setState({ hasError: false })
-    }
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="border-destructive/40 bg-destructive/5 text-destructive rounded-md border p-4 text-sm">
-          {i18next.t('markdownPreview.renderError', { ns: 'viewer' })}
-        </div>
-      )
-    }
-
-    return this.props.children
-  }
-}
-
-function normalizeAssetMediaSrc(src?: string) {
-  if (!src) return src
-  if (src.startsWith('/assets/')) {
-    return withBasePath(src)
-  }
-  if (src.startsWith('assets/')) {
-    return withBasePath(`/${src}`)
-  }
-  return src
-}
-
-function normalizeFootnoteHref(href?: string) {
-  if (!href?.startsWith(FOOTNOTE_TARGET_PREFIX)) {
-    return href
-  }
-
-  return `#${CLOBBER_PREFIX}${href.slice(1)}`
-}
-
-function transformMarkdownUrl(url: string) {
-  if (WIKILINK_PROTOCOLS.some((protocol) => url.startsWith(protocol))) {
-    return url
-  }
-
-  return defaultUrlTransform(url)
-}
-
-function isPlainListParagraph(
-  child: ReactNode,
-): child is ReactElement<{ children?: ReactNode; 'data-line'?: string }> {
-  if (
-    !isValidElement<{ children?: ReactNode; 'data-line'?: string }>(child) ||
-    child.type !== 'p'
-  ) {
-    return false
-  }
-
-  const propKeys = Object.keys(child.props)
-  return propKeys.every((key) => key === 'children' || key === 'data-line')
-}
-
-function findScrollParent(el: HTMLElement | null): HTMLElement | null {
-  let node: HTMLElement | null = el?.parentElement ?? null
-  while (node) {
-    const { overflow, overflowY } = getComputedStyle(node)
-    if (/auto|scroll/.test(overflow + overflowY)) return node
-    node = node.parentElement
-  }
-  return null
 }
 
 export default function MarkdownPreview({
@@ -326,11 +132,15 @@ export default function MarkdownPreview({
         node,
         ...props
       }: MarkdownNodeProp &
-        JSX.IntrinsicAttributes &
         ClassAttributes<HTMLImageElement> &
-        HTMLAttributes<HTMLImageElement>) => {
+        ImgHTMLAttributes<HTMLImageElement>) => {
         void node
-        return <MarkdownImage resolveAssetUrl={resolveAssetUrl} {...props} />
+        if (isPdfSrc(props.src)) {
+          return (
+            <MarkdownPdfEmbed {...props} resolveAssetUrl={resolveAssetUrl} />
+          )
+        }
+        return <MarkdownImage {...props} resolveAssetUrl={resolveAssetUrl} />
       },
       audio: ({
         node,
@@ -338,7 +148,12 @@ export default function MarkdownPreview({
       }: MarkdownNodeProp & AudioHTMLAttributes<HTMLAudioElement>) => {
         void node
         const resolvedSrc = resolveAssetUrl?.(props.src ?? '') ?? props.src
-        return <audio {...props} src={normalizeAssetMediaSrc(resolvedSrc)} />
+        return (
+          <audio
+            {...props}
+            src={resolvedSrc ? normalizeAssetSrc(resolvedSrc) : resolvedSrc}
+          />
+        )
       },
       video: ({
         node,
@@ -346,7 +161,12 @@ export default function MarkdownPreview({
       }: MarkdownNodeProp & VideoHTMLAttributes<HTMLVideoElement>) => {
         void node
         const resolvedSrc = resolveAssetUrl?.(props.src ?? '') ?? props.src
-        return <video {...props} src={normalizeAssetMediaSrc(resolvedSrc)} />
+        return (
+          <video
+            {...props}
+            src={resolvedSrc ? normalizeAssetSrc(resolvedSrc) : resolvedSrc}
+          />
+        )
       },
       section: ({
         children,
@@ -583,19 +403,22 @@ export default function MarkdownPreview({
     [enableHeadlineLinks, markdownLink, resolveAssetUrl, resolvedMode],
   )
 
+  const wikiTitleIndex = useMemo(
+    () => buildWikiTitleIndex(treeById),
+    [treeById],
+  )
+
   const normalizedContent = useMemo(
     () =>
       normalizeMarkdownListIndentation(
         normalizeMarkdownBlocks(
-          preprocessWikilinks(content, (title) => {
-            const lower = title.toLowerCase()
-            return Object.values(treeById).filter(
-              (n) => n.title.toLowerCase() === lower,
-            )
-          }),
+          preprocessWikilinks(
+            content,
+            (title) => wikiTitleIndex.get(title.toLowerCase()) ?? [],
+          ),
         ),
       ),
-    [content, treeById],
+    [content, wikiTitleIndex],
   )
 
   const tocEntries = useMemo(
@@ -638,6 +461,7 @@ export default function MarkdownPreview({
               [remarkMath, { singleDollarTextMath: false }],
               remarkGfm,
               remarkFlexibleMarkers,
+              remarkImageSize,
             ]}
             rehypePlugins={[
               rehypeRaw,
@@ -645,7 +469,7 @@ export default function MarkdownPreview({
               rehypeCodeFenceLineNumbers,
               rehypeWhitelistStyles,
               [rehypeKatex, { output: 'html', strict: 'ignore' }],
-              [rehypeSanitize, schema],
+              [rehypeSanitize, previewSanitizeSchema],
               [
                 rehypeHighlight,
                 {

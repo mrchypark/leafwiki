@@ -7,6 +7,7 @@ import { handleFieldErrors } from '@/lib/handleFieldErrors'
 import i18next from '@/lib/i18n'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { buildEditUrl, buildPendingDraftEditUrl } from '@/lib/routePath'
+import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
 import { CalendarDays } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
@@ -94,6 +95,7 @@ export function AddPageDialog({
       try {
         if (createAsDraft) {
           const draft = await createPendingDraft({ title, slug, parentId })
+          useDialogsStore.getState().closeDialog()
           navigate(buildPendingDraftEditUrl(draft.page.id))
         } else {
           await createPage({ title, slug, parentId, kind: nodeKind })
@@ -106,6 +108,11 @@ export function AddPageDialog({
         await reloadTree()
         if (redirect && !createAsDraft) {
           const fullPath = parentPath !== '' ? `${parentPath}/${slug}` : slug
+          // Close before navigating: committing the route change first
+          // leaves a render race between the transition and this dialog's
+          // own close state, which can flash the dialog back open for a
+          // frame.
+          useDialogsStore.getState().closeDialog()
           navigate(buildEditUrl(fullPath))
         }
         resetForm()

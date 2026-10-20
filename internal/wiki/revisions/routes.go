@@ -67,12 +67,7 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	// Revision routes are behind the EnableRevision feature flag.
 	if opts.EnableRevision {
@@ -244,11 +239,7 @@ func (r *Routes) handleGetRevisionAsset(c *gin.Context) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	disposition := mime.FormatMediaType("inline", map[string]string{"filename": path.Base(assetName)})
-	if disposition == "" {
-		disposition = "inline"
-	}
-	c.Header("Content-Disposition", disposition)
+	security.SetUntrustedFileHeaders(c.Writer.Header(), assetName)
 	c.Writer.Header().Set("Content-Type", contentType)
 	http.ServeContent(c.Writer, c.Request, path.Base(assetName), stat.ModTime(), f)
 }

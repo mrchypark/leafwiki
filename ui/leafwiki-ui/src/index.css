@@ -15,8 +15,8 @@
 @theme {
   /* Typography + Radii */
   --font-sans:
-    InterVariable, system-ui, 'Segoe UI Emoji', 'Apple Color Emoji',
-    'Noto Color Emoji', sans-serif;
+    Inter, system-ui, 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji',
+    sans-serif;
   --radius: 0.5rem;
   --radius-lg: 0.5rem;
   --radius-md: 0.375rem;
@@ -72,6 +72,7 @@
   --color-markdown-toolbar-text: hsl(var(--markdown-toolbar-text));
 
   --color-muted: hsl(var(--muted));
+  --color-muted-surface: hsl(var(--muted-surface));
   --color-muted-foreground: hsl(var(--muted-foreground));
   --color-table-header-bg: hsl(var(--table-header-bg));
   --color-table-header-border: hsl(var(--table-header-border));
@@ -153,7 +154,10 @@
     --markdown-toolbar-border: 214 32% 91%;
     --markdown-toolbar-text: 215 25% 27%;
 
+    /* --muted is a *text/icon* token (consumed via `text-muted`, `border-muted`).
+       `bg-*` surfaces use --muted-surface instead — see theme-tokens.test.ts. */
     --muted: 215 16% 47%;
+    --muted-surface: 210 40% 96%;
     --muted-foreground: 215 16% 47%;
 
     --headline-anchor-icon: 215 20% 65%;
@@ -230,8 +234,9 @@
     --markdown-toolbar-border: 220 14% 26%;
     --markdown-toolbar-text: 220 8% 78%;
 
-    /* ---- MUTED TEXT / ICONS ---- */
+    /* ---- MUTED TEXT / ICONS  (surface = --muted-surface) ---- */
     --muted: 220 10% 60%;
+    --muted-surface: 222 16% 18%;
     --muted-foreground: 220 10% 60%;
 
     --headline-anchor-icon: 220 12% 65%;
@@ -1541,6 +1546,10 @@
     @apply text-brand-dark font-semibold;
   }
 
+  .page-viewer__content mark.search-query-highlight {
+    @apply bg-brand/25 rounded-sm px-0.5 text-inherit;
+  }
+
   .page-refactor-dialog__results-view {
     @apply max-h-60 rounded-none border-0;
   }
@@ -1669,7 +1678,7 @@
   }
 
   .page-viewer__subheader {
-    @apply bg-background/92 border-surface-border border-b backdrop-blur-sm md:h-12;
+    @apply bg-background/92 border-surface-border border-b backdrop-blur-sm md:min-h-12;
   }
 
   /* The subheader bar/border itself stays full-width (this is a sibling of
@@ -1704,7 +1713,7 @@
   }
 
   .page-viewer__subheader-inner {
-    @apply mx-auto flex w-full max-w-5xl flex-col gap-2 px-4 pt-0.75 pb-1.25 sm:px-8 md:h-full md:flex-row md:items-center md:justify-between md:gap-4 md:py-0;
+    @apply mx-auto flex w-full max-w-5xl flex-col gap-2 px-4 pt-0.75 pb-1.25 sm:px-8 md:min-h-12 md:flex-row md:items-center md:justify-between md:gap-4 md:py-1;
   }
 
   .page-viewer__subheader-main {
@@ -1814,62 +1823,6 @@
 
   .page-viewer__content {
     @apply prose prose-base text-page-text dark:prose-invert mt-6 max-w-full flex-1 leading-relaxed break-words;
-  }
-
-  .page-viewer__content :where(h1),
-  .markdown-editor__preview :where(h1),
-  .page-history__preview-body :where(h1) {
-    @apply mt-10 mb-3;
-  }
-
-  .page-viewer__content :where(h2),
-  .markdown-editor__preview :where(h2),
-  .page-history__preview-body :where(h2) {
-    @apply mt-10 mb-3;
-  }
-
-  .page-viewer__content :where(h3),
-  .markdown-editor__preview :where(h3),
-  .page-history__preview-body :where(h3) {
-    @apply mt-8 mb-2;
-  }
-
-  .page-viewer__content :where(h4, h5, h6),
-  .markdown-editor__preview :where(h4, h5, h6),
-  .page-history__preview-body :where(h4, h5, h6) {
-    @apply mt-6 mb-2;
-  }
-
-  .page-viewer__content :where(h1, h2, h3, h4, h5, h6):first-child,
-  .markdown-editor__preview :where(h1, h2, h3, h4, h5, h6):first-child,
-  .page-history__preview-body :where(h1, h2, h3, h4, h5, h6):first-child {
-    @apply mt-2;
-  }
-
-  /* Heading directly after heading — tighter spacing */
-  .page-viewer__content :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6),
-  .markdown-editor__preview :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6),
-  .page-history__preview-body
-    :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6) {
-    @apply mt-4;
-  }
-
-  .page-viewer__content :where(p),
-  .markdown-editor__preview :where(p),
-  .page-history__preview-body :where(p) {
-    @apply my-3;
-  }
-
-  .page-viewer__content :where(ul, ol),
-  .markdown-editor__preview :where(ul, ol),
-  .page-history__preview-body :where(ul, ol) {
-    @apply my-3;
-  }
-
-  .page-viewer__content :where(li),
-  .markdown-editor__preview :where(li),
-  .page-history__preview-body :where(li) {
-    @apply my-1;
   }
 
   .page-viewer__metadata {
@@ -2294,11 +2247,196 @@
   }
 
   /* Markdown content tweaks */
+  /* Shared spacing follows every surface's prose baseline so defaults cannot override it. */
+  .page-viewer__content :where(h1),
+  .markdown-editor__preview :where(h1),
+  .page-history__preview-body :where(h1) {
+    @apply mt-10 mb-3;
+  }
+
+  .page-viewer__content :where(h2),
+  .markdown-editor__preview :where(h2),
+  .page-history__preview-body :where(h2) {
+    @apply mt-10 mb-3;
+  }
+
+  .page-viewer__content :where(h3),
+  .markdown-editor__preview :where(h3),
+  .page-history__preview-body :where(h3) {
+    @apply mt-8 mb-2;
+  }
+
+  .page-viewer__content :where(h4, h5, h6),
+  .markdown-editor__preview :where(h4, h5, h6),
+  .page-history__preview-body :where(h4, h5, h6) {
+    @apply mt-6 mb-2;
+  }
+
+  .page-viewer__content :where(h1, h2, h3, h4, h5, h6):first-child,
+  .markdown-editor__preview :where(h1, h2, h3, h4, h5, h6):first-child,
+  .page-history__preview-body :where(h1, h2, h3, h4, h5, h6):first-child {
+    @apply mt-2;
+  }
+
+  /* Heading directly after heading — tighter spacing */
+  .page-viewer__content :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6),
+  .markdown-editor__preview :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6),
+  .page-history__preview-body
+    :where(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6) {
+    @apply mt-4;
+  }
+
+  .page-viewer__content :where(p),
+  .markdown-editor__preview :where(p),
+  .page-history__preview-body :where(p) {
+    @apply my-3;
+  }
+
+  .page-viewer__content :where(ul, ol),
+  .markdown-editor__preview :where(ul, ol),
+  .page-history__preview-body :where(ul, ol) {
+    @apply my-3;
+  }
+
+  .page-viewer__content :where(li),
+  .markdown-editor__preview :where(li),
+  .page-history__preview-body :where(li) {
+    @apply my-1;
+  }
+
+  @media screen {
+    /* One reading column keeps prose, media and technical blocks aligned. */
+    .page-viewer__content {
+      inline-size: 100%;
+      min-inline-size: 0;
+      max-inline-size: 680px;
+      margin-inline: auto;
+    }
+
+    /* Match the article's phone/desktop gutters and center within the reserved TOC space. */
+    .page-viewer__subheader-inner,
+    .page-viewer__metadata-bar-inner {
+      inline-size: calc(100% - 2rem);
+      max-inline-size: 680px;
+      padding-inline: 0;
+    }
+
+    @media (min-width: 640px) {
+      .page-viewer__subheader-inner,
+      .page-viewer__metadata-bar-inner {
+        inline-size: calc(100% - 4rem);
+      }
+    }
+
+    .page-viewer__body > .backlinks__pane {
+      inline-size: 100%;
+      max-inline-size: 680px;
+      margin-inline: auto;
+    }
+
+    .page-viewer__metadata-bar .page-metadata__properties {
+      min-inline-size: 0;
+    }
+
+    .page-viewer__metadata-bar .page-metadata__props-list {
+      inline-size: 100%;
+    }
+
+    .page-viewer__metadata-bar .page-metadata__prop-value {
+      min-inline-size: 0;
+      overflow-wrap: anywhere;
+    }
+
+    :is(
+      .page-viewer__content,
+      .markdown-editor__preview,
+      .page-history__preview-body
+    ) {
+      @apply text-base leading-[1.65] sm:text-[17px];
+    }
+
+    /* Limit prose without narrowing the space available to media and technical blocks. */
+    :is(
+        .page-viewer__content,
+        .markdown-editor__preview,
+        .page-history__preview-body
+      )
+      :where(p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, dl):not(
+        :has(img, video, audio, iframe, pre, table)
+      ) {
+      max-inline-size: 680px;
+    }
+
+    :is(
+        .page-viewer__content,
+        .markdown-editor__preview,
+        .page-history__preview-body
+      )
+      :where(p) {
+      margin-block: 1em;
+    }
+
+    /* Collapsed paragraph margins must not separate a heading from its introduction. */
+    :is(
+        .page-viewer__content,
+        .markdown-editor__preview,
+        .page-history__preview-body
+      )
+      :where(h1, h2, h3, h4, h5, h6)
+      + :where(p, ul, ol, blockquote) {
+      margin-block-start: 0;
+    }
+  }
+
   .markdown-editor__preview img,
   .page-viewer__content img,
   .page-history__preview-body img {
     height: auto;
     max-width: 100%;
+  }
+
+  .markdown-editor__preview .markdown-pdf-embed,
+  .page-viewer__content .markdown-pdf-embed,
+  .page-history__preview-body .markdown-pdf-embed {
+    @apply my-4 block max-w-full;
+  }
+
+  .markdown-editor__preview .markdown-pdf-embed__frame,
+  .page-viewer__content .markdown-pdf-embed__frame,
+  .page-history__preview-body .markdown-pdf-embed__frame {
+    @apply border-border bg-surface block h-[600px] w-full rounded-md border;
+  }
+
+  .markdown-editor__preview .markdown-pdf-embed__open-link,
+  .page-viewer__content .markdown-pdf-embed__open-link,
+  .page-history__preview-body .markdown-pdf-embed__open-link {
+    @apply text-muted-foreground mt-1 inline-flex items-center gap-1 text-xs no-underline hover:underline;
+  }
+
+  .markdown-editor__preview .markdown-pdf-card,
+  .page-viewer__content .markdown-pdf-card,
+  .page-history__preview-body .markdown-pdf-card {
+    @apply border-border bg-surface hover:bg-surface-alt hover:border-brand flex w-full max-w-md items-center gap-3 rounded-md border px-3 py-2 no-underline;
+  }
+
+  .markdown-pdf-card__icon {
+    @apply text-brand shrink-0;
+  }
+
+  .markdown-pdf-card__body {
+    @apply flex min-w-0 flex-col;
+  }
+
+  .markdown-pdf-card__title {
+    @apply text-foreground truncate text-sm font-medium;
+  }
+
+  .markdown-pdf-card__meta {
+    @apply text-muted-foreground truncate text-xs;
+  }
+
+  .markdown-pdf-card__arrow {
+    @apply text-muted-foreground shrink-0;
   }
 
   .table-wrapper {
@@ -2363,6 +2501,15 @@
   .page-viewer__content ul li,
   .page-history__preview-body ul li {
     @apply list-disc;
+  }
+
+  /* remark-gfm marks task-list items with this class, but the forced
+     list-disc above still applies to them, so the checkbox renders next to
+     a bullet dot instead of alone (#1579). */
+  .markdown-editor__preview ul li.task-list-item,
+  .page-viewer__content ul li.task-list-item,
+  .page-history__preview-body ul li.task-list-item {
+    @apply list-none;
   }
 
   .markdown-editor__preview .markdown-footnotes,
@@ -2434,13 +2581,14 @@
   .markdown-editor__preview .markdown-shoutout,
   .page-viewer__content .markdown-shoutout,
   .page-history__preview-body .markdown-shoutout {
-    @apply border-border/70 bg-surface-alt text-page-text my-6 rounded-lg border px-4 py-3;
+    @apply border-border bg-surface-alt text-page-text my-6 rounded-r-lg border-l-[3px] px-5 py-4;
+    overflow-wrap: anywhere;
   }
 
   .markdown-editor__preview .markdown-shoutout__title,
   .page-viewer__content .markdown-shoutout__title,
   .page-history__preview-body .markdown-shoutout__title {
-    @apply mt-0 mb-2 text-sm font-semibold tracking-[0.08em] uppercase;
+    @apply text-page-text mt-0 mb-2 text-sm font-semibold;
   }
 
   .markdown-editor__preview .markdown-shoutout__content > :first-child,
@@ -2458,97 +2606,80 @@
   .markdown-editor__preview .markdown-shoutout--info,
   .page-viewer__content .markdown-shoutout--info,
   .page-history__preview-body .markdown-shoutout--info {
-    @apply border-brand/30 bg-brand/5;
-  }
-
-  .markdown-editor__preview .markdown-shoutout--info .markdown-shoutout__title,
-  .page-viewer__content .markdown-shoutout--info .markdown-shoutout__title,
-  .page-history__preview-body
-    .markdown-shoutout--info
-    .markdown-shoutout__title {
-    @apply text-brand;
+    @apply border-brand/70 bg-brand/5;
   }
 
   .markdown-editor__preview .markdown-shoutout--success,
   .page-viewer__content .markdown-shoutout--success,
   .page-history__preview-body .markdown-shoutout--success {
-    @apply border-success/30 bg-success/5;
-  }
-
-  .markdown-editor__preview
-    .markdown-shoutout--success
-    .markdown-shoutout__title,
-  .page-viewer__content .markdown-shoutout--success .markdown-shoutout__title,
-  .page-history__preview-body
-    .markdown-shoutout--success
-    .markdown-shoutout__title {
-    @apply text-success;
+    @apply border-success/70 bg-success/5;
   }
 
   .markdown-editor__preview .markdown-shoutout--warning,
   .page-viewer__content .markdown-shoutout--warning,
   .page-history__preview-body .markdown-shoutout--warning {
-    @apply border-warning/30 bg-warning/10;
-  }
-
-  .markdown-editor__preview
-    .markdown-shoutout--warning
-    .markdown-shoutout__title,
-  .page-viewer__content .markdown-shoutout--warning .markdown-shoutout__title,
-  .page-history__preview-body
-    .markdown-shoutout--warning
-    .markdown-shoutout__title {
-    @apply text-warning;
+    @apply border-warning/70 bg-warning/10;
   }
 
   .markdown-editor__preview .markdown-shoutout--error,
   .page-viewer__content .markdown-shoutout--error,
   .page-history__preview-body .markdown-shoutout--error {
-    @apply border-error/30 bg-error/5;
-  }
-
-  .markdown-editor__preview .markdown-shoutout--error .markdown-shoutout__title,
-  .page-viewer__content .markdown-shoutout--error .markdown-shoutout__title,
-  .page-history__preview-body
-    .markdown-shoutout--error
-    .markdown-shoutout__title {
-    @apply text-error;
+    @apply border-error/70 bg-error/5;
   }
 
   .markdown-editor__preview .markdown-shoutout--blue,
   .page-viewer__content .markdown-shoutout--blue,
   .page-history__preview-body .markdown-shoutout--blue {
-    @apply border-blue-500/30 bg-blue-500/10;
+    @apply border-blue-500/70 bg-blue-500/10;
   }
 
   .markdown-editor__preview .markdown-shoutout--red,
   .page-viewer__content .markdown-shoutout--red,
   .page-history__preview-body .markdown-shoutout--red {
-    @apply border-red-500/30 bg-red-500/10;
+    @apply border-red-500/70 bg-red-500/10;
   }
 
   .markdown-editor__preview .markdown-shoutout--green,
   .page-viewer__content .markdown-shoutout--green,
   .page-history__preview-body .markdown-shoutout--green {
-    @apply border-green-500/30 bg-green-500/10;
+    @apply border-green-500/70 bg-green-500/10;
   }
 
   .markdown-editor__preview .markdown-shoutout--orange,
   .page-viewer__content .markdown-shoutout--orange,
   .page-history__preview-body .markdown-shoutout--orange {
-    @apply border-orange-500/30 bg-orange-500/10;
+    @apply border-orange-500/70 bg-orange-500/10;
   }
 
   .markdown-editor__preview .markdown-collapsible,
   .page-viewer__content .markdown-collapsible,
   .page-history__preview-body .markdown-collapsible {
-    @apply border-border/70 bg-surface-alt text-page-text my-6 rounded-lg border px-4 py-3;
+    @apply border-border/70 bg-surface-alt/60 text-page-text my-6 rounded-r-lg border-l-[3px] px-5 py-3;
+    overflow-wrap: anywhere;
   }
 
   .markdown-editor__preview .markdown-collapsible > summary,
   .page-viewer__content .markdown-collapsible > summary,
   .page-history__preview-body .markdown-collapsible > summary {
-    @apply -mx-4 -my-3 flex cursor-pointer list-none items-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold select-none;
+    @apply m-0 flex min-h-7 cursor-pointer list-none items-center gap-3 rounded-sm py-1 text-sm leading-6 font-semibold;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > summary:hover,
+  .page-viewer__content .markdown-collapsible > summary:hover,
+  .page-history__preview-body .markdown-collapsible > summary:hover {
+    @apply bg-brand/5;
+  }
+
+  .markdown-editor__preview .markdown-collapsible > summary:focus-visible,
+  .page-viewer__content .markdown-collapsible > summary:focus-visible,
+  .page-history__preview-body .markdown-collapsible > summary:focus-visible {
+    @apply outline-brand outline-2 outline-offset-4;
+  }
+
+  .markdown-editor__preview .markdown-collapsible[open],
+  .page-viewer__content .markdown-collapsible[open],
+  .page-history__preview-body .markdown-collapsible[open] {
+    @apply pb-5;
   }
 
   .markdown-editor__preview
@@ -2565,7 +2696,7 @@
   .page-viewer__content .markdown-collapsible > summary::before,
   .page-history__preview-body .markdown-collapsible > summary::before {
     content: '';
-    @apply border-muted h-1.5 w-1.5 shrink-0 -rotate-45 border-r-2 border-b-2 transition-transform duration-200;
+    @apply border-muted h-1.5 w-1.5 shrink-0 -rotate-45 border-r-2 border-b-2 transition-transform duration-200 motion-reduce:transition-none;
   }
 
   .markdown-editor__preview .markdown-collapsible[open] > summary::before,
@@ -2577,7 +2708,7 @@
   .markdown-editor__preview .markdown-collapsible > summary + *,
   .page-viewer__content .markdown-collapsible > summary + *,
   .page-history__preview-body .markdown-collapsible > summary + * {
-    @apply mt-3;
+    @apply mt-4;
   }
 
   .markdown-editor__preview .markdown-collapsible > :last-child,
@@ -2724,12 +2855,25 @@
     @apply hover:bg-tree-node-hover;
   }
 
+  /* Keeps the row of the page a delete confirmation dialog is about to
+     remove visually distinct while that dialog is open, even though the
+     "..." menu that opened it has already closed. Takes precedence over
+     --active (defined below it) since deleting a different page than the
+     one you're currently viewing must never look ambiguous. */
+  .tree-node--delete-target {
+    @apply bg-error/10;
+  }
+
   .tree-node__marker {
     @apply bg-surface-border absolute top-0 bottom-0 w-0.5;
   }
 
   .tree-node__marker--active {
     @apply bg-brand/60;
+  }
+
+  .tree-node__marker--delete-target {
+    @apply bg-error/60;
   }
 
   .tree-node__main {
@@ -2766,6 +2910,10 @@
 
   .tree-node__title--active {
     @apply text-brand;
+  }
+
+  .tree-node__title--delete-target {
+    @apply text-error;
   }
 
   .tree-node__actions {
@@ -2946,6 +3094,18 @@
 
   .settings__hint {
     @apply text-muted mt-1 text-xs;
+  }
+
+  .settings__status-line {
+    @apply text-interface-text mb-3 flex items-center gap-2 text-sm;
+  }
+
+  .settings__status-icon {
+    @apply text-muted h-4 w-4 shrink-0;
+  }
+
+  .settings__notice {
+    @apply border-surface-border bg-surface-alt text-muted flex flex-col gap-1 rounded-md border p-3 text-sm;
   }
 
   .settings__actions {
@@ -3541,7 +3701,7 @@
     position: relative;
   }
 
-  main article .anchor .headline-anchor span svg {
+  main article .anchor .headline-anchor .headline-anchor__icon svg {
     @apply text-headline-anchor-icon;
   }
 
@@ -3555,15 +3715,19 @@
     @apply relative no-underline;
   }
 
-  #markdown-preview-container .anchor .headline-anchor span svg {
+  #markdown-preview-container
+    .anchor
+    .headline-anchor
+    .headline-anchor__icon
+    svg {
     @apply hidden;
   }
 
-  main article .anchor .headline-anchor span {
+  main article .anchor .headline-anchor .headline-anchor__icon {
     @apply absolute top-1/2 -left-7 -translate-y-1/2 opacity-0 transition-opacity duration-200;
   }
 
-  main article .anchor .headline-anchor:hover span {
+  main article .anchor .headline-anchor:hover .headline-anchor__icon {
     @apply opacity-100;
   }
 }
@@ -3583,15 +3747,31 @@
       margin: 1cm;
     }
 
+    /* Neutralise every scroll/clip container between <html> and the article.
+       Chromium treats a box whose `overflow` is not `visible` as monolithic
+       (unbreakable) during pagination, so content crossing a page boundary is
+       clipped instead of flowing onto the next page — see #1531. The flex
+       `min-height`/`height` constraints from the on-screen layout have to go
+       for the same reason. */
     main,
     article,
     #root,
     .app-layout__content-wrapper,
+    .app-layout__main-column,
+    .app-layout__main-content-area,
+    .app-layout__main-content-area-editor,
     .app-layout__content-row,
     .page-viewer,
-    .page-viewer__content {
+    .page-viewer__body,
+    .page-viewer__content,
+    .page-history__preview-body,
+    .markdown-editor__preview,
+    .table-wrapper {
       background: #fff !important;
-      overflow: visible;
+      overflow: visible !important;
+      height: auto !important;
+      max-height: none !important;
+      min-height: 0 !important;
     }
 
     main {
@@ -3600,8 +3780,62 @@
       border: 0 !important;
     }
 
-    .app-layout__content-wrapper {
-      height: auto !important;
+    /* Page-break hygiene for the rendered markdown: keep a heading with the
+       text it introduces, and don't split atomic blocks down the middle. */
+    .page-viewer__content,
+    .page-history__preview-body,
+    .markdown-editor__preview {
+      orphans: 3;
+      widows: 3;
+    }
+
+    .page-viewer__content :where(h1, h2, h3, h4, h5, h6),
+    .page-history__preview-body :where(h1, h2, h3, h4, h5, h6),
+    .markdown-editor__preview :where(h1, h2, h3, h4, h5, h6) {
+      break-after: avoid;
+      break-inside: avoid;
+    }
+
+    .page-viewer__content
+      :where(
+        pre,
+        blockquote,
+        figure,
+        img,
+        tr,
+        thead,
+        .katex-display,
+        .markdown-shoutout
+      ),
+    .page-history__preview-body
+      :where(
+        pre,
+        blockquote,
+        figure,
+        img,
+        tr,
+        thead,
+        .katex-display,
+        .markdown-shoutout
+      ),
+    .markdown-editor__preview
+      :where(
+        pre,
+        blockquote,
+        figure,
+        img,
+        tr,
+        thead,
+        .katex-display,
+        .markdown-shoutout
+      ) {
+      break-inside: avoid;
+    }
+
+    .page-viewer__content :where(img),
+    .page-history__preview-body :where(img),
+    .markdown-editor__preview :where(img) {
+      max-height: 100vh;
     }
 
     html.dark,
@@ -3657,6 +3891,7 @@
       --markdown-toolbar-text: 215 25% 27% !important;
 
       --muted: 215 16% 47% !important;
+      --muted-surface: 210 40% 96% !important;
       --muted-foreground: 215 16% 47% !important;
 
       --headline-anchor-icon: 215 20% 65% !important;
@@ -3705,6 +3940,13 @@
     #sidebar-container,
     header,
     .sidebar-wrapper {
+      display: none !important;
+    }
+
+    /* The side TOC pane is navigation chrome, not article content — the
+       in-flow inline TOC is already `print:hidden` for the same reason. */
+    #app-toc-pane-root,
+    .app-layout__toc-pane {
       display: none !important;
     }
 

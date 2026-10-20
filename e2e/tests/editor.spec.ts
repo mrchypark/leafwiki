@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test, { Page, expect } from '@playwright/test';
-import { getCsrfScript } from '../helpers/api';
+import { browserFetch, expectOk, pageByPathUrl } from '../helpers/api';
 import EditPage from '../pages/EditPage';
 import LoginPage from '../pages/LoginPage';
 import ViewPage from '../pages/ViewPage';
@@ -28,36 +28,27 @@ async function createPageWithMetadata(
     properties?: Record<string, string>;
   },
 ) {
-  await page.evaluate(
-    async ({ title, slug, content, tags, properties, csrfScript }) => {
-      const csrfToken = new Function(csrfScript)() as string;
-
-      const createRes = await fetch('/api/pages', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({ parentId: null, title, slug, kind: 'page' }),
-      });
-      if (!createRes.ok) throw new Error(`create failed: ${createRes.status}`);
-
-      const created = (await createRes.json()) as { id: string; version: string };
-
-      const updateRes = await fetch(`/api/pages/${created.id}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({
-          version: created.version,
-          title,
-          slug,
-          content,
-          tags: tags ?? [],
-          properties: properties ?? {},
-        }),
-      });
-      if (!updateRes.ok) throw new Error(`update failed: ${updateRes.status}`);
-    },
-    { ...input, csrfScript: getCsrfScript() },
+  const { title, slug, content, tags, properties } = input;
+  const created = expectOk(
+    await browserFetch<{ id: string; version: string }>(page, '/api/pages', {
+      method: 'POST',
+      body: { parentId: null, title, slug, kind: 'page' },
+    }),
+    'create',
+  );
+  expectOk(
+    await browserFetch(page, `/api/pages/${created.id}`, {
+      method: 'PUT',
+      body: {
+        version: created.version,
+        title,
+        slug,
+        content,
+        tags: tags ?? [],
+        properties: properties ?? {},
+      },
+    }),
+    'update',
   );
 }
 
@@ -325,21 +316,9 @@ test.describe('Editor', () => {
 
     await expect(page.locator('.page-metadata__tag-chip')).toHaveCount(0);
 
-    const fetchedTags = await page.evaluate(
-      async ({ path, csrfScript }) => {
-        const csrfToken = new Function(csrfScript)() as string;
-        const response = await fetch(`/api/pages/by-path?path=${encodeURIComponent(path)}`, {
-          credentials: 'include',
-          headers: { 'X-CSRF-Token': csrfToken },
-        });
-        if (!response.ok) {
-          throw new Error(`load failed: ${response.status}`);
-        }
-        const data = (await response.json()) as { tags?: string[] };
-        return data.tags ?? [];
-      },
-      { path: slug, csrfScript: getCsrfScript() },
-    );
+    const fetchedTags =
+      expectOk(await browserFetch<{ tags?: string[] }>(page, pageByPathUrl(slug)), 'load').tags ??
+      [];
 
     expect(fetchedTags).toEqual([]);
   });
@@ -465,23 +444,11 @@ test.describe('Editor', () => {
 
     await expect(page.locator('.page-metadata')).toHaveCount(0);
 
-    const fetchedProperties = await page.evaluate(
-      async ({ path, csrfScript }) => {
-        const csrfToken = new Function(csrfScript)() as string;
-        const response = await fetch(`/api/pages/by-path?path=${encodeURIComponent(path)}`, {
-          credentials: 'include',
-          headers: { 'X-CSRF-Token': csrfToken },
-        });
-        if (!response.ok) {
-          throw new Error(`load failed: ${response.status}`);
-        }
-        const data = (await response.json()) as {
-          properties?: Record<string, string>;
-        };
-        return data.properties ?? {};
-      },
-      { path: slug, csrfScript: getCsrfScript() },
-    );
+    const fetchedProperties =
+      expectOk(
+        await browserFetch<{ properties?: Record<string, string> }>(page, pageByPathUrl(slug)),
+        'load',
+      ).properties ?? {};
 
     expect(fetchedProperties).toEqual({});
   });

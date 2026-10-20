@@ -1,6 +1,7 @@
 package links
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -149,4 +150,131 @@ func TestLinksStore_GetOutgoingLinksForPages_BatchesLargeInputs(t *testing.T) {
 			t.Fatalf("expected target path %q, got %q", "target/"+pageID, outgoings[0].ToPath)
 		}
 	}
+}
+
+func TestLinksStore_GetBrokenLinks_ReturnsOnlyBrokenOrderedByToPathThenFromTitle(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := NewLinksStore(tmp)
+	if err != nil {
+		t.Fatalf("NewLinksStore err: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	if err := store.AddLinks("p1", "Alpha", []TargetLink{
+		{TargetPagePath: "missing/zeta", State: LinkBroken},
+		{TargetPagePath: "exists/ok", State: LinkResolved},
+	}); err != nil {
+		t.Fatalf("AddLinks(p1) failed: %v", err)
+	}
+	if err := store.AddLinks("p2", "Beta", []TargetLink{
+		{TargetPagePath: "missing/alpha", State: LinkBroken},
+	}); err != nil {
+		t.Fatalf("AddLinks(p2) failed: %v", err)
+	}
+	if err := store.AddLinks("p3", "Gamma", []TargetLink{
+		{TargetPagePath: "wikilink:Ghost", State: LinkBroken},
+	}); err != nil {
+		t.Fatalf("AddLinks(p3) failed: %v", err)
+	}
+
+	broken, err := store.GetBrokenLinks()
+	if err != nil {
+		t.Fatalf("GetBrokenLinks failed: %v", err)
+	}
+
+	want := []BrokenLink{
+		{FromPageID: "p2", FromTitle: "Beta", ToPath: "missing/alpha"},
+		{FromPageID: "p1", FromTitle: "Alpha", ToPath: "missing/zeta"},
+		{FromPageID: "p3", FromTitle: "Gamma", ToPath: "wikilink:Ghost"},
+	}
+	if len(broken) != len(want) {
+		t.Fatalf("expected %d broken links, got %d: %+v", len(want), len(broken), broken)
+	}
+	for i, w := range want {
+		if broken[i] != w {
+			t.Errorf("broken[%d] = %+v, want %+v", i, broken[i], w)
+		}
+	}
+}
+
+func TestLinksStore_GetBrokenLinks_EmptyWhenNoneBroken(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := NewLinksStore(tmp)
+	if err != nil {
+		t.Fatalf("NewLinksStore err: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	if err := store.AddLinks("p1", "Alpha", []TargetLink{
+		{TargetPagePath: "exists/ok", State: LinkResolved},
+	}); err != nil {
+		t.Fatalf("AddLinks(p1) failed: %v", err)
+	}
+
+	broken, err := store.GetBrokenLinks()
+	if err != nil {
+		t.Fatalf("GetBrokenLinks failed: %v", err)
+	}
+	if len(broken) != 0 {
+		t.Fatalf("expected no broken links, got %+v", broken)
+	}
+}
+
+// A links.db from before the 3-state column (boolean `broken`) is dropped and
+// recreated: the index is rebuilt from the markdown files on every startup.
+func TestLinksStore_LegacyBrokenColumn_IsRecreatedWithStateColumn(t *testing.T) {
+	dir := t.TempDir()
+
+	legacy, err := sql.Open("sqlite", linksDatabasePath(dir, "links.db"))
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE links (from_page_id TEXT NOT NULL, to_page_id TEXT, to_path TEXT NOT NULL, from_title TEXT, broken INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (from_page_id, to_path));
+		CREATE INDEX idx_links_broken ON links(broken);
+		INSERT INTO links VALUES ('p1', NULL, 'wikilink:Kafka', 'P1', 1);
+	`); err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	_ = legacy.Close()
+
+	store, err := NewLinksStore(dir)
+	if err != nil {
+		t.Fatalf("NewLinksStore on legacy db failed: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	if err := store.AddLinks("p1", "P1", []TargetLink{{TargetPagePath: "wikilink:Kafka", State: LinkAmbiguous}}); err != nil {
+		t.Fatalf("AddLinks after migration failed: %v", err)
+	}
+	outs, err := store.GetOutgoingLinksForPage("p1")
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if len(outs) != 1 || outs[0].State != LinkAmbiguous {
+		t.Fatalf("expected exactly the freshly added ambiguous row, got %#v", outs)
+	}
+}
+
+// links.db is a derived index (ADR-0001): a corrupt file is deleted with its
+// sidecars and rebuilt empty, unlike real-state stores (ADR-0013).
+func TestNewLinksStore_CorruptFile_Rebuilds(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "links.db")
+	test_utils.WriteCorruptSQLiteDB(t, dbPath)
+
+	store, err := NewLinksStore(dir)
+	if err != nil {
+		t.Fatalf("NewLinksStore: %v", err)
+	}
+	defer test_utils.WrapCloseWithErrorCheck(store.Close, t)
+
+	var tables int
+	if err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table'`).Scan(&tables); err != nil {
+		t.Fatalf("query rebuilt database: %v", err)
+	}
+	if tables == 0 {
+		t.Fatal("expected the rebuilt links.db to have its schema")
+	}
+	test_utils.AssertNoSQLiteQuarantine(t, dbPath)
 }

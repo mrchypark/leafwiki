@@ -108,18 +108,45 @@ http://localhost:5173
 Before submitting the code execute `npm run format` in the `ui/leafwiki-ui` directory.
 If you change the e2e tests, please also run `npm run format` in the `e2e` directory.
 
+Translating the UI or adding a language? See [docs/i18n.md](docs/i18n.md).
+How the code is structured: [docs/development/](docs/development/README.md).
+
 ---
 ## Pull request guidelines
 
 To keep reviews efficient, please follow these guidelines:
 
 - **Every PR must reference an existing issue** (e.g. `Fixes #123`). PRs without a linked issue — or that weren't discussed on the issue first — may be closed and asked to go through the [issue process](#picking-up-an-issue) instead.
-- Keep pull requests **small and focused**
+- Keep pull requests **small and focused** ([size limits](./docs/development/conventions.md#pull-requests))
 - Clearly **describe the change**
 - Avoid unrelated formatting changes
 - Update documentation if necessary
 
 PRs that combine multiple unrelated changes may be asked to split.
+
+---
+
+## AI-assisted contributions
+
+Using AI coding agents is fine. The rules are the same as for any other contribution, plus a few
+that matter more when code is generated:
+
+- **You are the author.** You must understand every line you submit and be able to explain and
+  change it during review. "The AI wrote it" is not an answer to a review question.
+- **Say so in the PR.** Tick the AI box in the PR template and name the tool. This doesn't make a
+  PR less welcome; it helps review.
+- **Test it yourself, by hand.** Generated code often passes its own tests and still does the
+  wrong thing. For **UI changes**, follow [rule 11](./docs/development/rules.md#tests) and tick
+  both UI boxes in the PR template. A screenshot or short recording speeds up review but is not
+  required. UI PRs without the boxes ticked will be asked to test before review.
+- **Same scope rules.** One focused change per PR, linked to an issue. No drive-by refactors or
+  reformatting the agent decided to do on the side.
+- **Don't paste unverified AI output into issues or security reports.** Reproduce the problem
+  yourself first.
+
+The [rules](./docs/development/rules.md) are the same for people and agents.
+[AGENTS.md](./AGENTS.md) points agents at them; most tools read it automatically. Developer docs (architecture, source map, processes,
+ADRs) are in [docs/development/](./docs/development/README.md).
 
 ---
 
@@ -180,13 +207,9 @@ Examples include:
 
 ## Code style
 
-Please follow the existing project style.
-
-General guidelines:
-
-- prefer clarity over cleverness
-- avoid introducing unnecessary abstractions
-- keep the code easy to understand and maintain
+Please follow the existing project style: the [rules](./docs/development/rules.md) first, the
+[conventions](./docs/development/conventions.md) for details. In short, prefer clarity over
+cleverness and avoid abstractions the code doesn't need yet.
 
 ---
 

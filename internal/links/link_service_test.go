@@ -192,8 +192,8 @@ func TestResolveTargetLinks_ReturnsBrokenTargetsForNonExisting(t *testing.T) {
 		t.Fatalf("expected 2 target links, got %d: %#v", len(targets), targets)
 	}
 
-	if targets[0].Broken != true {
-		t.Errorf("targets[0].Broken = %v, want true", targets[0].Broken)
+	if targets[0].State != LinkBroken {
+		t.Errorf("targets[0].Broken = %v, want LinkBroken", targets[0].State)
 	}
 	if targets[0].TargetPageID != "" {
 		t.Errorf("targets[0].TargetPageID = %q, want empty", targets[0].TargetPageID)
@@ -202,8 +202,8 @@ func TestResolveTargetLinks_ReturnsBrokenTargetsForNonExisting(t *testing.T) {
 		t.Errorf("targets[0].TargetPagePath = %q, want %q", targets[0].TargetPagePath, "/docs/page1/does-not-exist")
 	}
 
-	if targets[1].Broken != true {
-		t.Errorf("targets[1].Broken = %v, want true", targets[1].Broken)
+	if targets[1].State != LinkBroken {
+		t.Errorf("targets[1].Broken = %v, want LinkBroken", targets[1].State)
 	}
 	if targets[1].TargetPageID != "" {
 		t.Errorf("targets[1].TargetPageID = %q, want empty", targets[1].TargetPageID)
@@ -270,7 +270,7 @@ func createSimpleLinkedPages(t *testing.T, ts *tree.TreeService) (pageAID, pageB
 		t.Fatalf("GetPage a failed: %v", err)
 	}
 	contentA := "Link to B: [Go to B](/b)"
-	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: aPage.ID, Title: aPage.Title, Slug: aPage.Slug, Content: &contentA, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdatePage a failed: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func createSimpleLinkedPages(t *testing.T, ts *tree.TreeService) (pageAID, pageB
 		t.Fatalf("GetPage b failed: %v", err)
 	}
 	contentB := "# Page B\nNo outgoing links."
-	if err := ts.UpdateNode("system", bPage.ID, bPage.Title, bPage.Slug, &contentB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: bPage.ID, Title: bPage.Title, Slug: bPage.Slug, Content: &contentB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdatePage b failed: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestLinkService_IndexAllPages_ReplacesExistingLinks(t *testing.T) {
 		t.Fatalf("GetPage a failed: %v", err)
 	}
 	var noLinks = "No more links."
-	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &noLinks, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: aPage.ID, Title: aPage.Title, Slug: aPage.Slug, Content: &noLinks, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdatePage a failed: %v", err)
 	}
 
@@ -453,7 +453,7 @@ func TestLinkService_GetOutgoingLinksForPage_NoOutgoings(t *testing.T) {
 	}
 
 	var noLinks = "Just some text, no links."
-	if err := ts.UpdateNode("system", page.ID, page.Title, page.Slug, &noLinks, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: page.ID, Title: page.Title, Slug: page.Slug, Content: &noLinks, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode lonely failed: %v", err)
 	}
 
@@ -495,7 +495,7 @@ func TestLinkService_IndexAllPages_IgnoresAssetLinksInOutgoingAndBrokenSets(t *t
 		t.Fatalf("GetPage a failed: %v", err)
 	}
 	contentA := "Asset: [Manual](/assets/abc/manual.pdf)\nPage: [Go](/b)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &contentA, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode a failed: %v", err)
 	}
 
@@ -539,7 +539,7 @@ func TestToOutgoingResult_MapsOutgoingToResultItems(t *testing.T) {
 		t.Fatalf("tree root is nil")
 	}
 
-	outgoings := []Outgoing{{FromPageID: page1ID, ToPageID: page2ID, ToPath: "/docs/page2", Broken: false, FromTitle: "Page 1"}}
+	outgoings := []Outgoing{{FromPageID: page1ID, ToPageID: page2ID, ToPath: "/docs/page2", State: LinkResolved, FromTitle: "Page 1"}}
 
 	result := toOutgoingLinkResult(ts, outgoings)
 	if result == nil {
@@ -580,7 +580,7 @@ func TestToOutgoingResult_WikilinkSentinelDisplaysPlainTitle(t *testing.T) {
 	outgoings := []Outgoing{{
 		FromPageID: page1ID,
 		ToPath:     wikilinkSentinel("Kafka"),
-		Broken:     true,
+		State:      LinkBroken,
 		FromTitle:  "Page 1",
 	}}
 
@@ -618,7 +618,7 @@ func TestLinkService_LateCreatedTarget_BecomesResolvedAfterReindex(t *testing.T)
 		t.Fatalf("GetPage a failed: %v", err)
 	}
 	var linkToB = "Link to B: [Go](/b)"
-	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: aPage.ID, Title: aPage.Title, Slug: aPage.Slug, Content: &linkToB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode a failed: %v", err)
 	}
 
@@ -654,7 +654,7 @@ func TestLinkService_LateCreatedTarget_BecomesResolvedAfterReindex(t *testing.T)
 		t.Fatalf("GetPage b failed: %v", err)
 	}
 	var pageBContent = "# Page B"
-	if err := ts.UpdateNode("system", bPage.ID, bPage.Title, bPage.Slug, &pageBContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: bPage.ID, Title: bPage.Title, Slug: bPage.Slug, Content: &pageBContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode b failed: %v", err)
 	}
 
@@ -705,7 +705,7 @@ func TestLinkService_HealOnPageCreate_ResolvesBrokenLinksWithoutReindex(t *testi
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	var linkToB = "Link to B: [Go](/b)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -804,7 +804,7 @@ func TestLinksStore_GetBrokenIncomingForPath_ReturnsBrokenLinks(t *testing.T) {
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	var linkToMissing = "Link: [Missing](/nonexistent)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToMissing, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -812,7 +812,7 @@ func TestLinksStore_GetBrokenIncomingForPath_ReturnsBrokenLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPage B failed: %v", err)
 	}
-	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageB.ID, Title: pageB.Title, Slug: pageB.Slug, Content: &linkToMissing, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode B failed: %v", err)
 	}
 
@@ -822,7 +822,7 @@ func TestLinksStore_GetBrokenIncomingForPath_ReturnsBrokenLinks(t *testing.T) {
 		t.Fatalf("GetPage C failed: %v", err)
 	}
 	var linkToOther = "Link: [Other](/other-missing)"
-	if err := ts.UpdateNode("system", pageC.ID, pageC.Title, pageC.Slug, &linkToOther, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageC.ID, Title: pageC.Title, Slug: pageC.Slug, Content: &linkToOther, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode C failed: %v", err)
 	}
 
@@ -867,6 +867,56 @@ func TestLinksStore_GetBrokenIncomingForPath_ReturnsBrokenLinks(t *testing.T) {
 	}
 }
 
+func TestLinkService_GetBrokenLinks_ReturnsBrokenLinksWithResolvedFromPath(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	sectionIDPtr, err := ts.CreateNode("system", nil, "Docs", "docs", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode docs failed: %v", err)
+	}
+	// Creating a child under "docs" auto-converts it to a section.
+	aIDPtr, err := ts.CreateNode("system", sectionIDPtr, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	linkToMissing := "Link: [Missing](/nonexistent)"
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToMissing, ExpectedVersion: tree.VersionUnchecked}); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	broken, err := svc.GetBrokenLinks()
+	if err != nil {
+		t.Fatalf("GetBrokenLinks failed: %v", err)
+	}
+
+	if len(broken) != 1 {
+		t.Fatalf("expected 1 broken link, got %d: %+v", len(broken), broken)
+	}
+	got := broken[0]
+	if got.FromPageID != pageAID {
+		t.Errorf("FromPageID = %q, want %q", got.FromPageID, pageAID)
+	}
+	if got.FromPath != "/docs/a" {
+		t.Errorf("FromPath = %q, want %q", got.FromPath, "/docs/a")
+	}
+	if got.FromTitle != "Page A" {
+		t.Errorf("FromTitle = %q, want %q", got.FromTitle, "Page A")
+	}
+	if got.ToPath != "/nonexistent" {
+		t.Errorf("ToPath = %q, want %q", got.ToPath, "/nonexistent")
+	}
+}
+
 func TestLinksStore_GetBrokenIncomingForPath_FiltersByPath(t *testing.T) {
 	svc, ts, store := setupLinkService(t)
 
@@ -888,7 +938,7 @@ func TestLinksStore_GetBrokenIncomingForPath_FiltersByPath(t *testing.T) {
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	var linkToMissing1 = "Link: [Missing1](/missing1)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToMissing1, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToMissing1, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -898,7 +948,7 @@ func TestLinksStore_GetBrokenIncomingForPath_FiltersByPath(t *testing.T) {
 		t.Fatalf("GetPage B failed: %v", err)
 	}
 	var linkToMissing2 = "Link: [Missing2](/missing2)"
-	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &linkToMissing2, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageB.ID, Title: pageB.Title, Slug: pageB.Slug, Content: &linkToMissing2, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode B failed: %v", err)
 	}
 
@@ -953,7 +1003,7 @@ func TestLinksStore_GetBrokenIncomingForPath_EmptyWhenNoBrokenLinks(t *testing.T
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	var linkToB = "Link: [To B](/b)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -1009,7 +1059,7 @@ func TestLinksStore_GetBrokenIncomingForPath_OrdersByFromTitle(t *testing.T) {
 			t.Fatalf("GetPage(%s) failed: %v", id, err)
 		}
 		var linkToMissing = "Link: [Missing](/missing)"
-		if err := ts.UpdateNode("system", page.ID, page.Title, page.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+		if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: page.ID, Title: page.Title, Slug: page.Slug, Content: &linkToMissing, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 			t.Fatalf("UpdateNode(%s) failed: %v", id, err)
 		}
 	}
@@ -1052,7 +1102,7 @@ func TestLinksStore_GetBrokenIncomingForPath_OnlyReturnsBrokenNotResolved(t *tes
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	var linkToB = "Link: [To B](/b)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &linkToB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -1082,7 +1132,7 @@ func TestLinksStore_GetBrokenIncomingForPath_OnlyReturnsBrokenNotResolved(t *tes
 		t.Fatalf("GetPage B failed: %v", err)
 	}
 	var contentB = "# Page B"
-	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &contentB, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageB.ID, Title: pageB.Title, Slug: pageB.Slug, Content: &contentB, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode B failed: %v", err)
 	}
 
@@ -1133,7 +1183,7 @@ func TestLinkService_UpdateLinksAndHealForPages_UpdatesAndHealsMultiplePages(t *
 		t.Fatalf("GetPage A failed: %v", err)
 	}
 	contentA := "Link: [B](/b)"
-	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageA.ID, Title: pageA.Title, Slug: pageA.Slug, Content: &contentA, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode A failed: %v", err)
 	}
 
@@ -1142,7 +1192,7 @@ func TestLinkService_UpdateLinksAndHealForPages_UpdatesAndHealsMultiplePages(t *
 		t.Fatalf("GetPage C failed: %v", err)
 	}
 	contentC := "Link: [D](/d)"
-	if err := ts.UpdateNode("system", pageC.ID, pageC.Title, pageC.Slug, &contentC, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: pageC.ID, Title: pageC.Title, Slug: pageC.Slug, Content: &contentC, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode C failed: %v", err)
 	}
 
@@ -1221,7 +1271,7 @@ func TestLinkService_UpdateLinksAndHealForPages_ReindexesOutgoingForSourcePages(
 		t.Fatalf("GetPage source failed: %v", err)
 	}
 	oldContent := "Link: [Old](/old-target)"
-	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &oldContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: source.ID, Title: source.Title, Slug: source.Slug, Content: &oldContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode source failed: %v", err)
 	}
 
@@ -1236,7 +1286,7 @@ func TestLinkService_UpdateLinksAndHealForPages_ReindexesOutgoingForSourcePages(
 	newTargetID := *newTargetIDPtr
 
 	updatedContent := "Link: [New](/new-target)"
-	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: source.ID, Title: source.Title, Slug: source.Slug, Content: &updatedContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode source (rewrite) failed: %v", err)
 	}
 
@@ -1368,7 +1418,7 @@ func TestResolveWikiLinkTargets_SingleTitleMatch(t *testing.T) {
 	if targets[0].TargetPageID != page1ID {
 		t.Errorf("TargetPageID = %q, want %q", targets[0].TargetPageID, page1ID)
 	}
-	if targets[0].Broken {
+	if targets[0].State != LinkResolved {
 		t.Errorf("expected resolved link, got broken")
 	}
 }
@@ -1380,7 +1430,7 @@ func TestResolveWikiLinkTargets_NoMatch_ReturnsBroken(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkBroken {
 		t.Errorf("expected broken link for unmatched title")
 	}
 }
@@ -1409,7 +1459,7 @@ func TestResolveWikiLinkTargets_AmbiguousTitle_ReturnsBroken(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkAmbiguous {
 		t.Errorf("expected broken link for ambiguous title")
 	}
 }
@@ -1424,7 +1474,7 @@ func TestResolveWikiLinkTargets_PathHint_Resolved(t *testing.T) {
 	if targets[0].TargetPageID != page1ID {
 		t.Errorf("TargetPageID = %q, want %q", targets[0].TargetPageID, page1ID)
 	}
-	if targets[0].Broken {
+	if targets[0].State != LinkResolved {
 		t.Errorf("expected resolved path hint, got broken")
 	}
 }
@@ -1436,7 +1486,7 @@ func TestResolveWikiLinkTargets_PathHint_BrokenWhenNotFound(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkBroken {
 		t.Errorf("expected broken link for missing path hint")
 	}
 }
@@ -1448,7 +1498,7 @@ func TestResolveWikiLinkTargets_BrokenSentinelFormat(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkBroken {
 		t.Errorf("expected broken link")
 	}
 	want := wikilinkSentinel("Nonexistent Page")
@@ -1474,7 +1524,7 @@ func TestResolveWikiLinkTargets_SlashTitleFallback(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if targets[0].Broken {
+	if targets[0].State != LinkResolved {
 		t.Errorf("expected resolved link via title fallback, got broken")
 	}
 	if targets[0].TargetPageID != *idPtr {
@@ -1518,7 +1568,7 @@ func TestResolveWikiLinkTargets_SlashTitle_PrefersTitleOverCollidingRoutePath(t 
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if targets[0].Broken {
+	if targets[0].State != LinkResolved {
 		t.Fatalf("expected resolved link to the titled page, got broken")
 	}
 	if targets[0].TargetPageID != *titledIDPtr {
@@ -1547,14 +1597,14 @@ func TestResolveWikiLinkTargets_AmbiguousSlashTitle_ReturnsBroken(t *testing.T) 
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkAmbiguous {
 		t.Errorf("expected broken link for ambiguous slash-title match")
 	}
 }
 
-// ─── HealWikiLinksForPage ────────────────────────────────────────────────────
+// ─── ReconcileTitle ────────────────────────────────────────────────────
 
-func TestLinkService_HealWikiLinksForPage_HealsAfterPageCreation(t *testing.T) {
+func TestLinkService_ReconcileTitle_HealsAfterPageCreation(t *testing.T) {
 	svc, ts, _ := setupLinkService(t)
 
 	// Page A contains [[Target Page]] which does not exist yet.
@@ -1589,9 +1639,9 @@ func TestLinkService_HealWikiLinksForPage_HealsAfterPageCreation(t *testing.T) {
 		t.Fatalf("GetPage target-page: %v", err)
 	}
 
-	// Healing via HealWikiLinksForPage.
-	if err := svc.HealWikiLinksForPage(targetPage); err != nil {
-		t.Fatalf("HealWikiLinksForPage: %v", err)
+	// Healing via ReconcileTitle.
+	if err := svc.ReconcileTitle(targetPage.Title); err != nil {
+		t.Fatalf("ReconcileTitle: %v", err)
 	}
 
 	// Outgoing should now be resolved.
@@ -1607,9 +1657,9 @@ func TestLinkService_HealWikiLinksForPage_HealsAfterPageCreation(t *testing.T) {
 	}
 }
 
-// Fix 2: HealWikiLinksForTitle uses COLLATE NOCASE, so [[notes]] heals
+// Fix 2: ReconcileTitle matches case-insensitively, so [[notes]] heals
 // when a page titled "Notes" is created.
-func TestLinkService_HealWikiLinksForPage_CaseInsensitive(t *testing.T) {
+func TestLinkService_ReconcileTitle_CaseInsensitive(t *testing.T) {
 	svc, ts, _ := setupLinkService(t)
 
 	pageAIDPtr, err := ts.CreateNode("system", nil, "Page A", "page-a", pageNodeKind())
@@ -1635,8 +1685,8 @@ func TestLinkService_HealWikiLinksForPage_CaseInsensitive(t *testing.T) {
 		t.Fatalf("GetPage notes: %v", err)
 	}
 
-	if err := svc.HealWikiLinksForPage(targetPage); err != nil {
-		t.Fatalf("HealWikiLinksForPage: %v", err)
+	if err := svc.ReconcileTitle(targetPage.Title); err != nil {
+		t.Fatalf("ReconcileTitle: %v", err)
 	}
 
 	out, err := svc.GetOutgoingLinksForPage(*pageAIDPtr)
@@ -1648,9 +1698,10 @@ func TestLinkService_HealWikiLinksForPage_CaseInsensitive(t *testing.T) {
 	}
 }
 
-// Fix 3: Sentinel paths are skipped in rewriteResolvedTargets so they are
-// not mangled into "/wikilink:..." route paths during rename refactors.
-func TestRewriteResolvedTargets_SkipsWikilinkSentinels(t *testing.T) {
+// Fix 3: Wiki-link sentinels are never mangled into "/wikilink:..." route
+// paths during rename refactors; they are re-resolved by title and stay in the
+// result, otherwise ReplaceLinksAndHeal would drop their index rows.
+func TestRewriteResolvedTargets_KeepsWikilinkSentinelsUnmangled(t *testing.T) {
 	ts, page1ID, _ := setupTreeForLinksTest(t)
 
 	page1, err := ts.GetPage(page1ID)
@@ -1659,18 +1710,27 @@ func TestRewriteResolvedTargets_SkipsWikilinkSentinels(t *testing.T) {
 	}
 
 	outgoings := []Outgoing{
-		{FromPageID: page1ID, ToPath: wikilinkSentinel("Missing Page"), Broken: true},
-		{FromPageID: page1ID, ToPath: "/docs/page1", Broken: false, ToPageID: page1ID},
+		{FromPageID: page1ID, ToPath: wikilinkSentinel("Missing Page"), State: LinkBroken},
+		{FromPageID: page1ID, ToPath: "/docs/page1", State: LinkResolved, ToPageID: page1ID},
 	}
 	rules := []RewriteRule{{OldPath: "/docs", NewPath: "/archive"}}
 
 	result := rewriteResolvedTargets(page1.CalculatePath(), outgoings, rules, ts)
 
-	// Only the real path link should be in the result; sentinel is skipped.
-	for _, r := range result {
-		if strings.HasPrefix(r.TargetPagePath, "wikilink:") || strings.HasPrefix(r.TargetPagePath, "/wikilink:") {
-			t.Errorf("sentinel path must not appear in rewrite result, got %q", r.TargetPagePath)
+	var sentinel *TargetLink
+	for i, r := range result {
+		if strings.HasPrefix(r.TargetPagePath, "/wikilink:") {
+			t.Errorf("sentinel mangled into a route path: %q", r.TargetPagePath)
 		}
+		if r.TargetPagePath == wikilinkSentinel("Missing Page") {
+			sentinel = &result[i]
+		}
+	}
+	if sentinel == nil {
+		t.Fatalf("sentinel must be kept in the rewrite result, got %#v", result)
+	}
+	if sentinel.State != LinkBroken {
+		t.Errorf("sentinel state = %v, want broken", sentinel.State)
 	}
 }
 
@@ -1683,7 +1743,7 @@ func TestResolveWikiLinkTargets_PathHint_BrokenStoresAsRoutePath(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(targets))
 	}
-	if !targets[0].Broken {
+	if targets[0].State != LinkBroken {
 		t.Errorf("expected broken link")
 	}
 	if IsWikilinkSentinel(targets[0].TargetPagePath) {
@@ -1822,11 +1882,11 @@ func TestLinkService_AmbiguousWikiLinksAreNotBrokenInSourceStatus(t *testing.T) 
 	}
 }
 
-// ─── HealWikiLinksForPage ambiguity guard ─────────────────────────────────────
+// ─── ReconcileTitle ambiguity guard ─────────────────────────────────────
 
-// Gap 3: when N>1 pages share a title, HealWikiLinksForPage must not heal
+// Gap 3: when N>1 pages share a title, ReconcileTitle must not heal
 // broken [[Title]] sentinels, because the link is still ambiguous.
-func TestLinkService_HealWikiLinksForPage_DoesNotHealWhenAmbiguous(t *testing.T) {
+func TestLinkService_ReconcileTitle_StaysAmbiguousWhenSeveralPagesRemain(t *testing.T) {
 	svc, ts, _ := setupLinkService(t)
 
 	// Two "Kafka" pages already exist.
@@ -1857,11 +1917,11 @@ func TestLinkService_HealWikiLinksForPage_DoesNotHealWhenAmbiguous(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetOutgoingLinksForPage: %v", err)
 	}
-	if out.Count != 1 || !out.Outgoings[0].Broken {
-		t.Fatalf("precondition: expected [[Kafka]] to be a broken sentinel with 2 pages, got %+v", out)
+	if out.Count != 1 || out.Outgoings[0].Broken || out.Outgoings[0].ToPageID != "" {
+		t.Fatalf("precondition: expected [[Kafka]] to be an ambiguous (unresolved, not broken) sentinel with 2 pages, got %+v", out)
 	}
 
-	// Create a third "Kafka" page and call HealWikiLinksForPage for it.
+	// Create a third "Kafka" page and call ReconcileTitle for it.
 	// The sentinel must stay broken because 3 pages share the title.
 	kafka3IDPtr, err := ts.CreateNode("system", nil, "Kafka", "kafka3", pageNodeKind())
 	if err != nil {
@@ -1872,8 +1932,8 @@ func TestLinkService_HealWikiLinksForPage_DoesNotHealWhenAmbiguous(t *testing.T)
 		t.Fatalf("GetPage kafka3: %v", err)
 	}
 	_ = kafka2IDPtr
-	if err := svc.HealWikiLinksForPage(kafka3); err != nil {
-		t.Fatalf("HealWikiLinksForPage: %v", err)
+	if err := svc.ReconcileTitle(kafka3.Title); err != nil {
+		t.Fatalf("ReconcileTitle: %v", err)
 	}
 
 	out, err = svc.GetOutgoingLinksForPage(*sourceIDPtr)
@@ -1883,7 +1943,7 @@ func TestLinkService_HealWikiLinksForPage_DoesNotHealWhenAmbiguous(t *testing.T)
 	if out.Count != 1 {
 		t.Fatalf("expected 1 outgoing, got %d", out.Count)
 	}
-	if !out.Outgoings[0].Broken {
-		t.Fatalf("[[Kafka]] should remain broken/ambiguous after 3rd Kafka page created, but was healed to %q", out.Outgoings[0].ToPath)
+	if out.Outgoings[0].Broken || out.Outgoings[0].ToPageID != "" {
+		t.Fatalf("[[Kafka]] should remain ambiguous after 3rd Kafka page created, got %+v", out.Outgoings[0])
 	}
 }

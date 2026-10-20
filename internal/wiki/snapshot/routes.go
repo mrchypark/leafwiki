@@ -10,7 +10,6 @@ import (
 	coreauth "github.com/perber/wiki/internal/core/auth"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 	snapshotSvc "github.com/perber/wiki/internal/snapshot"
 )
 
@@ -36,12 +35,7 @@ func NewRoutes(manager *snapshotSvc.Manager, scheduler *snapshotSvc.Scheduler, a
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	adminGroup := authGroup.Group("/admin")
 	adminGroup.Use(authmw.RequireAdmin(opts.AuthDisabled))
@@ -49,7 +43,9 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	adminGroup.GET("/snapshot/status", r.handleStatus)
 	adminGroup.GET("/snapshot", r.handleList)
 	adminGroup.POST("/snapshot", r.handleTrigger)
-	adminGroup.GET("/snapshot/:id/download", r.handleDownload)
+	// The ZIP contains users.db and api_keys.db (password hashes, TOTP
+	// secrets), so downloading it is browser-session only.
+	adminGroup.GET("/snapshot/:id/download", authmw.RequireCookieSession(), r.handleDownload)
 	adminGroup.DELETE("/snapshot/:id", r.handleDelete)
 }
 

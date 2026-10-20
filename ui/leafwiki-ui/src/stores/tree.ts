@@ -8,7 +8,7 @@ import {
 import i18next from '@/lib/i18n'
 import { FlatPageSearchItem, buildFlatPageSearchItems } from '@/lib/pageSearch'
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import { useConfigStore } from './config'
 import { useSessionStore } from './session'
 
@@ -344,6 +344,7 @@ export const useTreeStore = create<TreeStore>()(
     }),
     {
       name: 'leafwiki-tree-open-node-ids',
+      storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({
         openNodeIds: state.openNodeIds,
       }),

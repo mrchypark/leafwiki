@@ -1,7 +1,10 @@
 import { TooltipWrapper } from '@/components/TooltipWrapper'
 import { TreeViewActionButton } from '@/features/tree/TreeViewActionButton'
 import { NODE_KIND_SECTION, PageNode } from '@/lib/api/pages'
-import { DIALOG_ADD_PAGE } from '@/lib/registries'
+import {
+  DIALOG_ADD_PAGE,
+  DIALOG_DELETE_PAGE_CONFIRMATION,
+} from '@/lib/registries'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
 import { buildPendingDraftEditUrl } from '@/lib/routePath'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -18,7 +21,7 @@ import {
   FilePlus,
   FolderPlus,
 } from 'lucide-react'
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useTreeDndStore } from './treeDndStore'
@@ -27,9 +30,16 @@ import TreeNodeActionsMenu from './TreeNodeActionsMenu'
 
 type Props = {
   node: PageNode
+  // True when an ancestor section is collapsed. Such rows are hidden, so
+  // they must not register as drag/drop targets: dnd-kit measures every
+  // registered droppable when a drag starts.
+  inClosedBranch?: boolean
 }
 
-export const TreeNode = React.memo(function TreeNode({ node }: Props) {
+export const TreeNode = React.memo(function TreeNode({
+  node,
+  inClosedBranch = false,
+}: Props) {
   const { t } = useTranslation('viewer')
   const open = useTreeStore((s) => !!s.openNodeIdSet?.[node.id])
   const isStoreActive = useTreeStore((s) => s.activeNodeId === node.id)
@@ -53,6 +63,15 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
           : 'treeActions.draftMarker',
       )
     : ''
+  // Keeps this row visually distinct while the delete confirmation dialog
+  // it opened is still on screen -- the "..." menu that triggered it closes
+  // immediately, which otherwise left the target row indistinguishable
+  // from any other once the dialog appeared.
+  const isDeleteTarget = useDialogsStore(
+    (s) =>
+      s.dialogType === DIALOG_DELETE_PAGE_CONFIRMATION &&
+      s.dialogProps?.pageId === node.id,
+  )
 
   const handleLinkClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (
@@ -75,19 +94,21 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
   const dropZone = useTreeDndStore((s) =>
     s.dropTarget?.nodeId === node.id ? s.dropTarget.zone : null,
   )
+  const dndData = useMemo(() => ({ node }), [node])
+  const dndDisabled = !dndEnabled || inClosedBranch || isDraft
   const {
     setNodeRef: setDragRef,
     listeners,
     isDragging,
   } = useDraggable({
     id: node.id,
-    data: { node },
-    disabled: !dndEnabled || isDraft,
+    data: dndData,
+    disabled: dndDisabled,
   })
   const { setNodeRef: setDropRef } = useDroppable({
     id: node.id,
-    data: { node },
-    disabled: !dndEnabled || isDraft,
+    data: dndData,
+    disabled: dndDisabled,
   })
   const setRowRef = (el: HTMLElement | null) => {
     setDragRef(el)
@@ -113,6 +134,7 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
         <span
           className={clsx('tree-node__title', {
             'tree-node__title--active': isActive,
+            'tree-node__title--delete-target': isDeleteTarget,
           })}
         >
           {node.title || t('treeActions.untitledPage')}
@@ -141,14 +163,16 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
     <>
       <div
         ref={setRowRef}
-        {...(dndEnabled && !isDraft ? listeners : {})}
+        {...(!dndDisabled ? listeners : {})}
         className={clsx('tree-node', {
           'tree-node--active': isActive,
           'tree-node--inactive': !isActive,
           'tree-node--dragging': isDragging,
           'tree-node--drop-inside': dropZone === 'inside',
+          'tree-node--delete-target': isDeleteTarget,
         })}
         data-testid={`tree-node-${node.id}`}
+        data-delete-target={isDeleteTarget ? 'true' : undefined}
         style={{ paddingLeft: indent }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -166,6 +190,7 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
         <div
           className={clsx('tree-node__marker', {
             'tree-node__marker--active': isActive,
+            'tree-node__marker--delete-target': isDeleteTarget,
           })}
           style={{ left: markerOffset }}
         />
@@ -227,7 +252,11 @@ export const TreeNode = React.memo(function TreeNode({ node }: Props) {
       >
         {hasChildren &&
           node.children?.map((child) => (
-            <TreeNode key={child.id} node={child} />
+            <TreeNode
+              key={child.id}
+              node={child}
+              inClosedBranch={inClosedBranch || !open}
+            />
           ))}
       </div>
     </>

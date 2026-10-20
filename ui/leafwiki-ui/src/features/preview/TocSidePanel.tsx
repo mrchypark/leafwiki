@@ -6,6 +6,7 @@ import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { PageAttachment } from '@/lib/api/assets'
 import type { TocEntry } from './extractTocEntries'
+import { tocTitleKey } from './tocTitleKey'
 import { useTocScrollSpy } from './useTocScrollSpy'
 
 type Props = {
@@ -56,7 +57,7 @@ export function TocSidePanel({
           )}
           aria-hidden={collapsed}
         >
-          {entries.length > 0 ? t('toc.onThisPage') : t('toc.downloads')}
+          {t(tocTitleKey(entries.length, downloads.length))}
         </p>
         <button
           type="button"
@@ -109,7 +110,13 @@ export function TocSidePanel({
           <>
             {entries.length > 0 && (
               <li>
-                <p className="page-viewer__toc-panel-title mt-3">
+                <p
+                  className={cn(
+                    'page-viewer__toc-panel-title mt-3',
+                    collapsed && 'page-viewer__toc-panel-hidden',
+                  )}
+                  aria-hidden={collapsed}
+                >
                   {t('toc.downloads')}
                 </p>
               </li>

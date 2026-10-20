@@ -86,15 +86,39 @@ get_version(){
     validate_version
 }
 
+# verify_checksum <file> <url>: compare <file> against the hash published at
+# <url>.sha256. Only the hash field is compared, so checksum files that name
+# the binary with a "releases/" prefix (older releases) work too.
+verify_checksum(){
+    local file="$1" url="$2" expected actual
+    expected=$(wget -qO- "${url}.sha256" | awk '{print $1}')
+    if [[ -z "$expected" ]]; then
+        echo "Error: Could not download checksum from ${url}.sha256" >&2
+        return 1
+    fi
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [[ "$expected" != "$actual" ]]; then
+        echo "Error: Checksum mismatch for $(basename "$file") (expected ${expected}, got ${actual})" >&2
+        return 1
+    fi
+}
+
 download_binary(){
-    wget "${RELEASE_LINK}releases/download/v${VERSION}/leafwiki-v${VERSION}-linux-${ARCH}" || exit 1
-    cp leafwiki-v${VERSION}-linux-${ARCH} $PATH_TO_BINARY
-    rm leafwiki-v${VERSION}-linux-${ARCH}
+    local name="leafwiki-v${VERSION}-linux-${ARCH}"
+    local url="${RELEASE_LINK}releases/download/v${VERSION}/${name}"
+    wget -O "$name" "$url" || exit 1
+    if ! verify_checksum "$name" "$url"; then
+        rm -f "$name"
+        exit 1
+    fi
+    cp "$name" $PATH_TO_BINARY
+    rm "$name"
     chmod +x $PATH_TO_BINARY
 }
 
 check_dependencies "systemctl"
 check_dependencies "wget"
+check_dependencies "sha256sum"
 
 # Check if --non-interactive flag is present
 if [[ "$*" == *"--non-interactive"*  ||  "$*" == *"-non-interactive"* ]]; then
@@ -189,7 +213,7 @@ else
     echo ""
                                     
     echo "========================================"
-    echo "   LeafWiki — Installer"
+    echo "   LeafWiki â€” Installer"
     echo "========================================"
     echo ""
     echo ""
@@ -216,13 +240,13 @@ else
         DATA_DIR="$RESPONSE_DATA_DIR"
     fi
 
-    read -rp "Do you want to enable versioning? (default: n) y/N: " RESPONSE_REVISION
+    read -rp "Do you want to enable revision history? (default: n) y/N: " RESPONSE_REVISION
     if [[ $RESPONSE_REVISION == "y" || $RESPONSE_REVISION == "Y" ]]; then
 
         ENABLE_REVISION="true"
 
         while true; do
-            read -p "Would you specify a max revison number ? (default: $MAX_REVISION_HISTORY) : " RESPONSE_MAX_REVISION
+            read -p "Would you specify a max revision number? (default: $MAX_REVISION_HISTORY): " RESPONSE_MAX_REVISION
             if [[ -z "$RESPONSE_MAX_REVISION" ]]; then
                 break
             elif [[ "$RESPONSE_MAX_REVISION" =~ ^[0-9]+$ ]]; then
@@ -252,7 +276,7 @@ else
     echo "LEAFWIKI_HOST=\"$HOST\"" >> "$ENV_FILE_PATH"
     echo "LEAFWIKI_JWT_SECRET=\"$JWT_SECRET\"" >> "$ENV_FILE_PATH"
     echo "LEAFWIKI_ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> "$ENV_FILE_PATH"
-    echo "LEAFWIKI_ENABLE_REVISION=\"$ENABLE_VERSIONING\"" >> "$ENV_FILE_PATH"
+    echo "LEAFWIKI_ENABLE_REVISION=\"$ENABLE_REVISION\"" >> "$ENV_FILE_PATH"
     echo "LEAFWIKI_MAX_REVISION_HISTORY=\"$MAX_REVISION_HISTORY\"" >> "$ENV_FILE_PATH"
 
 fi

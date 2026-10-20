@@ -26,14 +26,19 @@ import (
 	"github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/email"
 	"github.com/perber/wiki/internal/core/ignore"
+	"github.com/perber/wiki/internal/core/settings"
+	sharedcrypto "github.com/perber/wiki/internal/core/shared/crypto"
 	"github.com/perber/wiki/internal/core/tools"
 	httpinternal "github.com/perber/wiki/internal/http"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
+	"github.com/perber/wiki/internal/publicaccess"
 	"github.com/perber/wiki/internal/restore"
 	"github.com/perber/wiki/internal/snapshot"
+	"github.com/perber/wiki/internal/tocdisplay"
 	"github.com/perber/wiki/internal/wiki"
 	wikibackup "github.com/perber/wiki/internal/wiki/backup"
+	wikiinstancesettings "github.com/perber/wiki/internal/wiki/instancesettings"
 	wikirestore "github.com/perber/wiki/internal/wiki/restore"
 	wikisnapshot "github.com/perber/wiki/internal/wiki/snapshot"
 	"github.com/urfave/cli/v3"
@@ -121,6 +126,9 @@ func main() {
 func runResetAdminPasswordCommand(cfg *serverConfig) error {
 	user, err := tools.ResetAdminPassword(cfg.server.dataDir, cfg.auth.adminUsername, cfg.auth.adminEmail)
 	if err != nil {
+		if msg, ok := corruptDatabaseMessage(err); ok {
+			return fmt.Errorf("password reset failed: %s", msg)
+		}
 		return fmt.Errorf("password reset failed: %w", err)
 	}
 
@@ -135,9 +143,6 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 	basePath := normalizeBasePath(cfg.server.basePath)
 	maxAssetUploadSize := mustParseByteSize(cfg.frontend.maxAssetUploadSize, "max asset upload size")
 	restoreUploadMaxSize := mustParseByteSize(cfg.backup.restoreUploadMaxSize, "restore upload max size")
-
-	// If disable-auth is set, the wiki is public regardless of --public-access.
-	publicAccess := cfg.auth.publicAccess
 
 	logoutURL := cfg.proxy.logoutURL
 	if resolved, usedDeprecated := resolveLogoutURL(logoutURL, cfg.proxy.httpRemoteUserLogoutURL); usedDeprecated {
@@ -197,7 +202,6 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 	}
 
 	if cfg.auth.disableAuth {
-		publicAccess = true
 		slog.Default().Warn("Authentication disabled. Wiki is publicly accessible without authentication.")
 	}
 
@@ -213,6 +217,13 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 		slog.Default().Info("Data directory created", "path", cfg.server.dataDir)
 	}
 
+	publicAccessService := buildPublicAccessService(cmd, cfg)
+
+	tocDisplayService, err := tocdisplay.New(cfg.server.dataDir)
+	if err != nil {
+		fail("Failed to load toc-display configuration", "error", err)
+	}
+
 	if !cfg.auth.disableAuth {
 		if cfg.auth.jwtSecret == "" {
 			fail("JWT secret is required. Set it using --jwt-secret or LEAFWIKI_JWT_SECRET environment variable.")
@@ -226,6 +237,14 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 	var metrics *httpmetrics.HTTPMetrics
 	if cfg.metrics.enableMetrics {
 		metrics = httpmetrics.NewHTTPMetrics(Version)
+	}
+
+	// Initialize git backup before the wiki loads its tree: on first contact with
+	// an existing backup this syncs its content into the data directory, so the
+	// wiki boots with those pages and does not seed a welcome page on top of them.
+	backupManager, err := buildBackupManager(cfg)
+	if err != nil {
+		fail("git backup init failed: %v", err)
 	}
 
 	w, err := wiki.NewWiki(&wiki.WikiOptions{
@@ -258,8 +277,13 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 		Metrics: metrics,
 	})
 	if err != nil {
+		if msg, ok := corruptDatabaseMessage(err); ok {
+			fail(msg, "error", err)
+		}
 		fail("Failed to initialize Wiki", "error", err)
 	}
+
+	w.SetInstanceSettingsRoutes(wikiinstancesettings.NewRoutes(publicAccessService, tocDisplayService, w.AuthService(), slog.Default()))
 
 	// Log .leafwikiignore status
 	rootDir := filepath.Join(cfg.server.dataDir, "root")
@@ -275,40 +299,13 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 		}
 	}()
 
-	// Initialize git backup if enabled
-	var backupScheduler *backup.Scheduler
-	if cfg.backup.gitBackup {
-		if cfg.backup.gitBackupSSHKey != "" && os.Getenv("LEAFWIKI_GIT_BACKUP_SSH_KEY") == "" {
-			slog.Warn("SSH private key passed via --git-backup-ssh-key flag is visible in process listings; prefer the LEAFWIKI_GIT_BACKUP_SSH_KEY environment variable")
-		}
-		if cfg.backup.gitBackupHTTPPassword != "" && os.Getenv("LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD") == "" {
-			slog.Warn("HTTP password passed via --git-backup-http-password flag is visible in process listings; prefer the LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD environment variable")
-		}
-		if strings.HasPrefix(strings.ToLower(cfg.backup.gitBackupRemote), "http://") {
-			slog.Warn("--git-backup-remote uses plain http://; git backup credentials and wiki content are transmitted unencrypted — use https:// unless the remote is on a trusted network")
-		}
-		backupRepo, err := backup.Init(backup.Config{
-			Enabled:           true,
-			RootDir:           filepath.Join(cfg.server.dataDir, "root"),
-			AssetsDir:         filepath.Join(cfg.server.dataDir, "assets"),
-			AuthorName:        cfg.backup.gitBackupAuthorName,
-			AuthorEmail:       cfg.backup.gitBackupAuthorEmail,
-			RemoteURL:         cfg.backup.gitBackupRemote,
-			Branch:            cfg.backup.gitBackupBranch,
-			SSHKeyPath:        cfg.backup.gitBackupSSHKeyPath,
-			SSHKey:            cfg.backup.gitBackupSSHKey,
-			SSHKnownHostsPath: cfg.backup.gitBackupSSHKnownHosts,
-			HTTPUsername:      cfg.backup.gitBackupHTTPUsername,
-			HTTPPassword:      cfg.backup.gitBackupHTTPPassword,
-			Interval:          cfg.backup.gitBackupInterval,
-		})
-		if err != nil {
-			fail("git backup init failed: %v", err)
-		}
-		backupScheduler = backup.NewScheduler(backupRepo)
-		defer backupScheduler.Stop()
-		w.SetBackupRoutes(wikibackup.NewRoutes(backupRepo, backupScheduler, w.AuthService()))
-	}
+	defer backupManager.Stop()
+	// A settings Reconfigure (or the settings-managed manager's own background
+	// boot) can materialize remote content straight onto disk after the wiki's
+	// tree/SQLite index has already loaded — keep the index from going stale by
+	// triggering the same resync used for SIGUSR1/SIGHUP.
+	backupManager.SetOnContentSynced(w.TriggerResyncAsync)
+	w.SetBackupRoutes(wikibackup.NewRoutes(backupManager, w.AuthService()))
 
 	// Initialize full backup snapshots if enabled
 	var writeGate *restore.WriteGate
@@ -325,6 +322,10 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 			BrandingDir:        filepath.Join(cfg.server.dataDir, "branding"),
 			AvatarsDir:         filepath.Join(cfg.server.dataDir, "avatars"),
 			BrandingConfigFile: filepath.Join(cfg.server.dataDir, "branding.json"),
+			SettingsFiles: []string{
+				filepath.Join(cfg.server.dataDir, "public-access.json"),
+				filepath.Join(cfg.server.dataDir, "toc-display.json"),
+			},
 			SchemaFile:         filepath.Join(cfg.server.dataDir, "schema.json"),
 			UsersDBPath:        filepath.Join(cfg.server.dataDir, "users.db"),
 			APIKeysDBPath:      filepath.Join(cfg.server.dataDir, "api_keys.db"),
@@ -348,7 +349,7 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 			APIKeyService:      w.APIKeyService(),
 			Favorites:          w.Favorites(),
 			UserSettings:       w.UserSettingsService(),
-			BrandingService:    w.BrandingService(),
+			Reloadables:        []settings.Reloadable{w.BrandingService(), publicAccessService, tocDisplayService},
 			UserResolver:       w.UserResolver(),
 			TriggerResync:      w.TriggerResyncAsync,
 			MaxUploadSizeBytes: restoreUploadMaxSize,
@@ -361,7 +362,8 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 	}
 
 	router := httpinternal.NewRouter(w.Registrars(), w.FrontendConfig(), httpinternal.RouterOptions{
-		PublicAccess:            publicAccess,
+		PublicAccess:            publicAccessService,
+		AlwaysShowToc:           tocDisplayService,
 		EditorLimit:             cfg.auth.editorLimit,
 		InjectCodeInHeader:      cfg.frontend.injectCodeInHeader,
 		CustomStylesheet:        cfg.frontend.customStylesheet,
@@ -376,7 +378,9 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 		EnableLinkRefactor:      cfg.frontend.enableLinkRefactor,
 		EnableAPIKeyManagement:  cfg.frontend.enableAPIKeyManagement,
 		Metrics:                 metrics,
-		GitBackupEnabled:        cfg.backup.gitBackup,
+		GitBackupEnabled:        backupManager.Enabled(),
+		GitBackupEnvManaged:     backupManager.EnvManaged(),
+		GitBackupConfigured:     backupManager.Configured(),
 		SnapshotEnabled:         cfg.backup.snapshot,
 		SMTPEnabled:             smtpEnabled,
 		TOTPAvailable:           w.TOTPService() != nil,
@@ -412,6 +416,25 @@ func runServerCommand(_ context.Context, cmd *cli.Command, cfg *serverConfig) er
 	}
 
 	return nil
+}
+
+// buildPublicAccessService decides whether "public mode" is pinned by
+// environment configuration or toggleable at runtime from Settings.
+//
+// It is env-managed when --public-access / LEAFWIKI_PUBLIC_ACCESS was supplied
+// explicitly, or when --disable-auth forces public mode on (both cases keep
+// today's behaviour and get a status-only Settings view). Otherwise it is
+// settings-managed, reading its initial value from
+// <data-dir>/public-access.json (absent ⇒ disabled).
+func buildPublicAccessService(cmd *cli.Command, cfg *serverConfig) *publicaccess.Service {
+	if cmd.IsSet("public-access") || cfg.auth.disableAuth {
+		return publicaccess.NewEnvManaged(cfg.auth.publicAccess || cfg.auth.disableAuth)
+	}
+	svc, err := publicaccess.NewSettingsManaged(cfg.server.dataDir)
+	if err != nil {
+		fail("Failed to load public-access configuration", "error", err)
+	}
+	return svc
 }
 
 func runServer(
@@ -669,35 +692,59 @@ func resolveLogoutURL(logoutURL, deprecated string) (resolved string, usedDeprec
 // a private key. An empty remote means local-only backup and needs no
 // credentials at all.
 func validateGitBackupRemote(remote, sshKey, sshKeyPath, httpUsername, httpPassword string) error {
-	if remote == "" {
-		return nil
-	}
-	lower := strings.ToLower(remote)
+	return backup.ValidateRemoteCredentials(remote, sshKey, sshKeyPath, httpUsername, httpPassword)
+}
 
-	switch {
-	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
-		if httpUsername == "" && httpPassword == "" {
-			// Credentials may instead be embedded in the URL
-			// (https://user:token@host/repo.git), which git supports natively.
-			if parsed, err := url.Parse(remote); err == nil && parsed.User != nil {
-				return nil
+// buildBackupManager wires up the git backup Manager in one of two modes:
+//   - env-managed: --git-backup / LEAFWIKI_GIT_BACKUP is set. Config comes from
+//     flags/env and the settings UI is status-only (historical behaviour).
+//   - settings-managed: otherwise. Config lives in <data-dir>/git-backup.json,
+//     written by admins via /settings/backup; the SSH key and HTTP password are
+//     encrypted at rest with a key derived from the JWT secret (plaintext under
+//     --disable-auth, where there is no such secret).
+func buildBackupManager(cfg *serverConfig) (*backup.Manager, error) {
+	rootDir := filepath.Join(cfg.server.dataDir, "root")
+	assetsDir := filepath.Join(cfg.server.dataDir, "assets")
+
+	if !cfg.backup.gitBackup {
+		var box *sharedcrypto.SecretBox
+		if cfg.auth.jwtSecret != "" {
+			if key, err := sharedcrypto.DeriveKey([]byte(cfg.auth.jwtSecret), backup.CredentialsKeyInfo); err == nil {
+				box, _ = sharedcrypto.NewSecretBox(key)
 			}
-			return fmt.Errorf("--git-backup-http-username and --git-backup-http-password are required when --git-backup-remote is an HTTP(S) URL. Use LEAFWIKI_GIT_BACKUP_HTTP_USERNAME or LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD")
 		}
-		if httpUsername == "" || httpPassword == "" {
-			return fmt.Errorf("--git-backup-http-username and --git-backup-http-password must both be set; got only one of them")
-		}
-		return nil
-
-	case strings.HasPrefix(lower, "git@"), strings.HasPrefix(lower, "ssh://"):
-		if sshKey == "" && sshKeyPath == "" {
-			return fmt.Errorf("--git-backup-ssh-key or --git-backup-ssh-key-path is required when --git-backup-remote is set. Use LEAFWIKI_GIT_BACKUP_SSH_KEY or LEAFWIKI_GIT_BACKUP_SSH_KEY_PATH")
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("--git-backup-remote must be an SSH URL (e.g. git@github.com:user/repo.git or ssh://...) or an HTTP(S) URL (e.g. https://github.com/user/repo.git)")
+		return backup.NewSettingsManager(backup.NewConfigStore(cfg.server.dataDir, box), rootDir, assetsDir)
 	}
+
+	if cfg.backup.gitBackupSSHKey != "" && os.Getenv("LEAFWIKI_GIT_BACKUP_SSH_KEY") == "" {
+		slog.Warn("SSH private key passed via --git-backup-ssh-key flag is visible in process listings; prefer the LEAFWIKI_GIT_BACKUP_SSH_KEY environment variable")
+	}
+	if cfg.backup.gitBackupHTTPPassword != "" && os.Getenv("LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD") == "" {
+		slog.Warn("HTTP password passed via --git-backup-http-password flag is visible in process listings; prefer the LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD environment variable")
+	}
+	if strings.HasPrefix(strings.ToLower(cfg.backup.gitBackupRemote), "http://") {
+		slog.Warn("--git-backup-remote uses plain http://; git backup credentials and wiki content are transmitted unencrypted — use https:// unless the remote is on a trusted network")
+	}
+	repo, err := backup.Init(backup.Config{
+		Enabled:           true,
+		RootDir:           rootDir,
+		AssetsDir:         assetsDir,
+		Path:              cfg.backup.gitBackupPath,
+		AuthorName:        cfg.backup.gitBackupAuthorName,
+		AuthorEmail:       cfg.backup.gitBackupAuthorEmail,
+		RemoteURL:         cfg.backup.gitBackupRemote,
+		Branch:            cfg.backup.gitBackupBranch,
+		SSHKeyPath:        cfg.backup.gitBackupSSHKeyPath,
+		SSHKey:            cfg.backup.gitBackupSSHKey,
+		SSHKnownHostsPath: cfg.backup.gitBackupSSHKnownHosts,
+		HTTPUsername:      cfg.backup.gitBackupHTTPUsername,
+		HTTPPassword:      cfg.backup.gitBackupHTTPPassword,
+		Interval:          cfg.backup.gitBackupInterval,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return backup.NewEnvManager(repo, backup.NewScheduler(repo)), nil
 }
 
 func validateRedirectURL(flagName, url string) error {

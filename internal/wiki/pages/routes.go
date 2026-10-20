@@ -14,7 +14,6 @@ import (
 	httpinternal "github.com/perber/wiki/internal/http"
 	"github.com/perber/wiki/internal/http/dto"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 )
 
 const (
@@ -25,87 +24,75 @@ const (
 
 // Routes is the RouteRegistrar for the pages domain.
 type Routes struct {
-	treeService      *tree.TreeService
-	createPage       *CreatePageUseCase
-	updatePage       *UpdatePageUseCase
-	deletePage       *DeletePageUseCase
-	movePage         *MovePageUseCase
-	convertPage      *ConvertPageUseCase
-	copyPage         *CopyPageUseCase
-	getPage          *GetPageUseCase
-	findByPath       *FindByPathUseCase
-	findByTitle      *FindByTitleUseCase
-	lookupPath       *LookupPagePathUseCase
-	resolvePermalink *ResolvePermalinkUseCase
-	sortPages        *SortPagesUseCase
-	ensurePath       *EnsurePathUseCase
-	suggestSlug      *SuggestSlugUseCase
-	previewRefactor  *PreviewPageRefactorUseCase
-	applyRefactor    *ApplyPageRefactorUseCase
-	pinPage          *PinPageUseCase
-	addFavorite      *AddFavoriteUseCase
-	removeFavorite   *RemoveFavoriteUseCase
-	listFavorites    *ListFavoritesUseCase
-	drafts           *draft.Store
-	userResolver     *coreauth.UserResolver
-	authService      *coreauth.AuthService
+	treeService     *tree.TreeService
+	createPage      *CreatePageUseCase
+	updatePage      *UpdatePageUseCase
+	deletePage      *DeletePageUseCase
+	movePage        *MovePageUseCase
+	convertPage     *ConvertPageUseCase
+	copyPage        *CopyPageUseCase
+	queries         *PageQueries
+	sortPages       *SortPagesUseCase
+	ensurePath      *EnsurePathUseCase
+	suggestSlug     *SuggestSlugUseCase
+	previewRefactor *PreviewPageRefactorUseCase
+	applyRefactor   *ApplyPageRefactorUseCase
+	pinPage         *PinPageUseCase
+	addFavorite     *AddFavoriteUseCase
+	removeFavorite  *RemoveFavoriteUseCase
+	listFavorites   *ListFavoritesUseCase
+	drafts          *draft.Store
+	userResolver    *coreauth.UserResolver
+	authService     *coreauth.AuthService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
 type RoutesConfig struct {
-	TreeService      *tree.TreeService
-	CreatePage       *CreatePageUseCase
-	UpdatePage       *UpdatePageUseCase
-	DeletePage       *DeletePageUseCase
-	MovePage         *MovePageUseCase
-	ConvertPage      *ConvertPageUseCase
-	CopyPage         *CopyPageUseCase
-	GetPage          *GetPageUseCase
-	FindByPath       *FindByPathUseCase
-	FindByTitle      *FindByTitleUseCase
-	LookupPath       *LookupPagePathUseCase
-	ResolvePermalink *ResolvePermalinkUseCase
-	SortPages        *SortPagesUseCase
-	EnsurePath       *EnsurePathUseCase
-	SuggestSlug      *SuggestSlugUseCase
-	PreviewRefactor  *PreviewPageRefactorUseCase
-	ApplyRefactor    *ApplyPageRefactorUseCase
-	PinPage          *PinPageUseCase
-	AddFavorite      *AddFavoriteUseCase
-	RemoveFavorite   *RemoveFavoriteUseCase
-	ListFavorites    *ListFavoritesUseCase
-	Drafts           *draft.Store
-	UserResolver     *coreauth.UserResolver
-	AuthService      *coreauth.AuthService
+	TreeService     *tree.TreeService
+	CreatePage      *CreatePageUseCase
+	UpdatePage      *UpdatePageUseCase
+	DeletePage      *DeletePageUseCase
+	MovePage        *MovePageUseCase
+	ConvertPage     *ConvertPageUseCase
+	CopyPage        *CopyPageUseCase
+	Queries         *PageQueries
+	SortPages       *SortPagesUseCase
+	EnsurePath      *EnsurePathUseCase
+	SuggestSlug     *SuggestSlugUseCase
+	PreviewRefactor *PreviewPageRefactorUseCase
+	ApplyRefactor   *ApplyPageRefactorUseCase
+	PinPage         *PinPageUseCase
+	AddFavorite     *AddFavoriteUseCase
+	RemoveFavorite  *RemoveFavoriteUseCase
+	ListFavorites   *ListFavoritesUseCase
+	Drafts          *draft.Store
+	UserResolver    *coreauth.UserResolver
+	AuthService     *coreauth.AuthService
 }
 
 // NewRoutes constructs the pages RouteRegistrar.
 func NewRoutes(cfg RoutesConfig) *Routes {
 	return &Routes{
-		treeService:      cfg.TreeService,
-		createPage:       cfg.CreatePage,
-		updatePage:       cfg.UpdatePage,
-		deletePage:       cfg.DeletePage,
-		movePage:         cfg.MovePage,
-		convertPage:      cfg.ConvertPage,
-		copyPage:         cfg.CopyPage,
-		getPage:          cfg.GetPage,
-		findByPath:       cfg.FindByPath,
-		findByTitle:      cfg.FindByTitle,
-		lookupPath:       cfg.LookupPath,
-		resolvePermalink: cfg.ResolvePermalink,
-		sortPages:        cfg.SortPages,
-		ensurePath:       cfg.EnsurePath,
-		suggestSlug:      cfg.SuggestSlug,
-		previewRefactor:  cfg.PreviewRefactor,
-		applyRefactor:    cfg.ApplyRefactor,
-		pinPage:          cfg.PinPage,
-		addFavorite:      cfg.AddFavorite,
-		removeFavorite:   cfg.RemoveFavorite,
-		listFavorites:    cfg.ListFavorites,
-		drafts:           cfg.Drafts,
-		userResolver:     cfg.UserResolver,
-		authService:      cfg.AuthService,
+		treeService:     cfg.TreeService,
+		createPage:      cfg.CreatePage,
+		updatePage:      cfg.UpdatePage,
+		deletePage:      cfg.DeletePage,
+		movePage:        cfg.MovePage,
+		convertPage:     cfg.ConvertPage,
+		copyPage:        cfg.CopyPage,
+		queries:         cfg.Queries,
+		sortPages:       cfg.SortPages,
+		ensurePath:      cfg.EnsurePath,
+		suggestSlug:     cfg.SuggestSlug,
+		previewRefactor: cfg.PreviewRefactor,
+		applyRefactor:   cfg.ApplyRefactor,
+		pinPage:         cfg.PinPage,
+		addFavorite:     cfg.AddFavorite,
+		removeFavorite:  cfg.RemoveFavorite,
+		listFavorites:   cfg.ListFavorites,
+		drafts:          cfg.Drafts,
+		userResolver:    cfg.UserResolver,
+		authService:     cfg.AuthService,
 	}
 }
 
@@ -113,31 +100,19 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	if opts.PublicAccess {
-		pub := ctx.Base.Group("/api")
-		pub.GET("/tree", r.handleGetTree)
-		pub.GET("/pages/by-path", r.handleGetByPath)
-		pub.GET("/pages/by-title", r.handleFindByTitle)
-		pub.GET("/pages/lookup", r.handleLookupPath)
-		pub.GET("/pages/permalink/:id", r.handleResolvePermalink)
-		pub.GET(pagesIdRoutePath, r.handleGetPage)
-	}
+	// Read routes registered once, gated per request so they can flip between
+	// authenticated-only and public without a restart (see APIReadGroup).
+	readGroup := ctx.APIReadGroup(r.authService)
+	readGroup.GET("/tree", r.handleGetTree)
+	readGroup.GET(pagesIdRoutePath, r.handleGetPage)
+	readGroup.GET("/pages/lookup", r.handleLookupPath)
+	readGroup.GET("/pages/by-path", r.handleGetByPath)
+	readGroup.GET("/pages/by-title", r.handleFindByTitle)
+	readGroup.GET("/pages/permalink/:id", r.handleResolvePermalink)
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
-
-	if !opts.PublicAccess {
-		authGroup.GET("/tree", r.handleGetTree)
-		authGroup.GET(pagesIdRoutePath, r.handleGetPage)
-		authGroup.GET("/pages/lookup", r.handleLookupPath)
-		authGroup.GET("/pages/by-path", r.handleGetByPath)
-		authGroup.GET("/pages/by-title", r.handleFindByTitle)
-		authGroup.GET("/pages/permalink/:id", r.handleResolvePermalink)
-	}
+	// Everything below needs a real authenticated user regardless of public
+	// mode (writes, editor-gated reads, per-user favorites).
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	authGroup.GET("/pages/slug-suggestion", authmw.RequireEditorOrAdmin(), r.handleSuggestSlug)
 	authGroup.POST("/pages", authmw.RequireEditorOrAdmin(), r.handleCreate)
@@ -189,12 +164,12 @@ func (r *Routes) handleGetTree(c *gin.Context) {
 
 func (r *Routes) handleGetPage(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
-	out, err := r.getPage.Execute(c.Request.Context(), GetPageInput{ID: id})
+	page, err := r.queries.GetPage(id)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	r.respondPage(c, http.StatusOK, out.Page)
+	r.respondPage(c, http.StatusOK, page)
 }
 
 func (r *Routes) handleGetByPath(c *gin.Context) {
@@ -203,16 +178,16 @@ func (r *Routes) handleGetByPath(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingPath, "Missing path", "missing path")
 		return
 	}
-	out, err := r.findByPath.Execute(c.Request.Context(), FindByPathInput{RoutePath: routePath})
+	page, err := r.queries.FindByPath(routePath)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
 	depth := 0
-	if out.Page.Kind == tree.NodeKindSection {
+	if page.Kind == tree.NodeKindSection {
 		depth = 1
 	}
-	r.respondPageWithDepth(c, http.StatusOK, out.Page, depth)
+	r.respondPageWithDepth(c, http.StatusOK, page, depth)
 }
 
 func (r *Routes) handleFindByTitle(c *gin.Context) {
@@ -221,18 +196,18 @@ func (r *Routes) handleFindByTitle(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingTitle, "Missing title query parameter", "missing title")
 		return
 	}
-	out := r.findByTitle.Execute(c.Request.Context(), title)
+	out := r.queries.FindByTitle(title)
 	c.JSON(http.StatusOK, out)
 }
 
 func (r *Routes) handleLookupPath(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
-	out, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: path})
+	lookup, err := r.queries.LookupPath(path)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, out.Lookup)
+	c.JSON(http.StatusOK, lookup)
 }
 
 func (r *Routes) handleResolvePermalink(c *gin.Context) {
@@ -241,12 +216,12 @@ func (r *Routes) handleResolvePermalink(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingID, "Page ID is required", "page id is required")
 		return
 	}
-	out, err := r.resolvePermalink.Execute(c.Request.Context(), ResolvePermalinkInput{ID: id})
+	target, err := r.queries.ResolvePermalink(id)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, out.Target)
+	c.JSON(http.StatusOK, target)
 }
 
 func (r *Routes) handleSuggestSlug(c *gin.Context) {
