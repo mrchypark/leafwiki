@@ -6,12 +6,7 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { canManageDrafts } from '@/lib/drafts'
-import { useConfigStore } from '@/stores/config'
-import { useSessionStore } from '@/stores/session'
 import { ChevronDown, ChevronRight, Plus, Tag, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
@@ -20,14 +15,11 @@ import { EditorFrontmatterField } from './frontmatter'
 const METADATA_ALLOWED_HOTKEYS = 'Mod+KeyS Escape'
 
 type PageFrontmatterPanelProps = {
-  draft: boolean
-  effectiveDraft: boolean
   tags: string[]
   fields: EditorFrontmatterField[]
   errors: Record<string, string>
   hasUnsupportedFields: boolean
   onTagsChange: (tags: string[]) => void
-  onDraftChange: (draft: boolean) => void
   onFieldsChange: (fields: EditorFrontmatterField[]) => void
 }
 
@@ -52,20 +44,13 @@ function getFieldValue(field: EditorFrontmatterField) {
 }
 
 export function PageFrontmatterPanel({
-  draft,
-  effectiveDraft,
   tags,
   fields,
   errors,
   hasUnsupportedFields,
   onTagsChange,
-  onDraftChange,
   onFieldsChange,
 }: PageFrontmatterPanelProps) {
-  const authDisabled = useConfigStore((state) => state.authDisabled)
-  const userRole = useSessionStore((state) => state.user?.role)
-  const showDraft = canManageDrafts(authDisabled, userRole)
-  const inheritedDraft = effectiveDraft && !draft
   const { t } = useTranslation('editor')
   const [showInternalFields, setShowInternalFields] = useState(false)
 
@@ -139,15 +124,6 @@ export function PageFrontmatterPanel({
   const hasErrors = Object.keys(errors).length > 0
 
   const summaryParts = [
-    ...(showDraft
-      ? [
-          draft
-            ? t('frontmatterPanel.draft')
-            : inheritedDraft
-              ? t('frontmatterPanel.inheritedDraft')
-              : t('frontmatterPanel.published'),
-        ]
-      : []),
     t('frontmatterPanel.tagCount', { count: normalizedTags.length }),
     t('frontmatterPanel.propertyCount', { count: editableFields.length }),
   ]
@@ -187,28 +163,6 @@ export function PageFrontmatterPanel({
           </AccordionTrigger>
           <AccordionContent className="page-frontmatter-panel__content">
             <div className="page-frontmatter-panel__stack">
-              {showDraft && (
-                <div className="page-frontmatter-panel__row">
-                  <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
-                    {t('frontmatterPanel.visibilityHeading')}
-                  </div>
-                  <div className="page-frontmatter-panel__draft-field">
-                    <Checkbox
-                      id="page-frontmatter-draft"
-                      checked={draft}
-                      onCheckedChange={(checked) =>
-                        onDraftChange(checked === true)
-                      }
-                    />
-                    <Label htmlFor="page-frontmatter-draft">
-                      {inheritedDraft
-                        ? t('frontmatterPanel.keepDraftWhenParentPublished')
-                        : t('frontmatterPanel.draft')}
-                    </Label>
-                  </div>
-                </div>
-              )}
-
               <div className="page-frontmatter-panel__row page-frontmatter-panel__row--tags">
                 <div className="page-frontmatter-panel__section-heading page-frontmatter-panel__section-heading--inline">
                   {t('frontmatterPanel.tagsHeading')}

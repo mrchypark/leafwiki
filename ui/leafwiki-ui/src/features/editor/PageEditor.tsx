@@ -1,49 +1,57 @@
 import Page404 from '@/components/Page404'
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { mapApiError, asApiLocalizedError } from '@/lib/api/errors'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
-import { buildBrowserEditUrl } from '@/lib/routePath'
+import { buildBrowserEditUrl, buildViewUrl } from '@/lib/routePath'
 import { DIALOG_LINK_INSERT } from '@/lib/registries'
 import { getWikiTargetRoutePath } from '@/lib/wikiPath'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
-import { useSessionStore } from '@/stores/session'
-import { useConfigStore } from '@/stores/config'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 import MarkdownEditor, { MarkdownEditorRef } from './MarkdownEditor'
 import { PageFrontmatterPanel } from './PageFrontmatterPanel'
-import {
-  isDirtyState,
-  isPendingEffectivelyDraft,
-  usePageEditorStore,
-} from './pageEditorStore'
+import { usePageEditorStore } from './pageEditorStore'
+import { isDirtyState } from './pageEditorStore'
 import { useAutoSave } from './useAutoSave'
 import useNavigationGuard from './useNavigationGuard'
 import { useToolbarActions } from './useToolbarActions'
 
 export default function PageEditor() {
   const { t } = useTranslation('editor')
-  const { '*': path } = useParams()
+  const { '*': path, draftId } = useParams()
 
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const editorRef = useRef<MarkdownEditorRef>(null)
   const skipNavigationGuardRef = useRef(false)
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false)
   const openDialog = useDialogsStore((s) => s.openDialog)
   const reloadTree = useTreeStore((s) => s.reloadTree)
   const savePage = usePageEditorStore((s) => s.savePage)
   const forceOverwrite = usePageEditorStore((s) => s.forceOverwrite)
   const setContent = usePageEditorStore((s) => s.setContent)
-  const setDraft = usePageEditorStore((s) => s.setDraft)
   const setTags = usePageEditorStore((s) => s.setTags)
   const setFrontmatterFields = usePageEditorStore((s) => s.setFrontmatterFields)
   const loadPageData = usePageEditorStore((s) => s.loadPageData)
+  const loadPendingDraft = usePageEditorStore((s) => s.loadPendingDraft)
+  const isDraft = usePageEditorStore((s) => s.isDraft)
+  const publishDraft = usePageEditorStore((s) => s.publishDraft)
+  const discardDraft = usePageEditorStore((s) => s.discardDraft)
   const initialPage = usePageEditorStore((s) => s.initialPage) // contains the initial page data when loaded
-  const page = usePageEditorStore((s) => s.page)
   const tags = usePageEditorStore((s) => s.tags)
-  const draft = usePageEditorStore((s) => s.draft)
   const frontmatterFields = usePageEditorStore((s) => s.frontmatterFields)
   const frontmatterUnsupported = usePageEditorStore(
     (s) => s.frontmatterUnsupported,
@@ -53,12 +61,9 @@ export default function PageEditor() {
   const error = usePageEditorStore((s) => s.error)
   const openNode = useTreeStore((s) => s.openNode)
   const dirty = usePageEditorStore(isDirtyState)
-  const authDisabled = useConfigStore((s) => s.authDisabled)
-  const userId = useSessionStore((s) => s.user?.id)
-  const userRole = useSessionStore((s) => s.user?.role)
 
   // Auto-save hook — must be called unconditionally
-  useAutoSave()
+  const { status: autoSaveStatus } = useAutoSave()
 
   // Shows Unsaved Changes Dialog when navigating away with dirty state
   useNavigationGuard({
@@ -70,9 +75,9 @@ export default function PageEditor() {
 
   // Load page data when path changes
   useEffect(() => {
-    if (!path) return
-    loadPageData(path)
-  }, [path, loadPageData, authDisabled, userId, userRole])
+    if (draftId) loadPendingDraft(draftId)
+    else if (path) loadPageData(path)
+  }, [path, draftId, loadPageData, loadPendingDraft])
 
   // Open node
   useEffect(() => {
@@ -96,11 +101,13 @@ export default function PageEditor() {
     savePage()
       .then(async (page) => {
         if (page) {
-          window.history.replaceState(
-            null,
-            '',
-            buildBrowserEditUrl(`/${page?.path}`),
-          )
+          if (!usePageEditorStore.getState().isPendingDraft) {
+            window.history.replaceState(
+              null,
+              '',
+              buildBrowserEditUrl(`/${page.path}`),
+            )
+          }
           toast.success(t('pageEditor.savedToast'))
         }
       })
@@ -165,7 +172,14 @@ export default function PageEditor() {
       skipNavigationGuardRef.current = true
     }
 
-    if (currentPage?.path) {
+    if (state.isPendingDraft) {
+      const parent = state.pendingParentId
+        ? useTreeStore.getState().getPathById(state.pendingParentId)
+        : ''
+      navigate(parent ? `/${parent}` : '/', {
+        state: createNavigationVisitState(),
+      })
+    } else if (currentPage?.path) {
       navigate(`/${currentPage.path}`, {
         state: createNavigationVisitState(),
       })
@@ -185,18 +199,6 @@ export default function PageEditor() {
     openDialog(DIALOG_LINK_INSERT, { editorRef, selectedText })
   }, [editorRef, openDialog])
 
-  // register toolbar actions
-  useToolbarActions({
-    savePage: () => handleSave(),
-    closePage: handleClose,
-    formatBold: () => editorRef.current?.insertWrappedText('**', '**'),
-    formatItalic: () => editorRef.current?.insertWrappedText('_', '_'),
-    formatInlineCode: () => editorRef.current?.insertWrappedText('`', '`'),
-    openLinkDialog,
-    insertHeading: (level) => editorRef.current?.insertHeading(level),
-    getEditorView: () => editorRef.current?.editorViewRef.current ?? null,
-  })
-
   // content changes in the editor are synced to the store
   const handleEditorChange = useCallback(
     (value: string) => {
@@ -204,6 +206,62 @@ export default function PageEditor() {
     },
     [setContent],
   )
+
+  const handlePublishDraft = useCallback(() => {
+    publishDraft()
+      .then(async (page) => {
+        if (page) {
+          await reloadTree()
+          navigate(buildViewUrl(page.path), { replace: true })
+          toast.success(t('draft.published'))
+        }
+      })
+      .catch((err) =>
+        toast.error(
+          mapApiError(err, t('pageEditor.saveErrorFallback')).message,
+        ),
+      )
+  }, [publishDraft, reloadTree, t, navigate])
+
+  const handleDiscardDraft = useCallback(() => {
+    const state = usePageEditorStore.getState()
+    const discardedPagePath = state.page?.path ?? '/'
+    const discardedPendingDraft = state.isPendingDraft
+    const discardedPendingParentId = state.pendingParentId
+    discardDraft()
+      .then(async () => {
+        await reloadTree()
+        if (discardedPendingDraft) {
+          const parent = discardedPendingParentId
+            ? useTreeStore.getState().getPathById(discardedPendingParentId)
+            : ''
+          navigate(parent ? `/${parent}` : '/', { replace: true })
+        } else {
+          navigate(buildViewUrl(discardedPagePath), { replace: true })
+        }
+        toast.success(t('draft.discarded'))
+      })
+      .catch((err) =>
+        toast.error(
+          mapApiError(err, t('pageEditor.saveErrorFallback')).message,
+        ),
+      )
+  }, [discardDraft, reloadTree, t, navigate])
+
+  // register toolbar actions
+  useToolbarActions({
+    savePage: () => handleSave(),
+    closePage: handleClose,
+    publishDraft: handlePublishDraft,
+    discardDraft: () => setDiscardDialogOpen(true),
+    draftActionsDisabled: autoSaveStatus === 'saving',
+    formatBold: () => editorRef.current?.insertWrappedText('**', '**'),
+    formatItalic: () => editorRef.current?.insertWrappedText('_', '_'),
+    formatInlineCode: () => editorRef.current?.insertWrappedText('`', '`'),
+    openLinkDialog,
+    insertHeading: (level) => editorRef.current?.insertHeading(level),
+    getEditorView: () => editorRef.current?.editorViewRef.current ?? null,
+  })
 
   if (notFound) {
     return <Page404 targetPath={getWikiTargetRoutePath(pathname)} />
@@ -222,19 +280,15 @@ export default function PageEditor() {
         {initialPage && (
           <>
             <PageFrontmatterPanel
-              draft={draft}
-              effectiveDraft={
-                page ? isPendingEffectivelyDraft(page, draft) : draft
-              }
               tags={tags}
               fields={frontmatterFields}
               errors={frontmatterErrors}
               hasUnsupportedFields={Boolean(frontmatterUnsupported)}
               onTagsChange={setTags}
-              onDraftChange={setDraft}
               onFieldsChange={setFrontmatterFields}
             />
             <MarkdownEditor
+              key={`${initialPage.id}:${isDraft ? 'draft' : 'published'}`}
               ref={editorRef}
               pageId={initialPage.id}
               initialValue={initialPage.content || ''}
@@ -243,6 +297,25 @@ export default function PageEditor() {
           </>
         )}
       </div>
+      <AlertDialog open={discardDialogOpen} onOpenChange={setDiscardDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('draft.discardTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('draft.discardDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('draft.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleDiscardDraft}
+            >
+              {t('draft.discard')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

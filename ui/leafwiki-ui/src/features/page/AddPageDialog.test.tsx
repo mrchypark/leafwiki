@@ -1,4 +1,4 @@
-import { createPage } from '@/lib/api/pages'
+import { createPage, createPendingDraft } from '@/lib/api/pages'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
@@ -18,6 +18,7 @@ vi.mock('@/lib/api/pages', async () => {
   return {
     ...actual,
     createPage: vi.fn(),
+    createPendingDraft: vi.fn(),
   }
 })
 
@@ -27,11 +28,7 @@ describe('AddPageDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     callOrder.length = 0
-
-    navigateMock.mockImplementation(() => {
-      callOrder.push('navigate')
-    })
-
+    navigateMock.mockImplementation(() => callOrder.push('navigate'))
     useDialogsStore.setState({
       dialogType: DIALOG_ADD_PAGE,
       dialogProps: null,
@@ -40,34 +37,46 @@ describe('AddPageDialog', () => {
         useDialogsStore.setState({ dialogType: null, dialogProps: null })
       },
     })
-
     useTreeStore.setState({
       reloadTree: vi.fn().mockResolvedValue(undefined),
       getPathById: () => '',
     })
-
     vi.mocked(createPage).mockResolvedValue(
       undefined as unknown as ReturnType<typeof createPage>,
     )
+    vi.mocked(createPendingDraft).mockResolvedValue({
+      page: { id: 'pending-1' },
+    } as Awaited<ReturnType<typeof createPendingDraft>>)
   })
 
-  it('closes the dialog before navigating to the newly created page', async () => {
+  it('closes the dialog before navigating to a new page', async () => {
     const user = userEvent.setup()
     render(<AddPageDialog parentId="" />)
-
     await user.type(screen.getByTestId('add-page-title-input'), 'My Page')
     await user.type(screen.getByTestId('add-page-slug-input'), 'my-page')
-
     await user.click(screen.getByTestId('add-page-dialog-button-confirm'))
 
-    const firstCloseIndex = callOrder.indexOf('closeDialog')
-    const navigateIndex = callOrder.indexOf('navigate')
+    expect(callOrder.indexOf('closeDialog')).toBeLessThan(
+      callOrder.indexOf('navigate'),
+    )
+  })
 
-    expect(firstCloseIndex).toBeGreaterThanOrEqual(0)
-    expect(navigateIndex).toBeGreaterThanOrEqual(0)
-    // Closing before navigating avoids a render race between the route
-    // transition and the dialog's own close/exit-animation state, which
-    // otherwise causes the dialog to visibly flash back open once (#flicker).
-    expect(firstCloseIndex).toBeLessThan(navigateIndex)
+  it('creates a pending draft and opens its editor', async () => {
+    const user = userEvent.setup()
+    render(<AddPageDialog parentId="" />)
+    await user.click(screen.getByRole('checkbox', { name: 'Create as draft' }))
+    await user.type(screen.getByTestId('add-page-title-input'), 'Draft')
+    await user.type(screen.getByTestId('add-page-slug-input'), 'draft')
+    await user.click(screen.getByTestId('add-page-dialog-button-confirm'))
+
+    expect(createPendingDraft).toHaveBeenCalledWith({
+      title: 'Draft',
+      slug: 'draft',
+      parentId: '',
+    })
+    expect(createPage).not.toHaveBeenCalled()
+    expect(callOrder.indexOf('closeDialog')).toBeLessThan(
+      callOrder.indexOf('navigate'),
+    )
   })
 })

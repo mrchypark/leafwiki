@@ -3,13 +3,26 @@
 
 import {
   applyPageRefactor,
+  discardDraft,
+  discardPendingDraft,
+  getDraft,
+  getPendingDraft,
   getPageByPath,
+  NODE_KIND_PAGE,
   Page,
+  publishDraft,
+  publishPendingDraft,
   previewPageRefactor,
+  saveDraft,
+  savePendingDraft,
+  startDraft,
   updatePage,
-  updatePageDraft,
 } from '@/lib/api/pages'
-import { isPageNotFoundError, mapApiError } from '@/lib/api/errors'
+import {
+  asApiLocalizedError,
+  isPageNotFoundError,
+  mapApiError,
+} from '@/lib/api/errors'
 import i18next from '@/lib/i18n'
 import { useConfigStore } from '@/stores/config'
 import { useTreeStore } from '@/stores/tree'
@@ -27,7 +40,6 @@ export interface PageEditorState {
   title: string // current title in the editor
   slug: string // current slug in the editor
   content: string // current markdown content in the editor
-  draft: boolean
   tags: string[] // convenient tag editor state
   frontmatterFields: EditorFrontmatterField[]
   frontmatterUnsupported: string
@@ -37,10 +49,12 @@ export interface PageEditorState {
   notFound: boolean
   page: Page | null // current page being edited
   initialPage: Page | null // initial page data when loaded
+  isDraft: boolean
+  isPendingDraft: boolean
+  pendingParentId: string
   setTitle: (title: string) => void // set the current title
   setSlug: (slug: string) => void // set the current slug
   setContent: (content: string) => void // set the current markdown content
-  setDraft: (draft: boolean) => void
   setTags: (tags: string[]) => void
   setFrontmatterFields: (fields: EditorFrontmatterField[]) => void
   setFrontmatterErrors: (errors: Record<string, string>) => void
@@ -49,6 +63,10 @@ export interface PageEditorState {
   savePage: (options?: { silent?: boolean }) => Promise<Page | null | undefined> // save the current page
   forceOverwrite: () => Promise<Page | null | undefined> // re-fetch server version, then save
   loadPageData: (path: string) => Promise<void> // load page data by path
+  loadPendingDraft: (id: string) => Promise<void>
+  startDraft: () => Promise<void>
+  publishDraft: () => Promise<Page | null>
+  discardDraft: () => Promise<void>
   resetEditorState: () => void // clear the store back to its pristine (no page loaded) shape
 }
 
@@ -84,32 +102,15 @@ function buildEditableProperties(
 }
 
 export const isDirtyState = (s: PageEditorState) => {
-  const { page, title, slug, content, draft, tags, frontmatterFields } = s
+  const { page, title, slug, content, tags, frontmatterFields } = s
   if (!page) return false
   return (
     page.title !== title ||
     page.slug !== slug ||
     page.content !== content ||
-    Boolean(page.draft) !== draft ||
     tagsChanged(tags, page.tags ?? []) ||
     propertiesChanged(frontmatterFields, page.properties ?? {})
   )
-}
-
-export function isPendingEffectivelyDraft(
-  page: Page | null,
-  draft: boolean,
-): boolean {
-  return draft || Boolean(page?.ancestorDraft)
-}
-
-function normalizePageDraftStatus(page: Page): Page {
-  return {
-    ...page,
-    draft: Boolean(page.draft),
-    effectiveDraft: Boolean(page.effectiveDraft ?? page.draft),
-    ancestorDraft: Boolean(page.ancestorDraft),
-  }
 }
 
 // Module-level mutex: prevents concurrent auto-saves from stacking.
@@ -127,17 +128,18 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   path: '',
   slug: '',
   content: '',
-  draft: false,
   tags: [],
   frontmatterFields: [],
   frontmatterUnsupported: '',
   frontmatterErrors: {},
   lastStoredPage: null,
   initialPage: null,
+  isDraft: false,
+  isPendingDraft: false,
+  pendingParentId: '',
   setTitle: (title) => set({ title }),
   setSlug: (slug) => set({ slug }),
   setContent: (content) => set({ content }),
-  setDraft: (draft) => set({ draft }),
   setTags: (tags) =>
     set((state) => {
       const nextErrors = { ...state.frontmatterErrors }
@@ -162,20 +164,8 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
   setError: (error) => set({ error }),
   setPage: (page) => set({ page }),
   savePage: async (options?: { silent?: boolean }) => {
-    const {
-      page,
-      initialPage,
-      title,
-      slug,
-      content,
-      draft,
-      tags,
-      frontmatterFields,
-    } = get()
+    const { page, title, slug, content, tags, frontmatterFields } = get()
     if (!page || !isDirtyState(get())) return
-
-    const isCurrentSave = () =>
-      get().initialPage === initialPage && get().page?.id === page.id
 
     const frontmatterErrors = validateEditorFrontmatterMetadata(
       tags,
@@ -199,129 +189,93 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       set({ frontmatterErrors: {} })
       const titleChanged = page.title !== title
       const slugChanged = page.slug !== slug
-      const wasDraft = Boolean(page.draft)
-      const draftChanged = wasDraft !== draft
       const enableLinkRefactor = useConfigStore.getState().enableLinkRefactor
       const frontmatterChanged =
         tagsChanged(tags, page.tags ?? []) ||
         propertiesChanged(frontmatterFields, page.properties ?? {})
 
-      const applyServerPage = (serverPage: Page) => {
-        const normalizedPage = normalizePageDraftStatus(serverPage)
-        set((state) => {
-          if (
-            state.initialPage !== initialPage ||
-            !state.page ||
-            state.page.id !== serverPage.id
-          ) {
-            return {}
-          }
-          return {
-            page: {
-              ...state.page,
-              ...normalizedPage,
-              content: serverPage.content ?? state.page.content,
-              tags: serverPage.tags ?? state.page.tags,
-              properties: serverPage.properties ?? state.page.properties,
-            },
-          }
-        })
-      }
-
-      let rewriteLinks = false
-      if (slugChanged && enableLinkRefactor) {
-        const preview = await previewPageRefactor(page.id, {
-          kind: 'rename',
-          title,
-          slug,
-        })
-        if (!isCurrentSave()) return
-        const confirmedRewriteLinks = await confirmPageRefactor(preview, {
-          allowSkipRewrite: true,
-        })
-        if (!isCurrentSave()) return
-        if (confirmedRewriteLinks === null) {
-          return null
-        }
-        rewriteLinks = confirmedRewriteLinks
-      }
-
-      let workingPage = page
-      if (draftChanged && draft) {
-        workingPage = await updatePageDraft(page.id, page.version, true)
-        if (!isCurrentSave()) return
-        applyServerPage(workingPage)
-        await useTreeStore.getState().reloadTree()
-        if (!isCurrentSave()) return
-      }
-
       let updatedPage: Page | null = null
 
-      if (slugChanged && enableLinkRefactor) {
-        updatedPage = await applyPageRefactor(workingPage.id, {
-          kind: 'rename',
-          version: workingPage.version,
-          title,
-          slug,
-          content,
-          rewriteLinks,
-        })
-        if (!isCurrentSave()) return
-
-        if (updatedPage && frontmatterChanged) {
-          updatedPage = await updatePage(
-            updatedPage.id,
-            updatedPage.version,
+      if (get().isPendingDraft) {
+        updatedPage = (
+          await savePendingDraft(
+            page.id,
             title,
             slug,
             content,
             tags,
             properties,
           )
-          if (!isCurrentSave()) return
-        }
+        ).page
+      } else if (get().isDraft) {
+        updatedPage = (
+          await saveDraft(page.id, title, content, tags, properties)
+        ).page
       } else {
-        updatedPage = await updatePage(
-          workingPage.id,
-          workingPage.version,
-          title,
-          slug,
-          content,
-          tags,
-          properties,
-        )
-        if (!isCurrentSave()) return
+        if (slugChanged && enableLinkRefactor) {
+          const preview = await previewPageRefactor(page.id, {
+            kind: 'rename',
+            title,
+            slug,
+          })
+          const rewriteLinks = await confirmPageRefactor(preview, {
+            allowSkipRewrite: true,
+          })
+          if (rewriteLinks === null) {
+            return null
+          }
+
+          updatedPage = await applyPageRefactor(page.id, {
+            kind: 'rename',
+            version: page.version,
+            title,
+            slug,
+            content,
+            rewriteLinks,
+          })
+
+          if (updatedPage && frontmatterChanged) {
+            updatedPage = await updatePage(
+              updatedPage.id,
+              updatedPage.version,
+              title,
+              slug,
+              content,
+              tags,
+              properties,
+            )
+          }
+        } else {
+          updatedPage = await updatePage(
+            page.id,
+            page.version,
+            title,
+            slug,
+            content,
+            tags,
+            properties,
+          )
+        }
       }
 
-      if (!updatedPage) {
-        throw new Error(
-          i18next.t('pageEditor.contentNullFallback', { ns: 'editor' }),
-        )
-      }
-      applyServerPage(updatedPage)
-
-      if (draftChanged && !draft) {
-        updatedPage = await updatePageDraft(
-          updatedPage.id,
-          updatedPage.version,
-          false,
-        )
-        if (!isCurrentSave()) return
-        applyServerPage(updatedPage)
-      }
-
-      const nextTags = updatedPage.tags ?? tags
-      const nextProperties = updatedPage.properties ?? properties
+      const nextTags = updatedPage?.tags ?? tags
+      const nextProperties =
+        updatedPage && updatedPage.properties
+          ? updatedPage.properties
+          : properties
 
       // Keep the local page snapshot canonical after save so metadata-only
       // updates do not remain dirty when the API omits empty collections.
       set((state) => {
+        if (!state.page) return {}
+
         if (
-          state.initialPage !== initialPage ||
-          !state.page ||
-          state.page.id !== page.id
+          updatedPage?.content === null ||
+          updatedPage?.content === undefined
         ) {
-          return {}
+          throw new Error(
+            i18next.t('pageEditor.contentNullFallback', { ns: 'editor' }),
+          )
         }
         state.page.title = updatedPage.title
         state.page.slug = updatedPage.slug
@@ -330,7 +284,6 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         state.page.version = updatedPage.version
         state.page.tags = nextTags
         state.page.properties = nextProperties
-        state.page.draft = updatedPage.draft ?? draft
 
         return {
           page: state.page,
@@ -348,18 +301,24 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         }
       })
 
-      // sync tree: full reload on structural changes, version-only patch otherwise
-      if (titleChanged || slugChanged || draftChanged) {
-        await useTreeStore.getState().reloadTree()
-        if (!isCurrentSave()) return
-      } else if (updatedPage?.id && updatedPage?.version) {
-        useTreeStore
-          .getState()
-          .patchNodeVersion(updatedPage.id, updatedPage.version)
+      // Draft saves never touch the canonical tree or its indexes.
+      if (!get().isDraft) {
+        if (titleChanged || slugChanged) {
+          await useTreeStore.getState().reloadTree()
+        } else if (updatedPage?.id && updatedPage?.version) {
+          useTreeStore
+            .getState()
+            .patchNodeVersion(updatedPage.id, updatedPage.version)
+        }
       }
 
       const viewerPage = useViewerStore.getState().page
-      if (viewerPage?.id && viewerPage.id === updatedPage?.id && updatedPage) {
+      if (
+        !get().isDraft &&
+        viewerPage?.id &&
+        viewerPage.id === updatedPage?.id &&
+        updatedPage
+      ) {
         useViewerStore.setState({
           page: updatedPage,
           notFound: false,
@@ -373,7 +332,6 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         const fetchLinkStatusForPage =
           useLinkStatusStore.getState().fetchLinkStatusForPage
         await fetchLinkStatusForPage(editorPageID)
-        if (!isCurrentSave()) return
       }
 
       return updatedPage
@@ -383,19 +341,13 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
     }
   },
   forceOverwrite: async () => {
-    const { page, initialPage } = get()
+    const { page } = get()
     if (!page?.path) return
 
-    const fresh = normalizePageDraftStatus(await getPageByPath(page.path))
-    if (get().initialPage !== initialPage || get().page?.id !== page.id) return
+    const fresh = await getPageByPath(page.path)
     set((state) => {
-      if (state.initialPage !== initialPage || state.page?.id !== page.id) {
-        return {}
-      }
+      if (!state.page) return {}
       state.page.version = fresh.version
-      state.page.draft = fresh.draft
-      state.page.effectiveDraft = fresh.effectiveDraft
-      state.page.ancestorDraft = fresh.ancestorDraft
       return { page: state.page }
     })
     return get().savePage()
@@ -415,7 +367,34 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       frontmatterErrors: {},
     })
     try {
-      const page = normalizePageDraftStatus(await getPageByPath(path, signal))
+      const canonicalPage = await getPageByPath(path, signal)
+      let page = canonicalPage
+      let isDraft = false
+      try {
+        const draft = await getDraft(canonicalPage.id, signal)
+        page = draft.page
+        isDraft = true
+      } catch (err) {
+        if (asApiLocalizedError(err)?.code !== 'draft_not_found') {
+          throw err
+        }
+        if (canonicalPage.kind === NODE_KIND_PAGE) {
+          try {
+            const draft = await startDraft(canonicalPage.id)
+            page = draft.page
+            isDraft = true
+          } catch (startErr) {
+            if (asApiLocalizedError(startErr)?.code !== 'draft_exists') {
+              throw startErr
+            }
+            const draft = await getDraft(canonicalPage.id, signal)
+            page = draft.page
+            isDraft = true
+          }
+        }
+        if (signal.aborted) return
+        if (isDraft) await useTreeStore.getState().reloadTree({ silent: true })
+      }
       const fields: EditorFrontmatterField[] = Object.entries(
         page.properties ?? {},
       ).map(([key, value]) => ({
@@ -423,6 +402,7 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         value: String(value ?? ''),
         type: 'text' as const,
       }))
+      if (signal.aborted) return
       set({
         page,
         initialPage: { ...page },
@@ -430,10 +410,12 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
         title: page.title,
         slug: page.slug,
         content: page.content,
-        draft: Boolean(page.draft),
         tags: page.tags ?? [],
         frontmatterFields: fields,
         frontmatterUnsupported: '',
+        isDraft,
+        isPendingDraft: false,
+        pendingParentId: '',
       })
     } catch (err) {
       if (signal.aborted) return
@@ -461,13 +443,135 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       }
     }
   },
+  loadPendingDraft: async (id: string) => {
+    loadController?.abort()
+    loadController = new AbortController()
+    const { signal } = loadController
+    useProgressbarStore.getState().setLoading(true)
+    try {
+      const response = await getPendingDraft(id, signal)
+      const page = response.page
+      if (signal.aborted) return
+      set({
+        page,
+        initialPage: { ...page },
+        title: page.title,
+        slug: page.slug,
+        content: page.content,
+        tags: page.tags ?? [],
+        frontmatterFields: Object.entries(page.properties ?? {}).map(
+          ([key, value]) => ({
+            key,
+            value: String(value ?? ''),
+            type: 'text' as const,
+          }),
+        ),
+        notFound: false,
+        error: null,
+        isDraft: true,
+        isPendingDraft: true,
+        pendingParentId: response.parentId,
+      })
+    } catch (err) {
+      if (signal.aborted) return
+      set({
+        error: mapApiError(
+          err,
+          i18next.t('pageEditor.unknownErrorFallback', { ns: 'editor' }),
+        ).message,
+        notFound: false,
+      })
+    } finally {
+      if (!signal.aborted) {
+        set({ isLoading: false })
+        useProgressbarStore.getState().setLoading(false)
+      }
+    }
+  },
+  startDraft: async () => {
+    const { page } = get()
+    if (!page) return
+    const response = await startDraft(page.id)
+    const draftPage = response.page
+    set({
+      page: draftPage,
+      initialPage: { ...draftPage },
+      title: draftPage.title,
+      slug: draftPage.slug,
+      content: draftPage.content,
+      tags: draftPage.tags ?? [],
+      frontmatterFields: Object.entries(draftPage.properties ?? {}).map(
+        ([key, value]) => ({
+          key,
+          value: String(value ?? ''),
+          type: 'text' as const,
+        }),
+      ),
+      isDraft: true,
+    })
+  },
+  publishDraft: async () => {
+    if (isDirtyState(get())) {
+      const saved = await get().savePage()
+      if (!saved && isDirtyState(get())) return null
+    }
+    const { page } = get()
+    if (!page) return null
+    const published = get().isPendingDraft
+      ? await publishPendingDraft(page.id)
+      : await publishDraft(page.id)
+    set({
+      page: published,
+      initialPage: { ...published },
+      title: published.title,
+      slug: published.slug,
+      content: published.content,
+      tags: published.tags ?? [],
+      isDraft: false,
+      isPendingDraft: false,
+      pendingParentId: '',
+    })
+    return published
+  },
+  discardDraft: async () => {
+    const { page } = get()
+    if (!page) return
+    if (get().isPendingDraft) {
+      await discardPendingDraft(page.id)
+      set({
+        page: null,
+        initialPage: null,
+        isDraft: false,
+        isPendingDraft: false,
+      })
+      return
+    }
+    await discardDraft(page.id)
+    const published = await getPageByPath(page.path)
+    set({
+      page: published,
+      initialPage: { ...published },
+      title: published.title,
+      slug: published.slug,
+      content: published.content,
+      tags: published.tags ?? [],
+      frontmatterFields: Object.entries(published.properties ?? {}).map(
+        ([key, value]) => ({
+          key,
+          value: String(value ?? ''),
+          type: 'text' as const,
+        }),
+      ),
+      isDraft: false,
+      isPendingDraft: false,
+      pendingParentId: '',
+    })
+  },
   // Called when PageEditor unmounts so `page` (and thus currentEditorPageId
   // reads elsewhere, e.g. TreeNodeActionsMenu's rename/delete guards) doesn't
   // keep pointing at the last-edited page indefinitely after the editor closes.
   resetEditorState: () => {
-    const wasLoading = get().isLoading
     loadController?.abort()
-    if (wasLoading) useProgressbarStore.getState().setLoading(false)
     set({
       error: null,
       isLoading: false,
@@ -476,12 +580,14 @@ export const usePageEditorStore = create<PageEditorState>((set, get) => ({
       title: '',
       slug: '',
       content: '',
-      draft: false,
       tags: [],
       frontmatterFields: [],
       frontmatterUnsupported: '',
       frontmatterErrors: {},
       initialPage: null,
+      isDraft: false,
+      isPendingDraft: false,
+      pendingParentId: '',
     })
   },
 }))

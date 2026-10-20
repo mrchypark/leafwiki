@@ -21,7 +21,11 @@
     "descriptionSection": "Saisissez le titre de la nouvelle section",
     "titleLabel": "Titre",
     "titlePlaceholder": "Titre de {{item}}",
-    "pathPrefix": "Chemin :"
+    "pathPrefix": "Chemin :",
+    "createAsDraft": "Créer comme brouillon",
+    "draft": "Brouillon",
+    "draftCreatedToast": "Page de brouillon créée",
+    "keepDraftWhenParentPublished": "Conserver le brouillon quand la page parente est publiée"
   },
   "moveDialog": {
     "movedToast": "Page déplacée avec succès",

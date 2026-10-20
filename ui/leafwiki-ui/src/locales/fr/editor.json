@@ -128,5 +128,15 @@
   },
   "titleBar": {
     "dirtyIndicator": "(Modifié)"
+  },
+  "draft": {
+    "cancel": "Annuler",
+    "discard": "Abandonner",
+    "discardDescription": "Cela supprime définitivement la copie de travail non publiée.",
+    "discardTitle": "Abandonner ce brouillon ?",
+    "discarded": "Brouillon abandonné",
+    "editing": "Modification",
+    "publish": "Publier",
+    "published": "Publié"
   }
 }

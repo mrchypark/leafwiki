@@ -8,11 +8,7 @@ import { Pencil } from 'lucide-react'
 import { DraftBadge } from '@/components/DraftBadge'
 import { useTranslation } from 'react-i18next'
 import { TooltipWrapper } from '../../components/TooltipWrapper'
-import {
-  isDirtyState,
-  isPendingEffectivelyDraft,
-  usePageEditorStore,
-} from './pageEditorStore'
+import { isDirtyState, usePageEditorStore } from './pageEditorStore'
 
 export function EditorTitleBar() {
   const { t } = useTranslation('editor')
@@ -21,12 +17,12 @@ export function EditorTitleBar() {
   const page = usePageEditorStore((state) => state.page)
   const title = usePageEditorStore((state) => state.title)
   const slug = usePageEditorStore((state) => state.slug)
-  const draft = usePageEditorStore((state) => state.draft)
   const setTitle = usePageEditorStore((state) => state.setTitle)
   const setSlug = usePageEditorStore((state) => state.setSlug)
   const openDialog = useDialogsStore((s) => s.openDialog)
   const getPageByPath = useTreeStore((state) => state.getPageByPath)
   const dirty = usePageEditorStore(isDirtyState)
+  const isDraft = usePageEditorStore((state) => state.isDraft)
 
   const onEditClicked = () => {
     if (!page) return
@@ -48,7 +44,6 @@ export function EditorTitleBar() {
         setTitle(title)
         setSlug(slug)
       },
-      slugReadOnly: false,
     })
   }
 
@@ -60,18 +55,17 @@ export function EditorTitleBar() {
     return null
   }
 
-  const effectiveDraft = isPendingEffectivelyDraft(page, draft)
-
   return (
     <div className="editor-title-bar">
       <button
         onClick={onEditClicked}
+        disabled={isDraft}
         className="editor-title-bar__button"
         data-testid="edit-page-metadata-button"
       >
         <TooltipWrapper label={title} side="top" align="start">
           {title && <span className="editor-title-bar__title">{title}</span>}
-          {effectiveDraft && <DraftBadge inherited={!draft} />}
+          {isDraft && <DraftBadge />}
           <Pencil size={16} className="editor-title-bar__icon" />
           {dirty && !isMobile && (
             <span className="editor-title-bar__dirty-indicator">

@@ -39,5 +39,9 @@
     "prev": "← Préc.",
     "next": "Suiv. →",
     "pageOf": "Page {{page}} sur {{total}}"
+  },
+  "draft": {
+    "label": "Brouillon",
+    "inherited": "Brouillon hérité"
   }
 }

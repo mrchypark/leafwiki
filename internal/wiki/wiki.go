@@ -10,6 +10,7 @@ import (
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/assets"
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/draft"
 	"github.com/perber/wiki/internal/core/email"
 	"github.com/perber/wiki/internal/core/ignore"
 	"github.com/perber/wiki/internal/core/revision"
@@ -58,8 +59,8 @@ type Wiki struct {
 	searchIndex       *search.SQLiteIndex
 	status            *search.IndexingStatus
 	storageDir        string
+	drafts            *draft.Store
 
-	// Domain route registrars (populated by NewWiki).
 	pagesRoutes            *wikipages.Routes
 	authRoutes             *wikiauth.Routes
 	assetsRoutes           *wikiassets.Routes
@@ -98,35 +99,28 @@ type Wiki struct {
 const SYSTEM_USER_ID = "system"
 
 type WikiOptions struct {
-	StorageDir              string        // Path to storage directory
-	AdminUsername           string        // Initial admin username (optional; defaults to "admin")
-	AdminEmail              string        // Initial admin email (optional; defaults to "admin@localhost")
-	AdminPassword           string        // Initial admin password
-	JWTSecret               string        // JWT secret for authentication
-	AccessTokenTimeout      time.Duration // Access token timeout duration
-	RefreshTokenTimeout     time.Duration // Refresh token timeout duration
-	AuthDisabled            bool          // Whether authentication is disabled
-	EnableRevision          bool          // Whether revision recording/storage is enabled
-	EnableAPIKeyManagement  bool          // Whether the experimental API key management feature is enabled
-	MaxRevisionHistory      int           // Max revisions kept per page; 0 = unlimited
-	EditorLimit             int           // Max admin+editor users allowed; 0 = unlimited
-	MaxAssetUploadSizeBytes int64         // Maximum allowed size in bytes for asset/import uploads; 0 = default
-	RevisionCoalesceWindow  time.Duration // Window for coalescing rapid successive saves; 0 = disabled
-	TOTPEncryptionKey       string        // Key used to encrypt per-user TOTP secrets at rest; empty disables TOTP self-service
-	SMTP                    email.Config  // SMTP config for password-reset/invite email; SMTP.Enabled()==false disables the feature entirely
+	StorageDir              string
+	AdminUsername           string
+	AdminEmail              string
+	AdminPassword           string
+	JWTSecret               string
+	AccessTokenTimeout      time.Duration
+	RefreshTokenTimeout     time.Duration
+	AuthDisabled            bool
+	EnableRevision          bool
+	EnableAPIKeyManagement  bool
+	MaxRevisionHistory      int
+	EditorLimit             int
+	MaxAssetUploadSizeBytes int64
+	RevisionCoalesceWindow  time.Duration
+	TOTPEncryptionKey       string
+	SMTP                    email.Config
 	Metrics                 *httpmetrics.HTTPMetrics
 }
 
 func NewWiki(options *WikiOptions) (*Wiki, error) {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	w := &Wiki{
-		storageDir:     options.StorageDir,
-		log:            slog.Default().With("component", "Wiki"),
-		resyncJob:      wikiresync.NewResyncJob(),
-		shutdownCtx:    shutdownCtx,
-		shutdownCancel: shutdownCancel,
-		metrics:        options.Metrics,
-	}
+	w := &Wiki{storageDir: options.StorageDir, drafts: draft.NewStore(options.StorageDir), log: slog.Default().With("component", "Wiki"), resyncJob: wikiresync.NewResyncJob(), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, metrics: options.Metrics}
 	if err := w.initAuth(options); err != nil {
 		return nil, err
 	}
@@ -161,16 +155,11 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 	if err := w.initAvatarService(); err != nil {
 		return nil, err
 	}
-	// Welcome page must exist before the revision service starts recording.
 	if err := w.EnsureWelcomePage(); err != nil {
 		return nil, err
 	}
 	if options.EnableRevision {
-		w.revision = revision.NewService(w.storageDir, w.tree, w.log,
-			revision.ServiceOptions{
-				MaxRevisions:   options.MaxRevisionHistory,
-				CoalesceWindow: options.RevisionCoalesceWindow,
-			})
+		w.revision = revision.NewService(w.storageDir, w.tree, w.log, revision.ServiceOptions{MaxRevisions: options.MaxRevisionHistory, CoalesceWindow: options.RevisionCoalesceWindow})
 		w.ensureBaselineRevisions()
 	}
 	w.metrics.RegisterRuntimeStats(runtimeStatsSource{w: w})
@@ -178,78 +167,28 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 	return w, nil
 }
 
-// AuthService returns the authentication service.
-func (w *Wiki) AuthService() *auth.AuthService {
-	return w.auth
-}
+func (w *Wiki) AuthService() *auth.AuthService             { return w.auth }
+func (w *Wiki) BrandingService() *branding.BrandingService { return w.branding }
+func (w *Wiki) TOTPService() *auth.TOTPService             { return w.totp }
+func (w *Wiki) GetStorageDir() string                      { return w.storageDir }
 
-// BrandingService returns the branding service.
-func (w *Wiki) BrandingService() *branding.BrandingService {
-	return w.branding
-}
-
-// TOTPService returns the TOTP service, or nil if no --totp-encryption-key /
-// LEAFWIKI_TOTP_ENCRYPTION_KEY was configured (TOTP self-service is then
-// unavailable until an operator sets one).
-func (w *Wiki) TOTPService() *auth.TOTPService {
-	return w.totp
-}
-
-// ─── Service getters (test infrastructure) ───────────────────────────────────
-
-func (w *Wiki) GetStorageDir() string {
-	return w.storageDir
-}
-
-// UserService returns the current *auth.UserService: AuthService's live,
-// restore-swap-tracking one when auth is enabled (see AuthService.UserService),
-// falling back to the UserService constructed in initAuth when auth is
-// disabled — in that mode there's no AuthService and, per
-// internal/restore/manager.go's AuthService-nil guards, a live restore never
-// swaps this store either, so the fallback is never stale.
 func (w *Wiki) UserService() *auth.UserService {
 	if w.auth != nil {
 		return w.auth.UserService()
 	}
 	return w.user
 }
-
-// UserResolver returns the author-label resolver shared across page/tag/
-// property routes and the user-management use cases.
-func (w *Wiki) UserResolver() *auth.UserResolver {
-	return w.userResolver
-}
-
-// APIKeyService returns the API key service used for Bearer authentication.
-func (w *Wiki) APIKeyService() *auth.APIKeyService {
-	return w.apiKeys
-}
-
-// Favorites returns the favorites store, e.g. for wiring into restore.Config.
-func (w *Wiki) Favorites() *favorites.FavoritesStore {
-	return w.favorites
-}
-
-// UserSettingsService returns the user settings service, e.g. for wiring
-// into restore.Config.
-func (w *Wiki) UserSettingsService() *usersettings.UserSettingsService {
-	return w.userSettings
-}
-
-// EmailTokenService returns the password-reset/invite token service, or nil
-// if SMTP isn't configured or auth is disabled (see initEmail). Every use
-// case that resolves this via the func()-based pattern (like UserService)
-// nil-checks it and returns ErrEmailDisabled.
-func (w *Wiki) EmailTokenService() *auth.EmailTokenService {
-	return w.emailTokenService
-}
+func (w *Wiki) UserResolver() *auth.UserResolver                       { return w.userResolver }
+func (w *Wiki) APIKeyService() *auth.APIKeyService                     { return w.apiKeys }
+func (w *Wiki) Favorites() *favorites.FavoritesStore                   { return w.favorites }
+func (w *Wiki) UserSettingsService() *usersettings.UserSettingsService { return w.userSettings }
+func (w *Wiki) EmailTokenService() *auth.EmailTokenService             { return w.emailTokenService }
 
 func (w *Wiki) Close() error {
-	w.shutdownCancel() // signal in-flight reloads to abort
-	w.reloadWG.Wait()  // drain goroutines before closing stores
+	w.shutdownCancel()
+	w.reloadWG.Wait()
 	w.status.Finish()
 	if w.auth != nil {
-		// When auth is enabled, AuthService owns both the session store and user store.
 		if err := w.auth.Close(); err != nil {
 			return err
 		}
@@ -258,39 +197,33 @@ func (w *Wiki) Close() error {
 			return err
 		}
 	}
-
 	if w.apiKeys != nil {
 		if err := w.apiKeys.Close(); err != nil {
 			return err
 		}
 	}
-
 	if w.emailTokenService != nil {
-		w.emailTokenService.Close() // drains in-flight fire-and-forget password-reset sends
+		w.emailTokenService.Close()
 	}
 	if w.emailTokenStore != nil {
 		if err := w.emailTokenStore.Close(); err != nil {
 			w.log.Error("error closing email token store", "error", err)
 		}
 	}
-
 	if w.links != nil {
 		if err := w.links.Close(); err != nil {
 			w.log.Error("error closing links", "error", err)
 		}
 	}
-
 	if w.userSettings != nil {
 		if err := w.userSettings.Close(); err != nil {
 			w.log.Error("error closing user settings store", "error", err)
 		}
 	}
-
 	if w.favorites != nil {
 		if err := w.favorites.Close(); err != nil {
 			w.log.Error("error closing favorites store", "error", err)
 		}
 	}
-
 	return w.searchIndex.Close()
 }

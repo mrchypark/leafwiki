@@ -1,6 +1,4 @@
 import Page404 from '@/components/Page404'
-import { DraftBadge } from '@/components/DraftBadge'
-import { isEffectivelyDraft, isInheritedDraft } from '@/lib/api/pages'
 import { formatRelativeTime } from '@/lib/formatDate'
 import {
   createNavigationVisitState,
@@ -116,7 +114,6 @@ export default function PageViewer() {
         })
         .catch(() => toast.error(t('pinned.pinError')))
     }, [page, isPinned, setPinnedLocally, t]),
-    draft: isEffectivelyDraft(page),
   }
 
   useScrollRestoration(getNavigationVisitKey(location), loading)
@@ -216,9 +213,6 @@ export default function PageViewer() {
               <div className="page-viewer__subheader-main">
                 <div className="page-viewer__subheader-copy">
                   <Breadcrumbs />
-                  {isEffectivelyDraft(page) && (
-                    <DraftBadge inherited={isInheritedDraft(page)} />
-                  )}
                   {showUpdated && (
                     <div className="page-viewer__metadata">
                       <span className="page-viewer__metadata-item">

@@ -109,5 +109,10 @@
   "user not found": "Utilisateur introuvable",
   "zip entry exceeds the per-file size limit": "Un fichier dans l'archive téléversée est trop volumineux",
   "decompressed zip contents exceed the total size limit": "L'archive téléversée est trop volumineuse une fois décompressée",
-  "zip entry's decompression ratio exceeds the allowed maximum": "L'archive téléversée ressemble à une bombe de décompression"
+  "zip entry's decompression ratio exceeds the allowed maximum": "L'archive téléversée ressemble à une bombe de décompression",
+  "a draft already exists": "Un brouillon existe déjà",
+  "discard or publish the draft before changing this page": "Abandonnez ou publiez le brouillon avant de modifier cette page",
+  "draft not found": "Brouillon introuvable",
+  "draft storage failed": "Échec de l'enregistrement du brouillon",
+  "the published page changed while this draft was open": "La page publiée a changé pendant que ce brouillon était ouvert"
 }

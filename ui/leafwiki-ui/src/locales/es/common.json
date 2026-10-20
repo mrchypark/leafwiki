@@ -39,5 +39,9 @@
     "prev": "← Anterior",
     "next": "Siguiente →",
     "pageOf": "Página {{page}} de {{total}}"
+  },
+  "draft": {
+    "label": "Borrador",
+    "inherited": "Borrador heredado"
   }
 }

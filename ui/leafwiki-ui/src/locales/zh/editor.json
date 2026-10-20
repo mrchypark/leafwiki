@@ -128,5 +128,15 @@
   },
   "titleBar": {
     "dirtyIndicator": "（有修改）"
+  },
+  "draft": {
+    "cancel": "取消",
+    "discard": "丢弃",
+    "discardDescription": "这将永久删除未发布的工作副本。",
+    "discardTitle": "要丢弃此草稿吗？",
+    "discarded": "草稿已丢弃",
+    "editing": "编辑中",
+    "publish": "发布",
+    "published": "已发布"
   }
 }

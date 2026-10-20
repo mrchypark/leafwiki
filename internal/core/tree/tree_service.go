@@ -37,36 +37,28 @@ const (
 
 func NewTreeService(storageDir string) *TreeService {
 	store := NewNodeStore(storageDir)
-
 	return &TreeService{
-		storageDir:   storageDir,
-		tree:         nil,
-		store:        store,
-		log:          slog.Default().With("component", "TreeService"),
-		nodesByID:    make(map[string]*PageNode),
-		nodesByTitle: make(map[string][]*PageNode),
-		childSlugs:   make(map[string]map[string]*PageNode),
+		storageDir: storageDir, tree: nil, store: store,
+		log:       slog.Default().With("component", "TreeService"),
+		nodesByID: make(map[string]*PageNode), nodesByTitle: make(map[string][]*PageNode),
+		childSlugs: make(map[string]map[string]*PageNode),
 	}
 }
 
 // SetIgnoreCache sets the ignore cache for multi-level ignore resolution.
-func (t *TreeService) SetIgnoreCache(ignoreCache *ignore.Cache) {
-	t.store.SetIgnoreCache(ignoreCache)
-}
+func (t *TreeService) SetIgnoreCache(ignoreCache *ignore.Cache) { t.store.SetIgnoreCache(ignoreCache) }
 
 // LoadTree reconstructs the in-memory tree from the filesystem.
 // Legacy tree.json data is only used as a migration source for older schema versions.
 func (t *TreeService) LoadTree() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	t.log.Info("Checking schema version...")
 	schema, err := loadSchema(t.storageDir)
 	if err != nil {
 		t.log.Error("Error loading schema", "error", err)
 		return err
 	}
-
 	if schema.Version == CurrentSchemaVersion {
 		reconstructed, err := t.store.ReconstructTreeFromFS()
 		if err != nil {
@@ -79,7 +71,6 @@ func (t *TreeService) LoadTree() error {
 		t.rebuildIndexesLocked()
 		return nil
 	}
-
 	legacyTreePath := filepath.Join(t.storageDir, legacyTreeFilename)
 	if info, statErr := os.Stat(legacyTreePath); statErr == nil && !info.IsDir() {
 		legacyTree, legacyErr := t.store.LoadTree(legacyTreeFilename)
@@ -98,17 +89,14 @@ func (t *TreeService) LoadTree() error {
 			return err
 		}
 	}
-
 	if t.tree == nil {
 		return errors.New(errNilTreeReconstructed)
 	}
-
 	t.log.Info("Migrating schema", "fromVersion", schema.Version, "toVersion", CurrentSchemaVersion)
 	if err := treemigration.Run(schema.Version, t.migrationDependencies()); err != nil {
 		t.log.Error("Error migrating schema", "error", err)
 		return err
 	}
-
 	reconstructed, err := t.store.ReconstructTreeFromFS()
 	if err != nil {
 		return err
@@ -116,38 +104,29 @@ func (t *TreeService) LoadTree() error {
 	if reconstructed == nil {
 		return errors.New(errNilTreeReconstructed)
 	}
-
 	t.tree = reconstructed
 	t.rebuildIndexesLocked()
-
 	if err := os.Remove(legacyTreePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.log.Warn("Could not remove migrated legacy tree snapshot", "path", legacyTreePath, "error", err)
 	}
-
 	return nil
 }
 
 func (t *TreeService) withLockedTree(fn func() error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	return fn()
 }
-
 func (t *TreeService) withRLockedTree(fn func() error) error {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-
 	return fn()
 }
 
 // TreeHash returns the current hash of the tree
 func (t *TreeService) TreeHash() string {
 	var hash string
-	_ = t.withRLockedTree(func() error {
-		hash = t.tree.Hash()
-		return nil
-	})
+	_ = t.withRLockedTree(func() error { hash = t.tree.Hash(); return nil })
 	return hash
 }
 
@@ -163,7 +142,6 @@ func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	newTree, err := t.store.ReconstructTreeFromFSContext(ctx)
 	if err != nil {
 		t.log.Error("Error reconstructing tree from filesystem", "error", err)
@@ -172,11 +150,9 @@ func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
 	if newTree == nil {
 		return fmt.Errorf("internal error: ReconstructTreeFromFS returned nil tree")
 	}
-
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	oldTree := t.tree
@@ -189,4 +165,26 @@ func (t *TreeService) ReconstructTreeFromFSContext(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// CreateNodeWithContentAndMetadata makes a page visible only after its final
+// editor content and metadata have been written.
+func (t *TreeService) CreateNodeWithContentAndMetadata(userID string, parentID *string, title, slug, content string, nodeKind *NodeKind, tags []string, properties map[string]string) (*string, error) {
+	var result *string
+	err := t.withLockedTree(func() error {
+		created, err := t.createNodeLocked(userID, parentID, title, slug, nodeKind, createNodeOptions{})
+		if err != nil {
+			return err
+		}
+		if err := t.store.UpsertContentAndMetadata(created.entry, content, tags, properties); err != nil {
+			rollbackErr := t.rollbackCreatedNodeLocked(created.parent, created.entry, created.parentWasConverted)
+			if rollbackErr != nil {
+				return errors.Join(fmt.Errorf("write initial page content: %w", err), fmt.Errorf("rollback created node: %w", rollbackErr))
+			}
+			return fmt.Errorf("write initial page content: %w", err)
+		}
+		result = &created.id
+		return nil
+	})
+	return result, err
 }

@@ -1,18 +1,14 @@
 import BaseDialog, { BaseDialogConfirmButton } from '@/components/BaseDialog'
-import { DraftBadge } from '@/components/DraftBadge'
 import { FormInput } from '@/components/FormInput'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { createPage, isEffectivelyDraft, NODE_KIND_PAGE } from '@/lib/api/pages'
-import { canManageDrafts } from '@/lib/drafts'
+import { createPage, createPendingDraft, NODE_KIND_PAGE } from '@/lib/api/pages'
 import { handleFieldErrors } from '@/lib/handleFieldErrors'
 import i18next from '@/lib/i18n'
 import { DIALOG_ADD_PAGE } from '@/lib/registries'
-import { buildEditUrl } from '@/lib/routePath'
+import { buildEditUrl, buildPendingDraftEditUrl } from '@/lib/routePath'
 import { useDialogsStore } from '@/stores/dialogs'
 import { useTreeStore } from '@/stores/tree'
-import { useConfigStore } from '@/stores/config'
-import { useSessionStore } from '@/stores/session'
 import { CalendarDays } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -35,18 +31,12 @@ export function AddPageDialog({
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')
   const [loading, setLoading] = useState(false)
-  const [draft, setDraft] = useState(false)
   const [slugLoading, setSlugLoading] = useState(false)
   const [lastSlugTitle, setLastSlugTitle] = useState('')
   const [slugTouched, setSlugTouched] = useState(false)
+  const [createAsDraft, setCreateAsDraft] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const reloadTree = useTreeStore((s) => s.reloadTree)
-  const authDisabled = useConfigStore((s) => s.authDisabled)
-  const userRole = useSessionStore((s) => s.user?.role)
-  const showDraft =
-    nodeKind === NODE_KIND_PAGE && canManageDrafts(authDisabled, userRole)
-  const parent = useTreeStore((s) => s.getPageById(parentId))
-  const inheritedDraft = isEffectivelyDraft(parent)
   const parentPath = useTreeStore((s) => s.getPathById(parentId) || '')
   const navigate = useNavigate()
   const itemLabel =
@@ -72,9 +62,9 @@ export function AddPageDialog({
     setSlug('')
     setSlugTouched(false)
     setLastSlugTitle('')
+    setCreateAsDraft(false)
     setFieldErrors({})
     setLoading(false)
-    setDraft(false)
   }, [])
 
   const handleSlugChange = useCallback((val: string) => {
@@ -103,18 +93,20 @@ export function AddPageDialog({
       setLoading(true)
       setFieldErrors({})
       try {
-        await createPage({
-          title,
-          slug,
-          parentId,
-          kind: nodeKind,
-          draft: showDraft && draft,
-        })
+        if (createAsDraft) {
+          const draft = await createPendingDraft({ title, slug, parentId })
+          useDialogsStore.getState().closeDialog()
+          navigate(buildPendingDraftEditUrl(draft.page.id))
+        } else {
+          await createPage({ title, slug, parentId, kind: nodeKind })
+        }
         toast.success(
-          t('addDialog.createdToast', { item: itemLabelCapitalized }),
+          createAsDraft
+            ? t('addDialog.draftCreatedToast')
+            : t('addDialog.createdToast', { item: itemLabelCapitalized }),
         )
         await reloadTree()
-        if (redirect) {
+        if (redirect && !createAsDraft) {
           const fullPath = parentPath !== '' ? `${parentPath}/${slug}` : slug
           // Close before navigating: committing the route change first
           // leaves a render race between the transition and this dialog's
@@ -123,6 +115,7 @@ export function AddPageDialog({
           useDialogsStore.getState().closeDialog()
           navigate(buildEditUrl(fullPath))
         }
+        resetForm()
         return true
       } catch (err: unknown) {
         console.warn(err)
@@ -148,9 +141,9 @@ export function AddPageDialog({
       navigate,
       itemLabel,
       itemLabelCapitalized,
-      showDraft,
-      draft,
       t,
+      createAsDraft,
+      resetForm,
     ],
   )
 
@@ -253,20 +246,14 @@ export function AddPageDialog({
           error={fieldErrors.slug}
           allowedHotkeys={DIALOG_INPUT_ALLOWED_HOTKEYS}
         />
-        {showDraft && (
-          <div className="page-dialog__draft">
-            {inheritedDraft && <DraftBadge inherited />}
-            <label className="page-dialog__draft">
-              <Checkbox
-                checked={draft}
-                onCheckedChange={(checked) => setDraft(checked === true)}
-                data-testid="add-page-draft-checkbox"
-              />
-              {inheritedDraft
-                ? t('addDialog.keepDraftWhenParentPublished')
-                : t('addDialog.draft')}
-            </label>
-          </div>
+        {nodeKind === NODE_KIND_PAGE && (
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={createAsDraft}
+              onCheckedChange={(checked) => setCreateAsDraft(!!checked)}
+            />
+            {t('addDialog.createAsDraft')}
+          </label>
         )}
       </div>
       <span className="dialog__path" data-testid="add-page-path-display">

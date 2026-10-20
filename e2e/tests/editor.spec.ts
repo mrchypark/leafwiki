@@ -3,9 +3,7 @@ import { join } from 'node:path';
 import test, { Page, expect } from '@playwright/test';
 import { browserFetch, expectOk, pageByPathUrl } from '../helpers/api';
 import EditPage from '../pages/EditPage';
-import EditPageMetadataDialog from '../pages/EditPageMetadataDialog';
 import LoginPage from '../pages/LoginPage';
-import TreeView from '../pages/TreeView';
 import ViewPage from '../pages/ViewPage';
 
 const user = process.env.E2E_ADMIN_USER || 'admin';
@@ -48,28 +46,6 @@ async function createPageWithMetadata(
         content,
         tags: tags ?? [],
         properties: properties ?? {},
-      },
-    }),
-    'update',
-  );
-}
-
-async function updatePageByPath(page: Page, input: { path: string; content: string }) {
-  const current = expectOk(
-    await browserFetch<{ id: string; title: string; slug: string; version: string }>(
-      page,
-      pageByPathUrl(input.path.replace(/^\/+/, '')),
-    ),
-    'load',
-  );
-  expectOk(
-    await browserFetch(page, `/api/pages/${current.id}`, {
-      method: 'PUT',
-      body: {
-        version: current.version,
-        title: current.title,
-        slug: current.slug,
-        content: input.content,
       },
     }),
     'update',
@@ -295,7 +271,7 @@ test.describe('Editor', () => {
     await addProperty(page, 'status', 'draft');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     // Viewer shows the tag chip
     await page
@@ -336,7 +312,7 @@ test.describe('Editor', () => {
     await removeTag(page, 'andere');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await expect(page.locator('.page-metadata__tag-chip')).toHaveCount(0);
 
@@ -379,7 +355,7 @@ test.describe('Editor', () => {
     await page.locator('[data-testid="page-frontmatter-field-value-0"]').fill('two');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     // Viewer shows updated tag, not the old one
     await expect(
@@ -420,7 +396,7 @@ test.describe('Editor', () => {
 
     await editPage.savePage();
     await expect(saveButton).toBeDisabled();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     const propsToggle = page.locator('.page-metadata__props-toggle');
     await propsToggle.waitFor({ state: 'visible' });
@@ -464,7 +440,7 @@ test.describe('Editor', () => {
 
     await editPage.savePage();
     await expect(saveButton).toBeDisabled();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await expect(page.locator('.page-metadata')).toHaveCount(0);
 
@@ -527,39 +503,6 @@ test.describe('Editor', () => {
   });
 
   // ── Error codes ─────────────────────────────────────────────────────────────
-
-  test('editor-version-conflict-error-code-shown-on-save', async ({ page }) => {
-    const stamp = Date.now();
-    const slug = `editor-conflict-${stamp}`;
-
-    await createPageWithMetadata(page, {
-      title: `Editor Conflict ${stamp}`,
-      slug,
-      content: 'Original content.',
-    });
-
-    const viewPage = new ViewPage(page);
-    await viewPage.goto(`/${slug}`);
-    await viewPage.clickEditPageButton();
-
-    const editPage = new EditPage(page);
-    await editPage.writeContent(' local change');
-
-    // Simulate a concurrent save from another session
-    await updatePageByPath(page, {
-      path: `/${slug}`,
-      content: 'Concurrent save from another session.',
-    });
-
-    await page.locator('button[data-testid="save-page-button"]').click();
-
-    // The version-conflict toast must appear (identified by its error-code test ID)
-    await page.getByTestId('page-save-version-conflict-toast').waitFor({ state: 'visible' });
-
-    // Accepting the conflict resolves successfully
-    await page.getByTestId('page-save-version-conflict-action').click();
-    await page.getByText('Page saved successfully').last().waitFor({ state: 'visible' });
-  });
 
   test('editor-validation-error-blocks-save-with-reserved-property-key', async ({ page }) => {
     const stamp = Date.now();
@@ -717,45 +660,6 @@ test.describe('Editor', () => {
       }
     }
   });
-
-  // ── Editor lifecycle ────────────────────────────────────────────────────────
-
-  test('rename-via-tree-is-not-blocked-after-closing-editor', async ({ page }) => {
-    const stamp = Date.now();
-    const slug = `editor-rename-after-close-${stamp}`;
-    const title = `Editor Rename After Close ${stamp}`;
-    const renamedTitle = `${title} Renamed`;
-
-    await createPageWithMetadata(page, {
-      title,
-      slug,
-      content: 'Content.',
-    });
-
-    const viewPage = new ViewPage(page);
-    await viewPage.goto(`/${slug}`);
-    await viewPage.clickEditPageButton();
-
-    const editPage = new EditPage(page);
-    await editPage.expectEditorStillOpen();
-    await editPage.closeEditor();
-
-    // Regression: the editor store used to keep `page` populated after the
-    // editor unmounted, so renaming this same page via the tree's "..." menu
-    // was permanently blocked by a stale "currently being edited" toast even
-    // though the editor was already closed.
-    const treeView = new TreeView(page);
-    await treeView.openRenameDialogForPage(title);
-
-    const metadataDialog = new EditPageMetadataDialog(page);
-    await metadataDialog.fillTitle(renamedTitle);
-    await metadataDialog.submit();
-
-    await expect(page.getByText('currently being edited')).not.toBeVisible();
-    await page.getByText('renamed successfully').waitFor({ state: 'visible' });
-    await page.waitForURL(new RegExp(`/${slug}-renamed$`));
-    await expect(page.locator('.breadcrumbs-nav__current')).toHaveText(renamedTitle);
-  });
 });
 
 // ─── Line wrap ───────────────────────────────────────────────────────────────
@@ -845,7 +749,7 @@ test.describe('Editor formatting', () => {
     await page.keyboard.press('ArrowRight');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await page.locator('article strong').getByText('Bold Text').waitFor({ state: 'visible' });
   });
@@ -871,7 +775,7 @@ test.describe('Editor formatting', () => {
     await page.keyboard.press('ArrowRight');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await page.locator('article em').getByText('Italic Text').waitFor({ state: 'visible' });
   });
@@ -898,7 +802,7 @@ test.describe('Editor formatting', () => {
     await page.keyboard.press('ArrowRight');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await page.locator('article strong').getByText('Bold Text').waitFor({ state: 'visible' });
   });
@@ -924,7 +828,7 @@ test.describe('Editor formatting', () => {
     await page.keyboard.press('ArrowRight');
 
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await page.locator('article em').getByText('Italic Text').waitFor({ state: 'visible' });
   });

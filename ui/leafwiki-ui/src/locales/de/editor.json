@@ -1,4 +1,14 @@
 {
+  "draft": {
+    "editing": "Bearbeiten",
+    "publish": "Veröffentlichen",
+    "discard": "Verwerfen",
+    "discardTitle": "Diesen Entwurf verwerfen?",
+    "discardDescription": "Dadurch wird die unveröffentlichte Arbeitskopie dauerhaft gelöscht.",
+    "cancel": "Abbrechen",
+    "published": "Entwurf veröffentlicht",
+    "discarded": "Entwurf verworfen"
+  },
   "wikiLinkDisambiguation": {
     "title": "Mehrere Seiten gefunden",
     "descriptionPrefix": "Mehrere Seiten stimmen überein mit",
@@ -92,15 +102,6 @@
     "addTagPlaceholder": "Schlagwort hinzufügen",
     "keyPlaceholder": "Schlüssel",
     "valuePlaceholder": "Wert",
-    "tagCount_one": "{{count}} Schlagwort",
-    "tagCount_other": "{{count}} Schlagwörter",
-    "propertyCount_one": "{{count}} Eigenschaft",
-    "propertyCount_other": "{{count}} Eigenschaften",
-    "draft": "Entwurf",
-    "inheritedDraft": "Geerbter Entwurf",
-    "published": "Veröffentlicht",
-    "visibilityHeading": "Sichtbarkeit",
-    "keepDraftWhenParentPublished": "Entwurf beibehalten, wenn der übergeordnete Bereich veröffentlicht wird",
     "internalFieldsToggle": "Interne Felder",
     "addPropertyButton": "Eigenschaft hinzufügen",
     "flatHint": "Halten Sie die Felder vorerst flach. Wenn Sie später verschachtelte Metadaten benötigen, verwenden Sie Punkt-Schlüssel wie <code>seo.title</code>.",

@@ -21,7 +21,11 @@
     "descriptionSection": "输入新章节的标题",
     "titleLabel": "标题",
     "titlePlaceholder": "{{item}}标题",
-    "pathPrefix": "路径："
+    "pathPrefix": "路径：",
+    "createAsDraft": "创建为草稿",
+    "draft": "草稿",
+    "draftCreatedToast": "已创建草稿页面",
+    "keepDraftWhenParentPublished": "父页面发布时保留草稿"
   },
   "moveDialog": {
     "movedToast": "页面移动成功",

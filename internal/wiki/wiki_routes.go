@@ -86,6 +86,7 @@ func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
 		AddFavorite:     wikipages.NewAddFavoriteUseCase(w.tree, w.favorites),
 		RemoveFavorite:  wikipages.NewRemoveFavoriteUseCase(w.favorites),
 		ListFavorites:   wikipages.NewListFavoritesUseCase(w.tree, w.favorites, w.log),
+		Drafts:          w.drafts,
 		UserResolver:    w.userResolver,
 		AuthService:     w.auth,
 	})

@@ -1,4 +1,14 @@
 {
+  "draft": {
+    "editing": "Editing",
+    "publish": "Publish",
+    "discard": "Discard",
+    "discardTitle": "Discard this draft?",
+    "discardDescription": "This permanently deletes the unpublished working copy.",
+    "cancel": "Cancel",
+    "published": "Draft published",
+    "discarded": "Draft discarded"
+  },
   "wikiLinkDisambiguation": {
     "title": "Multiple pages found",
     "descriptionPrefix": "Several pages match",
@@ -92,15 +102,6 @@
     "addTagPlaceholder": "Add tag",
     "keyPlaceholder": "Key",
     "valuePlaceholder": "Value",
-    "tagCount_one": "{{count}} tag",
-    "tagCount_other": "{{count}} tags",
-    "propertyCount_one": "{{count}} property",
-    "propertyCount_other": "{{count}} properties",
-    "draft": "Draft",
-    "inheritedDraft": "Inherited draft",
-    "published": "Published",
-    "visibilityHeading": "Visibility",
-    "keepDraftWhenParentPublished": "Keep draft when parent is published",
     "internalFieldsToggle": "Internal fields",
     "addPropertyButton": "Add property",
     "flatHint": "Keep fields flat for now. If you need nested metadata later, use dot keys like <code>seo.title</code>.",

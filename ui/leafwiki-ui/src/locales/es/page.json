@@ -21,7 +21,11 @@
     "descriptionSection": "Introduce el título de la sección nueva",
     "titleLabel": "Título",
     "titlePlaceholder": "Título de {{item}}",
-    "pathPrefix": "Ruta:"
+    "pathPrefix": "Ruta:",
+    "createAsDraft": "Crear como borrador",
+    "draft": "Borrador",
+    "draftCreatedToast": "Página en borrador creada",
+    "keepDraftWhenParentPublished": "Conservar el borrador cuando se publique la página principal"
   },
   "moveDialog": {
     "movedToast": "Página movida correctamente",

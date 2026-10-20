@@ -28,9 +28,7 @@ export type PageNode = {
   children: PageNode[] | null
   kind: 'page' | 'section'
   pinned?: boolean
-  draft?: boolean
-  effectiveDraft?: boolean
-  ancestorDraft?: boolean
+  draft?: 'active' | 'pending'
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
@@ -44,20 +42,23 @@ export interface Page {
   properties?: Record<string, string>
   version: string
   kind: 'page' | 'section'
-  draft?: boolean
-  effectiveDraft?: boolean
-  ancestorDraft?: boolean
   metadata?: PageMetadata // optional metadata, because older API responses may not have it
 }
 
-type DraftStatus = Pick<Page, 'draft' | 'effectiveDraft'>
-
-export function isEffectivelyDraft(page?: DraftStatus | null): boolean {
-  return Boolean(page?.effectiveDraft ?? page?.draft)
+export type DraftResponse = {
+  page: Page
+  baseVersion: string
 }
 
-export function isInheritedDraft(page?: DraftStatus | null): boolean {
-  return isEffectivelyDraft(page) && !page?.draft
+export type PendingDraftResponse = {
+  page: Page
+  pending: true
+  parentId: string
+}
+
+export type DraftSummaryResponse = {
+  drafts: { pageId: string }[]
+  pending: { id: string; parentId: string; title: string; slug: string }[]
 }
 
 export type PermalinkTarget = {
@@ -127,21 +128,66 @@ export async function createPage({
   slug,
   parentId,
   kind,
-  draft = false,
 }: {
   title: string
   slug: string
   parentId: string | null
   kind: 'page' | 'section'
-  draft?: boolean
 }) {
   if (parentId === '') parentId = null
 
   return await fetchWithAuth(`/api/pages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, slug, parentId, kind, draft }),
+    body: JSON.stringify({ title, slug, parentId, kind }),
   })
+}
+
+export async function createPendingDraft(input: {
+  title: string
+  slug: string
+  parentId: string | null
+}): Promise<PendingDraftResponse> {
+  return (await fetchWithAuth('/api/pages/drafts', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })) as PendingDraftResponse
+}
+
+export async function listDrafts(): Promise<DraftSummaryResponse> {
+  return (await fetchWithAuth('/api/pages/drafts')) as DraftSummaryResponse
+}
+
+export async function getPendingDraft(
+  id: string,
+  signal?: AbortSignal,
+): Promise<PendingDraftResponse> {
+  return (await fetchWithAuth(`/api/pages/drafts/${id}`, {
+    signal,
+  })) as PendingDraftResponse
+}
+
+export async function savePendingDraft(
+  id: string,
+  title: string,
+  slug: string,
+  content: string,
+  tags: string[],
+  properties: Record<string, string>,
+): Promise<PendingDraftResponse> {
+  return (await fetchWithAuth(`/api/pages/drafts/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title, slug, content, tags, properties }),
+  })) as PendingDraftResponse
+}
+
+export async function publishPendingDraft(id: string): Promise<Page> {
+  return (await fetchWithAuth(`/api/pages/drafts/${id}/publish`, {
+    method: 'POST',
+  })) as Page
+}
+
+export async function discardPendingDraft(id: string): Promise<void> {
+  await fetchWithAuth(`/api/pages/drafts/${id}`, { method: 'DELETE' })
 }
 
 export async function copyPage(
@@ -176,16 +222,43 @@ export async function updatePage(
   })
 }
 
-export async function updatePageDraft(
+export async function getDraft(
   id: string,
-  version: string,
-  draft: boolean,
-): Promise<Page> {
-  return await fetchWithAuth<Page>(`/api/pages/${id}/draft`, {
+  signal?: AbortSignal,
+): Promise<DraftResponse> {
+  return (await fetchWithAuth(`/api/pages/${id}/draft`, {
+    signal,
+  })) as DraftResponse
+}
+
+export async function startDraft(id: string): Promise<DraftResponse> {
+  return (await fetchWithAuth(`/api/pages/${id}/draft`, {
+    method: 'POST',
+  })) as DraftResponse
+}
+
+export async function saveDraft(
+  id: string,
+  title: string,
+  content: string,
+  tags: string[],
+  properties: Record<string, string>,
+): Promise<DraftResponse> {
+  return (await fetchWithAuth(`/api/pages/${id}/draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version, draft }),
-  })
+    body: JSON.stringify({ title, content, tags, properties }),
+  })) as DraftResponse
+}
+
+export async function publishDraft(id: string): Promise<Page> {
+  return (await fetchWithAuth(`/api/pages/${id}/draft/publish`, {
+    method: 'POST',
+  })) as Page
+}
+
+export async function discardDraft(id: string): Promise<void> {
+  await fetchWithAuth(`/api/pages/${id}/draft`, { method: 'DELETE' })
 }
 
 export async function deletePage(

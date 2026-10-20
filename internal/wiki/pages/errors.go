@@ -30,7 +30,10 @@ const (
 	ErrCodePageInvalidRequest    = "page_invalid_request"
 	ErrCodePageInvalidPayload    = "page_invalid_payload"
 	ErrCodePageInvalidTargetKind = "page_invalid_target_kind"
-	ErrCodePageDraftUnavailable  = "page_draft_unavailable"
+	ErrCodeDraftNotFound         = "draft_not_found"
+	ErrCodeDraftExists           = "draft_exists"
+	ErrCodeDraftConflict         = "draft_conflict"
+	ErrCodeDraftBlocked          = "draft_operation_blocked"
 )
 
 func newPageRootOperationError(operation string) *sharederrors.LocalizedError {
@@ -64,16 +67,6 @@ func respondWithPageStatusError(c *gin.Context, status int, code, message, templ
 			Args:     append([]string(nil), args...),
 		},
 	})
-}
-
-func respondWithDraftUnavailable(c *gin.Context) {
-	respondWithPageStatusError(
-		c,
-		http.StatusForbidden,
-		ErrCodePageDraftUnavailable,
-		"Drafts are unavailable when authentication is disabled",
-		"drafts are unavailable when authentication is disabled",
-	)
 }
 
 // respondWithPageError is the central error handler for all page endpoints.
@@ -124,17 +117,15 @@ func respondWithPageError(c *gin.Context, err error) {
 
 func pageErrorStatus(code string) int {
 	switch code {
-	case ErrCodePageNotFound, ErrCodePageParentNotFound:
+	case ErrCodePageNotFound, ErrCodePageParentNotFound, ErrCodeDraftNotFound:
 		return http.StatusNotFound
 	case ErrCodePageHasChildren, ErrCodePageCircularMove, ErrCodePageCannotMoveToSelf, ErrCodePageSlugConflict,
 		ErrCodePageConvertNotAllowed, ErrCodePageRootOperation, ErrCodePageVersionRequired,
 		ErrCodePageMissingPath, ErrCodePageMissingID, ErrCodePageMissingTitle, ErrCodePageInvalidRequest,
-		ErrCodePageInvalidPayload, ErrCodePageInvalidTargetKind:
+		ErrCodePageInvalidPayload, ErrCodePageInvalidTargetKind, ErrCodeDraftBlocked:
 		return http.StatusBadRequest
-	case ErrCodePageVersionConflict:
+	case ErrCodePageVersionConflict, ErrCodeDraftExists, ErrCodeDraftConflict:
 		return http.StatusConflict
-	case ErrCodePageDraftUnavailable:
-		return http.StatusForbidden
 	case favorites.ErrCodeFavoritesStoreUnavailable:
 		return http.StatusServiceUnavailable
 	default:

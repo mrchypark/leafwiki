@@ -123,7 +123,9 @@
     "convertedBackToast": "\"{{title}}\" vuelve a ser una página",
     "convertBackErrorFallback": "No se pudo volver a convertir la sección en página",
     "reorderErrorFallback": "No se pudieron reordenar las páginas",
-    "moveErrorFallback": "No se pudo mover la página"
+    "moveErrorFallback": "No se pudo mover la página",
+    "draftMarker": "Borrador",
+    "pendingDraftMarker": "Borrador sin publicar"
   },
   "codeBlock": {
     "copyErrorToast": "No se pudo copiar el código",

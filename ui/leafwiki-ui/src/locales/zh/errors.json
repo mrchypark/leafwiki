@@ -109,5 +109,10 @@
   "user not found": "未找到用户",
   "zip entry exceeds the per-file size limit": "上传压缩包内的某个文件过大",
   "decompressed zip contents exceed the total size limit": "上传压缩包解压后过大",
-  "zip entry's decompression ratio exceeds the allowed maximum": "上传压缩包疑似解压炸弹"
+  "zip entry's decompression ratio exceeds the allowed maximum": "上传压缩包疑似解压炸弹",
+  "a draft already exists": "草稿已存在",
+  "discard or publish the draft before changing this page": "修改此页面前请丢弃或发布草稿",
+  "draft not found": "未找到草稿",
+  "draft storage failed": "草稿保存失败",
+  "the published page changed while this draft was open": "此草稿打开期间已发布页面发生了变更"
 }

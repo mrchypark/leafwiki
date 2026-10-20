@@ -309,74 +309,6 @@ async function createTopLevelNode(
   }, input);
 }
 
-async function updatePageByPath(
-  page: import('@playwright/test').Page,
-  input: { path: string; title?: string; slug?: string; content: string },
-) {
-  await page.evaluate(async ({ path, title, slug, content }) => {
-    const normalizedPath = path.replace(/^\/+/, '');
-
-    function getCsrfTokenFromCookie(): string | null {
-      const hostMatch =
-        document.cookie.match(/(?:^|;\s*)__Host-leafwiki_csrf=([^;]+)/) ??
-        document.cookie.match(/(?:^|;\s*)leafwiki_csrf=([^;]+)/);
-
-      if (!hostMatch) return null;
-
-      try {
-        return decodeURIComponent(hostMatch[1]);
-      } catch {
-        return hostMatch[1];
-      }
-    }
-
-    const csrfToken = getCsrfTokenFromCookie();
-    if (!csrfToken) {
-      throw new Error('Missing CSRF token cookie for test page update');
-    }
-
-    const pageResponse = await fetch(
-      `/api/pages/by-path?path=${encodeURIComponent(normalizedPath)}`,
-      {
-        credentials: 'include',
-        headers: {
-          'X-CSRF-Token': csrfToken,
-        },
-      },
-    );
-
-    if (!pageResponse.ok) {
-      throw new Error(`Failed to load page ${normalizedPath}: ${pageResponse.status}`);
-    }
-
-    const currentPage = (await pageResponse.json()) as {
-      id: string;
-      title: string;
-      slug: string;
-      version: string;
-    };
-
-    const updateResponse = await fetch(`/api/pages/${currentPage.id}`, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
-      },
-      body: JSON.stringify({
-        version: currentPage.version,
-        title: title ?? currentPage.title,
-        slug: slug ?? currentPage.slug,
-        content,
-      }),
-    });
-
-    if (!updateResponse.ok) {
-      throw new Error(`Failed to update page ${normalizedPath}: ${updateResponse.status}`);
-    }
-  }, input);
-}
-
 async function createChildPagesByPath(
   page: import('@playwright/test').Page,
   input: { parentPath: string; titles: string[] },
@@ -916,7 +848,7 @@ async function expectEditAndSaveShortcutWorks(
   });
   await page.getByText('Page saved successfully').waitFor({ state: 'visible' });
 
-  await editPage.closeEditor();
+  await editPage.publishDraft();
 
   await page.locator('article').getByText(newContent).waitFor({ state: 'visible' });
 }
@@ -962,7 +894,7 @@ async function expectEditorFormattingShortcutsWork(
   });
 
   await editPage.savePage();
-  await editPage.closeEditor();
+  await editPage.publishDraft();
 
   await page.locator('article strong').getByText('Bold Text').waitFor({
     state: 'visible',
@@ -996,7 +928,7 @@ async function expectMarkdownLinkAutocompleteWorks(page: import('@playwright/tes
   await page.keyboard.type(')');
 
   await editPage.savePage();
-  await editPage.closeEditor();
+  await editPage.publishDraft();
 
   const welcomeLink = page.locator(`article a[href="${toAppPath('/welcome-to-leafwiki')}"]`);
   await welcomeLink.getByText('Welcome').waitFor({ state: 'visible' });
@@ -1022,7 +954,7 @@ async function expectSearchAndReplaceWorks(page: import('@playwright/test').Page
   await editPage.openReplacePanel();
   await editPage.replaceAll('Alpha', 'Beta');
   await editPage.savePage();
-  await editPage.closeEditor();
+  await editPage.publishDraft();
 
   const content = await viewPage.getContent();
   test.expect(content).toContain('Beta paragraph');
@@ -1135,32 +1067,6 @@ test.describe('Authenticated', () => {
     await treeView.expectNumberOfTreeNodes(curNodeCount + 2);
   });
 
-  test('edit-page-metadata-keeps-existing-slug', async ({ page }) => {
-    const slug = `metadata-stable-${Date.now()}`;
-    const title = `Metadata Stable ${Date.now()}`;
-
-    await createPageWithContent(page, {
-      title,
-      slug,
-      content: 'Metadata regression guard',
-    });
-
-    const viewPage = new ViewPage(page);
-    await viewPage.goto(`/${slug}`);
-    await viewPage.clickEditPageButton();
-
-    const editPage = new EditPage(page);
-    await editPage.openMetadataDialog();
-
-    const editPageMetadataDialog = new EditPageMetadataDialog(page);
-    await editPageMetadataDialog.expectSlug(slug);
-
-    await page.keyboard.press('Escape');
-    await page.locator('[data-testid="edit-page-metadata-dialog"]').waitFor({
-      state: 'hidden',
-    });
-  });
-
   test('tags-panel-suggests-tags-and-lists-matching-pages', async ({ page }) => {
     const stamp = Date.now();
     const matchingTag = `e2e-tags-${stamp}`;
@@ -1246,17 +1152,12 @@ test.describe('Authenticated', () => {
       state: 'hidden',
     });
 
-    await viewPage.clickEditPageButton();
-    const editPage = new EditPage(page);
-    await editPage.openMetadataDialog();
+    await treeView.openRenameDialogForPage(childTitle, sourceParentTitle);
 
     const metadataDialog = new EditPageMetadataDialog(page);
     await metadataDialog.fillTitle(renamedChildTitle);
     await metadataDialog.expectSlug(renamedChildTitle);
     await metadataDialog.submit();
-
-    await editPage.savePage();
-    await editPage.closeEditor();
 
     await movePageByPath(page, {
       path: `${sourceParentTitle}/${renamedChildTitle}`,
@@ -1369,7 +1270,7 @@ test.describe('Authenticated', () => {
     const editPage = new EditPage(page);
     await editPage.writeContent('```ts\nconst answer = 42;\nconsole.log(answer);\n```');
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     const copyButton = page.locator('button[data-testid="markdown-code-copy-button"]').first();
     await copyButton.waitFor({ state: 'visible' });
@@ -1425,56 +1326,11 @@ for the page edited at ${new Date().toISOString()}
     const editPage = new EditPage(page);
     await editPage.writeContent(newContent);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     const content = await viewPage.getContent();
     test.expect(content).toContain('This is the new content!');
     test.expect(content).toContain('Bold Text');
-  });
-
-  test('edit-page-recovers-from-optimistic-lock-conflict', async ({ page }) => {
-    const stamp = Date.now();
-    const title = `Optimistic Lock Page ${stamp}`;
-    const slug = `optimistic-lock-page-${stamp}`;
-    const originalContent = 'Original content before concurrent edit.\n';
-    const remoteContent = 'Content saved from another request.';
-    const localDraft = '\nLocal draft that should win after save anyway.';
-
-    await createPageWithContent(page, {
-      title,
-      slug,
-      content: originalContent,
-    });
-
-    const viewPage = new ViewPage(page);
-    await viewPage.goto(`/${slug}`);
-    await viewPage.clickEditPageButton();
-
-    const editPage = new EditPage(page);
-    await editPage.writeContent(localDraft);
-
-    await updatePageByPath(page, {
-      path: `/${slug}`,
-      content: remoteContent,
-    });
-
-    await page.locator('button[data-testid="save-page-button"]').click();
-
-    await page.getByTestId('page-save-version-conflict-toast').waitFor({
-      state: 'visible',
-    });
-
-    await page.getByTestId('page-save-version-conflict-action').click();
-    await page.getByText('Page saved successfully').last().waitFor({
-      state: 'visible',
-    });
-
-    await editPage.closeEditor();
-
-    const content = await viewPage.getContent();
-    test.expect(content).toContain('Original content before concurrent edit.');
-    test.expect(content).toContain('Local draft that should win after save anyway.');
-    test.expect(content).not.toContain(remoteContent);
   });
 
   test('opened page stays marked in navigation during edit mode without base path', async ({
@@ -2479,7 +2335,7 @@ First reference[^leafwiki] and second reference[^leafwiki]
     await editPage.uploadAsset(currentDir + '/../assets/upload-test.png');
     await editPage.insertFirstAssetIntoPage();
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
     await treeView.clickPageByTitle(title);
     await expect(page.locator('article > h1')).toHaveText(title);
 
@@ -2666,7 +2522,7 @@ graph TD;
     const editPage = new EditPage(page);
     await editPage.writeContent(mermaidContent);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     // expects at least one SVG element (the mermaid diagram)
     const svgCount = await viewPage.amountOfSVGElements();
@@ -2738,7 +2594,7 @@ graph TD;
     const editPage = new EditPage(page);
     await editPage.writeContent(content);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     const inlineCode = page.locator('article code.inline-code').first();
     await inlineCode.waitFor({ state: 'visible' });
@@ -3056,7 +2912,7 @@ Paragraph outside the list.
     const editPage = new EditPage(page);
     await editPage.writeContent(`[${siblingTitle}](../${siblingTitle})`);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await movePageByPath(page, {
       path: `${parentTitle}/${childTitle}`,
@@ -3205,7 +3061,7 @@ Paragraph outside the list.
     const editPage = new EditPage(page);
     await editPage.writeContent(`[${targetTitle}](/${parentTitle}/${targetTitle})`);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     const referrerBefore = await readPageByPath(page, referrerTitle);
     expect(referrerBefore.status).toBe(200);
@@ -3500,7 +3356,7 @@ Paragraph outside the list.
     const editPage = new EditPage(page);
     await editPage.writeContent(`[${targetTitle}](/${targetTitle})`);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await treeView.clickPageByTitle(targetTitle);
     await viewPage.clickDeletePageButton();
@@ -3578,7 +3434,7 @@ Paragraph outside the list.
     const editPage = new EditPage(page);
     await editPage.writeContent(content);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     // switch to search tab
     await viewPage.switchToSearchTab();
@@ -3834,7 +3690,7 @@ Paragraph outside the list.
     const editPage = new EditPage(page);
     await editPage.writeContent('[' + linkLabel + '](../' + targetTitle + ')');
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await page.getByRole('link', { name: linkLabel }).click();
     await page.waitForURL(new RegExp('/' + parentTitle + '/' + targetTitle + '$'));
@@ -3948,7 +3804,7 @@ Paragraph outside the list.
     test.expect(await page.locator('.cm-editor').isVisible()).toBeTruthy();
   });
 
-  test('edit-metadata-on-nested-page-keeps-parent-path', async ({ page }) => {
+  test('rename-dialog-on-nested-page-keeps-parent-path', async ({ page }) => {
     const suffix = Date.now();
     const parentTitle = 'meta-parent-' + suffix;
     const childTitle = 'meta-child-' + suffix;
@@ -3966,20 +3822,13 @@ Paragraph outside the list.
     await treeView.expandNodeByTitle(parentTitle);
     await treeView.clickPageByTitle(childTitle);
 
-    const viewPage = new ViewPage(page);
-    await viewPage.clickEditPageButton();
-
-    const editPage = new EditPage(page);
-    await editPage.openMetadataDialog();
+    await treeView.openRenameDialogForPage(childTitle, parentTitle);
 
     const metadataDialog = new EditPageMetadataDialog(page);
     await metadataDialog.fillTitle(renamedChildTitle);
     await metadataDialog.expectSlug(renamedChildTitle);
     await metadataDialog.expectPath(expectedPath);
     await metadataDialog.submit();
-
-    await editPage.savePage();
-    await editPage.closeEditor();
 
     await page.waitForURL(new RegExp('/' + expectedPath + '$'));
   });
@@ -4038,7 +3887,7 @@ Paragraph outside the list.
     // Insert first asset into page
     await editPage.insertFirstAssetIntoPage();
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
     viewPage = new ViewPage(page);
     await viewPage.amountOfImages().then((count) => {
       test.expect(count).toBeGreaterThan(0);
@@ -4246,7 +4095,7 @@ Outro paragraph`;
     await editPage.uploadAsset(currentDir + '/../assets/upload-test.png');
     await editPage.insertFirstAssetIntoPage();
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     await viewPage.amountOfImages().then((count) => {
       test.expect(count).toBeGreaterThan(0);
@@ -4300,13 +4149,13 @@ Outro paragraph`;
     const editPage = new EditPage(page);
     await editPage.writeContent(firstRevisionContent);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
 
     viewPage = new ViewPage(page);
     await viewPage.clickEditPageButton();
     await editPage.writeContent(`\n${secondRevisionContent}`);
     await editPage.savePage();
-    await editPage.closeEditor();
+    await editPage.publishDraft();
     await treeView.clickPageByTitle(title);
     await expect(page.locator('article > h1')).toHaveText(title);
 

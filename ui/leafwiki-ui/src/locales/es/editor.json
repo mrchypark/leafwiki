@@ -128,5 +128,15 @@
   },
   "titleBar": {
     "dirtyIndicator": "(Cambios)"
+  },
+  "draft": {
+    "cancel": "Cancelar",
+    "discard": "Descartar",
+    "discardDescription": "Esto elimina permanentemente la copia de trabajo no publicada.",
+    "discardTitle": "¿Descartar este borrador?",
+    "discarded": "Borrador descartado",
+    "editing": "Editando",
+    "publish": "Publicar",
+    "published": "Publicado"
   }
 }

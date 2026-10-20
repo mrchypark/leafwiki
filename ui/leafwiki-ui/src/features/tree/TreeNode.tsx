@@ -1,16 +1,12 @@
+import { TooltipWrapper } from '@/components/TooltipWrapper'
 import { TreeViewActionButton } from '@/features/tree/TreeViewActionButton'
-import { DraftBadge } from '@/components/DraftBadge'
-import {
-  isEffectivelyDraft,
-  isInheritedDraft,
-  NODE_KIND_SECTION,
-  PageNode,
-} from '@/lib/api/pages'
+import { NODE_KIND_SECTION, PageNode } from '@/lib/api/pages'
 import {
   DIALOG_ADD_PAGE,
   DIALOG_DELETE_PAGE_CONFIRMATION,
 } from '@/lib/registries'
 import { createNavigationVisitState } from '@/lib/navigationVisit'
+import { buildPendingDraftEditUrl } from '@/lib/routePath'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useIsReadOnly } from '@/lib/useIsReadOnly'
 import { useDialogsStore } from '@/stores/dialogs'
@@ -18,7 +14,13 @@ import { useSessionStore } from '@/stores/session'
 import { useTreeStore } from '@/stores/tree'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import clsx from 'clsx'
-import { ChevronUp, FilePlus, FolderPlus } from 'lucide-react'
+import {
+  ChevronUp,
+  FileClock,
+  FilePenLine,
+  FilePlus,
+  FolderPlus,
+} from 'lucide-react'
 import React, { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
@@ -52,6 +54,15 @@ export const TreeNode = React.memo(function TreeNode({
   )
   const isLoggedIn = useSessionStore((s) => s.user !== null)
   const isActive = isStoreActive
+  const isPendingDraft = node.draft === 'pending'
+  const isDraft = !!node.draft
+  const draftLabel = node.draft
+    ? t(
+        isPendingDraft
+          ? 'treeActions.pendingDraftMarker'
+          : 'treeActions.draftMarker',
+      )
+    : ''
   // Keeps this row visually distinct while the delete confirmation dialog
   // it opened is still on screen -- the "..." menu that triggered it closes
   // immediately, which otherwise left the target row indistinguishable
@@ -84,7 +95,7 @@ export const TreeNode = React.memo(function TreeNode({
     s.dropTarget?.nodeId === node.id ? s.dropTarget.zone : null,
   )
   const dndData = useMemo(() => ({ node }), [node])
-  const dndDisabled = !dndEnabled || inClosedBranch
+  const dndDisabled = !dndEnabled || inClosedBranch || isDraft
   const {
     setNodeRef: setDragRef,
     listeners,
@@ -110,7 +121,9 @@ export const TreeNode = React.memo(function TreeNode({
   const linkText = (
     <div className={clsx('flex', 'tree-node__tooltip-parent')}>
       <Link
-        to={`/${node.path}`}
+        to={
+          isPendingDraft ? buildPendingDraftEditUrl(node.id) : `/${node.path}`
+        }
         state={createNavigationVisitState()}
         className="tree-node__link"
         data-testid={`tree-node-link-${node.id}`}
@@ -126,8 +139,19 @@ export const TreeNode = React.memo(function TreeNode({
         >
           {node.title || t('treeActions.untitledPage')}
         </span>
-        {isEffectivelyDraft(node) && (
-          <DraftBadge inherited={isInheritedDraft(node)} />
+        {node.draft && (
+          <TooltipWrapper asChild label={draftLabel}>
+            <span
+              className="text-muted-foreground shrink-0"
+              aria-label={draftLabel}
+            >
+              {node.draft === 'pending' ? (
+                <FileClock size={14} />
+              ) : (
+                <FilePenLine size={14} />
+              )}
+            </span>
+          </TooltipWrapper>
         )}
       </Link>
     </div>
@@ -139,7 +163,7 @@ export const TreeNode = React.memo(function TreeNode({
     <>
       <div
         ref={setRowRef}
-        {...(dndEnabled ? listeners : {})}
+        {...(!dndDisabled ? listeners : {})}
         className={clsx('tree-node', {
           'tree-node--active': isActive,
           'tree-node--inactive': !isActive,
@@ -172,7 +196,7 @@ export const TreeNode = React.memo(function TreeNode({
         />
 
         <div className="tree-node__main">
-          {node.kind === NODE_KIND_SECTION && (
+          {(node.kind === NODE_KIND_SECTION || hasChildren) && (
             <ChevronUp
               data-testid={`tree-node-toggle-icon-${node.id}`}
               size={16}
@@ -180,39 +204,39 @@ export const TreeNode = React.memo(function TreeNode({
                 'tree-node__toggle--open': open,
                 'tree-node__toggle--closed': !open,
               })}
-              onClick={() =>
-                node.kind === NODE_KIND_SECTION && toggleNode(node.id)
-              }
+              onClick={() => toggleNode(node.id)}
             />
           )}
           {
             // add empty space to align with nodes that have children
-            node.kind !== NODE_KIND_SECTION && (
+            node.kind !== NODE_KIND_SECTION && !hasChildren && (
               <div className="tree-node__toggle-spacer" />
             )
           }
           {linkText}
           {(isMobile || hovered || isActionsMenuOpen) && (
             <div className={clsx('tree-node__actions', treeActionButtonStyle)}>
-              {!readOnlyMode && (
-                <TreeViewActionButton
-                  actionName="add"
-                  icon={
-                    <FilePlus
-                      size={18}
-                      className={clsx(
-                        'tree-node__action-icon',
-                        isMobile && 'text-brand/70!',
-                      )}
-                    />
-                  }
-                  tooltip={t('treeActions.createNewPageTooltip')}
-                  onClick={() =>
-                    openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
-                  }
-                />
+              {!readOnlyMode && !isDraft && (
+                <>
+                  <TreeViewActionButton
+                    actionName="add"
+                    icon={
+                      <FilePlus
+                        size={18}
+                        className={clsx(
+                          'tree-node__action-icon',
+                          isMobile && 'text-brand/70!',
+                        )}
+                      />
+                    }
+                    tooltip={t('treeActions.createNewPageTooltip')}
+                    onClick={() =>
+                      openDialog(DIALOG_ADD_PAGE, { parentId: node.id })
+                    }
+                  />
+                </>
               )}
-              {(!readOnlyMode || isLoggedIn) && (
+              {!isPendingDraft && (!readOnlyMode || isLoggedIn) && (
                 <TreeNodeActionsMenu node={node} />
               )}
             </div>
