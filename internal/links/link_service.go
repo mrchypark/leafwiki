@@ -2,12 +2,8 @@ package links
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
-	"sync"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 )
 
@@ -15,7 +11,6 @@ type LinkService struct {
 	storageDir  string
 	treeService *tree.TreeService
 	store       *LinksStore
-	reconcileMu sync.Mutex
 }
 
 func NewLinkService(storageDir string, treeService *tree.TreeService, store *LinksStore) *LinkService {
@@ -31,12 +26,6 @@ func (b *LinkService) IndexAllPages() error {
 }
 
 func (b *LinkService) IndexAllPagesContext(ctx context.Context) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.indexAllPagesContext(ctx)
-}
-
-func (b *LinkService) indexAllPagesContext(ctx context.Context) error {
 	if !b.treeService.IsLoaded() {
 		return nil
 	}
@@ -45,7 +34,7 @@ func (b *LinkService) indexAllPagesContext(ctx context.Context) error {
 		return err
 	}
 
-	if err := b.clearLinks(); err != nil {
+	if err := b.store.Clear(); err != nil {
 		return err
 	}
 
@@ -68,9 +57,6 @@ func (b *LinkService) indexAllPagesContext(ctx context.Context) error {
 		if errs[i] != nil {
 			return errs[i]
 		}
-		if pagevisibility.IsInDraftSubtree(page.PageNode) {
-			continue
-		}
 		targets := collectTargetsFromContent(b.treeService, page.CalculatePath(), page.Content)
 		if err := b.store.AddLinks(page.ID, page.Title, targets); err != nil {
 			return err
@@ -81,12 +67,6 @@ func (b *LinkService) indexAllPagesContext(ctx context.Context) error {
 }
 
 func (b *LinkService) ClearLinks() error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.clearLinks()
-}
-
-func (b *LinkService) clearLinks() error {
 	return b.store.Clear()
 }
 
@@ -125,12 +105,6 @@ func (b *LinkService) GetRefactorSourcePageIDsForWikiLinkTitle(title string) ([]
 }
 
 func (b *LinkService) UpdateRewrittenLinksAndHealForPages(pages []*tree.Page, rules []RewriteRule) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.updateRewrittenLinksAndHealForPages(pages, rules)
-}
-
-func (b *LinkService) updateRewrittenLinksAndHealForPages(pages []*tree.Page, rules []RewriteRule) error {
 	outgoingByPageID, err := b.store.GetOutgoingLinksForPages(pageIDsForPages(pages))
 	if err != nil {
 		return err
@@ -141,21 +115,11 @@ func (b *LinkService) updateRewrittenLinksAndHealForPages(pages []*tree.Page, ru
 		if page == nil {
 			continue
 		}
-		current, same := b.currentPageForLinkWrite(page, page.Content)
-		if current == nil || pagevisibility.IsInDraftSubtree(current.PageNode) {
-			if err := b.deleteOutgoingLinksForPage(page.ID); err != nil {
-				return err
-			}
-			continue
-		}
-		if !same {
-			continue
-		}
-		pagePath := normalizeWikiPath(current.CalculatePath())
-		targets := rewriteResolvedTargets(pagePath, outgoingByPageID[current.ID], rules, b.treeService)
+		pagePath := normalizeWikiPath(page.CalculatePath())
+		targets := rewriteResolvedTargets(pagePath, outgoingByPageID[page.ID], rules, b.treeService)
 		updates = append(updates, PageLinkUpdate{
-			FromPageID: current.ID,
-			FromTitle:  current.Title,
+			FromPageID: page.ID,
+			FromTitle:  page.Title,
 			ToPath:     pagePath,
 			Targets:    targets,
 		})
@@ -203,12 +167,9 @@ func (b *LinkService) GetLinkStatusForPage(pageID string, pagePath string) (*Lin
 	brokenOut := make([]OutgoingResultItem, 0)
 	for _, outgoing := range outgoings {
 		item := toOutgoingResultItem(b.treeService, outgoing)
-		if outgoing.Broken && b.isAmbiguousWikilinkOutgoing(outgoing) {
-			item.Broken = false
-			okOut = append(okOut, item)
-			continue
-		}
-		if item.Broken {
+		// Ambiguous links are not broken: they resolve to every matching page
+		// and are listed as backlinks there.
+		if outgoing.State == LinkBroken {
 			brokenOut = append(brokenOut, item)
 		} else {
 			okOut = append(okOut, item)
@@ -234,7 +195,7 @@ func (b *LinkService) mergeAmbiguousWikiLinksIntoBacklinks(pageID string, pageTi
 		return backlinks, nil
 	}
 
-	matches := publishedPagesByTitle(b.treeService, pageTitle)
+	matches := b.treeService.FindPagesByTitle(pageTitle)
 	if len(matches) <= 1 {
 		return backlinks, nil
 	}
@@ -250,7 +211,7 @@ func (b *LinkService) mergeAmbiguousWikiLinksIntoBacklinks(pageID string, pageTi
 		return backlinks, nil
 	}
 
-	ambiguousRefs, err := b.store.GetBrokenIncomingForPath(wikilinkSentinel(pageTitle))
+	ambiguousRefs, err := b.store.GetAmbiguousIncomingForTitle(pageTitle)
 	if err != nil {
 		return nil, err
 	}
@@ -280,56 +241,22 @@ func (b *LinkService) mergeAmbiguousWikiLinksIntoBacklinks(pageID string, pageTi
 	return merged, nil
 }
 
-func (b *LinkService) isAmbiguousWikilinkOutgoing(outgoing Outgoing) bool {
-	if !outgoing.Broken || !IsWikilinkSentinel(outgoing.ToPath) {
-		return false
-	}
-
-	return len(publishedPagesByTitle(b.treeService, WikilinkTitleFromSentinel(outgoing.ToPath))) > 1
-}
-
 func (b *LinkService) UpdateLinksForPage(page *tree.Page, content string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.updateLinksForPage(page, content)
-}
-
-func (b *LinkService) updateLinksForPage(page *tree.Page, content string) error {
-	if page == nil {
-		return nil
-	}
-	current, _ := b.currentPageForLinkWrite(page, content)
-	if current == nil || pagevisibility.IsInDraftSubtree(current.PageNode) {
-		return b.deleteOutgoingLinksForPage(page.ID)
-	}
-	targets := collectTargetsFromContent(b.treeService, current.CalculatePath(), current.Content)
-	return b.store.AddLinks(current.ID, current.Title, targets)
+	targets := collectTargetsFromContent(b.treeService, page.CalculatePath(), content)
+	return b.store.AddLinks(page.ID, page.Title, targets)
 }
 
 func (b *LinkService) UpdateLinksAndHealForPages(pages []*tree.Page) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.updateLinksAndHealForPages(pages)
-}
-
-func (b *LinkService) updateLinksAndHealForPages(pages []*tree.Page) error {
 	updates := make([]PageLinkUpdate, 0, len(pages))
 	for _, page := range pages {
 		if page == nil {
 			continue
 		}
-		current, _ := b.currentPageForLinkWrite(page, page.Content)
-		if current == nil || pagevisibility.IsInDraftSubtree(current.PageNode) {
-			if err := b.deleteOutgoingLinksForPage(page.ID); err != nil {
-				return err
-			}
-			continue
-		}
-		pagePath := normalizeWikiPath(current.CalculatePath())
-		targets := collectTargetsFromContent(b.treeService, pagePath, current.Content)
+		pagePath := normalizeWikiPath(page.CalculatePath())
+		targets := collectTargetsFromContent(b.treeService, pagePath, page.Content)
 		updates = append(updates, PageLinkUpdate{
-			FromPageID: current.ID,
-			FromTitle:  current.Title,
+			FromPageID: page.ID,
+			FromTitle:  page.Title,
 			ToPath:     pagePath,
 			Targets:    targets,
 		})
@@ -344,276 +271,48 @@ func (b *LinkService) updateLinksAndHealForPages(pages []*tree.Page) error {
 
 // DeleteOutgoingLinksForPage removes all outgoing link records for a page.
 func (b *LinkService) DeleteOutgoingLinksForPage(pageID string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.deleteOutgoingLinksForPage(pageID)
-}
-
-func (b *LinkService) deleteOutgoingLinksForPage(pageID string) error {
 	return b.store.DeleteOutgoingLinks(pageID)
 }
 
 // MarkIncomingLinksBrokenForPage marks all incoming links pointing to pageID as broken.
 func (b *LinkService) MarkIncomingLinksBrokenForPage(pageID string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	_, err := b.markIncomingLinksBrokenForPage(pageID)
-	return err
-}
-
-func (b *LinkService) markIncomingLinksBrokenForPage(pageID string) ([]string, error) {
 	return b.store.MarkIncomingLinksBroken(pageID)
 }
 
-// RemoveLinksForDraftPage removes both sides of a page's link relationships
-// only while the current tree still places it in a draft subtree.
-func (b *LinkService) RemoveLinksForDraftPage(page *tree.Page) error {
-	if page == nil {
-		return nil
-	}
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-
-	current, _ := b.currentPageForLinkWrite(page, page.Content)
-	if current == nil || !pagevisibility.IsInDraftSubtree(current.PageNode) {
-		return nil
-	}
-	if err := b.deleteOutgoingLinksForPage(current.ID); err != nil {
-		return err
-	}
-	_, err := b.markIncomingLinksBrokenForPage(current.ID)
-	return err
+// MarkLinksBrokenForPath marks links pointing to an exact path as broken.
+func (b *LinkService) MarkLinksBrokenForPath(toPath string) error {
+	toPath = normalizeWikiPath(toPath)
+	return b.store.MarkLinksBrokenForPath(toPath)
 }
 
-// ReconcileLinksForAffectedPages breaks links to the page identities that
-// moved or disappeared, then refreshes surviving pages from the current tree.
-// Using IDs avoids invalidating a path that a newer page now owns.
-func (b *LinkService) ReconcileLinksForAffectedPages(pageIDs []string, pages []*tree.Page, titles []string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-
-	ids := affectedLinkPageIDs(pageIDs, pages)
-	currentPages, readErrs := b.treeService.GetPages(ids)
-	publicPages := make([]*tree.Page, 0, len(ids))
-	shallowPublicPages := make([]*tree.Page, 0, len(ids))
-	invalidateIDs := make([]string, 0, len(ids))
-	removeIDs := make([]string, 0, len(ids))
-	var resultErr error
-
-	for i, pageID := range ids {
-		page := currentPages[i]
-		readErr := readErrs[i]
-		if readErr != nil {
-			node, snapshotErr := b.treeService.SnapshotPageNode(pageID)
-			switch {
-			case errors.Is(readErr, tree.ErrPageNotFound), errors.Is(snapshotErr, tree.ErrPageNotFound):
-				// The page was deleted; remove both sides of its link relationships.
-				invalidateIDs = append(invalidateIDs, pageID)
-				removeIDs = append(removeIDs, pageID)
-			case snapshotErr != nil:
-				resultErr = errors.Join(resultErr, fmt.Errorf("read affected page %s: %w", pageID, errors.Join(readErr, snapshotErr)))
-			case pagevisibility.IsInDraftSubtree(node):
-				// Draft pages are excluded from the public link index even when their
-				// content file cannot be read.
-				invalidateIDs = append(invalidateIDs, pageID)
-				removeIDs = append(removeIDs, pageID)
-			default:
-				invalidateIDs = append(invalidateIDs, pageID)
-				shallowPublicPages = append(shallowPublicPages, &tree.Page{PageNode: node})
-				resultErr = errors.Join(resultErr, fmt.Errorf("read affected page %s: %w", pageID, readErr))
-			}
-			continue
-		}
-
-		invalidateIDs = append(invalidateIDs, pageID)
-		if pagevisibility.IsInDraftSubtree(page.PageNode) {
-			removeIDs = append(removeIDs, pageID)
-			continue
-		}
-		publicPages = append(publicPages, page)
-	}
-
-	paths, err := b.store.InvalidateLinksForPages(invalidateIDs, removeIDs)
-	if err != nil {
-		return errors.Join(resultErr, err)
-	}
-	for _, page := range shallowPublicPages {
-		if err := b.healLinksForExactPath(page); err != nil {
-			return errors.Join(resultErr, err)
-		}
-	}
-	if err := b.replaceLinksAndHealForCurrentPages(publicPages); err != nil {
-		return errors.Join(resultErr, err)
-	}
-	for _, path := range paths {
-		if err := b.healCurrentPublishedPageForPath(path); err != nil {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}
-	seenTitles := make(map[string]struct{}, len(titles)+len(publicPages))
-	for _, title := range titles {
-		title = strings.TrimSpace(title)
-		key := strings.ToLower(title)
-		if key == "" {
-			continue
-		}
-		if _, ok := seenTitles[key]; ok {
-			continue
-		}
-		seenTitles[key] = struct{}{}
-		if err := b.store.MarkWikiLinksBrokenForTitle(title); err != nil {
-			return errors.Join(resultErr, err)
-		}
-		if err := b.healWikiLinksForTitleIfUnambiguous(title); err != nil {
-			return errors.Join(resultErr, err)
-		}
-	}
-	for _, page := range publicPages {
-		key := strings.ToLower(strings.TrimSpace(page.Title))
-		if _, ok := seenTitles[key]; ok {
-			continue
-		}
-		seenTitles[key] = struct{}{}
-		if err := b.healWikiLinksForTitleIfUnambiguous(page.Title); err != nil {
-			return errors.Join(resultErr, err)
-		}
-	}
-	return resultErr
-}
-
-func affectedLinkPageIDs(pageIDs []string, pages []*tree.Page) []string {
-	ids := make([]string, 0, len(pageIDs)+len(pages))
-	seen := make(map[string]struct{}, cap(ids))
-	for _, pageID := range pageIDs {
-		if pageID == "" {
-			continue
-		}
-		if _, ok := seen[pageID]; ok {
-			continue
-		}
-		seen[pageID] = struct{}{}
-		ids = append(ids, pageID)
-	}
-	for _, page := range pages {
-		if page == nil || page.ID == "" {
-			continue
-		}
-		if _, ok := seen[page.ID]; ok {
-			continue
-		}
-		seen[page.ID] = struct{}{}
-		ids = append(ids, page.ID)
-	}
-	return ids
-}
-
-func (b *LinkService) replaceLinksAndHealForCurrentPages(pages []*tree.Page) error {
-	updates := make([]PageLinkUpdate, 0, len(pages))
-	for _, page := range pages {
-		pagePath := normalizeWikiPath(page.CalculatePath())
-		updates = append(updates, PageLinkUpdate{
-			FromPageID: page.ID,
-			FromTitle:  page.Title,
-			ToPath:     pagePath,
-			Targets:    collectTargetsFromContent(b.treeService, pagePath, page.Content),
-		})
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	return b.store.ReplaceLinksAndHeal(updates)
-}
-
-func (b *LinkService) healCurrentPublishedPageForPath(path string) error {
-	if IsWikilinkSentinel(path) {
-		return nil
-	}
-	normalizedPath := normalizeWikiPath(path)
-	lookup, err := b.treeService.LookupPagePath(normalizedPath)
-	if err != nil {
-		return fmt.Errorf("resolve invalidated link path %s: %w", path, err)
-	}
-	if !lookup.Exists || len(lookup.Segments) == 0 {
-		return nil
-	}
-	node := lookup.Segments[len(lookup.Segments)-1].VisibilityNode
-	if node == nil || normalizeWikiPath(node.CalculatePath()) != normalizedPath || pagevisibility.IsInDraftSubtree(node) {
-		return nil
-	}
-	return b.store.HealLinksForPath(normalizedPath, node.ID)
-}
-
-// ReconcileWikiLinksForTitle re-resolves [[Title]] records against the current
-// published tree after a visibility change alters the candidate set.
-func (b *LinkService) ReconcileWikiLinksForTitle(title string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return nil
-	}
-	if err := b.store.MarkWikiLinksBrokenForTitle(title); err != nil {
-		return err
-	}
-	return b.healWikiLinksForTitleIfUnambiguous(title)
+// MarkLinksBrokenForPrefix marks all links under a prefix as broken (subtree move/delete).
+func (b *LinkService) MarkLinksBrokenForPrefix(prefix string) error {
+	prefix = normalizeWikiPath(prefix)
+	return b.store.MarkLinksBrokenForPrefix(prefix)
 }
 
 func (b *LinkService) HealLinksForExactPath(page *tree.Page) error {
-	if page == nil {
-		return nil
-	}
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	current, _ := b.currentPageForLinkWrite(page, page.Content)
-	if current == nil || pagevisibility.IsInDraftSubtree(current.PageNode) {
-		return nil
-	}
-	return b.healLinksForExactPath(current)
-}
-
-func (b *LinkService) healLinksForExactPath(page *tree.Page) error {
 	toPath := normalizeWikiPath(page.CalculatePath())
 	return b.store.HealLinksForPath(toPath, page.ID)
 }
 
-// HealWikiLinksForPage heals broken [[Title]] sentinel records that target
-// this page's title, but only when exactly one page with that title exists.
-// If the title is shared by multiple pages the link is ambiguous and must
-// remain as a broken sentinel.
-func (b *LinkService) HealWikiLinksForPage(page *tree.Page) error {
-	if page == nil {
-		return nil
-	}
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	current, _ := b.currentPageForLinkWrite(page, page.Content)
-	if current == nil || pagevisibility.IsInDraftSubtree(current.PageNode) {
-		return nil
-	}
-	return b.healWikiLinksForTitleIfUnambiguous(current.Title)
-}
-
-// HealWikiLinksForTitleIfUnambiguous heals broken [[Title]] sentinels when
-// exactly one page with that title now exists. Called after a page is deleted
-// so that formerly ambiguous wikilinks become resolved if only one candidate
-// remains.
-func (b *LinkService) HealWikiLinksForTitleIfUnambiguous(title string) error {
-	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	return b.healWikiLinksForTitleIfUnambiguous(title)
-}
-
-func (b *LinkService) healWikiLinksForTitleIfUnambiguous(title string) error {
+// ReconcileTitle recomputes the state of every [[title]] wiki-link record
+// against the current tree (see classifyTitleMatches). Call it whenever the
+// set of pages carrying this title changed: page created, restored, renamed
+// (old and new title) or deleted. Every wiki-link to a title shares one
+// "wikilink:<title>" key, so this is a single UPDATE and never needs the
+// source pages.
+func (b *LinkService) ReconcileTitle(title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil
 	}
-	matches := publishedPagesByTitle(b.treeService, title)
-	if len(matches) != 1 {
-		return nil
+	matches := b.treeService.FindPagesByTitle(title)
+	pageID := ""
+	if len(matches) == 1 {
+		pageID = matches[0].ID
 	}
-	return b.store.HealWikiLinksForTitle(title, matches[0].ID)
+	return b.store.ReconcileWikiLinksForTitle(title, classifyTitleMatches(len(matches)), pageID)
 }
 
 func (b *LinkService) Close() error {
@@ -621,25 +320,6 @@ func (b *LinkService) Close() error {
 		return nil
 	}
 	return b.store.Close()
-}
-
-func (b *LinkService) currentPageForLinkWrite(page *tree.Page, content string) (*tree.Page, bool) {
-	if page == nil || page.PageNode == nil || b.treeService == nil {
-		return nil, false
-	}
-	current, err := b.treeService.GetPage(page.ID)
-	if err != nil {
-		return nil, false
-	}
-	same := page.Version() == current.Version() &&
-		page.Title == current.Title &&
-		page.CalculatePath() == current.CalculatePath() &&
-		page.Content == current.Content &&
-		pagevisibility.IsInDraftSubtree(page.PageNode) == pagevisibility.IsInDraftSubtree(current.PageNode)
-	if same {
-		current.Content = content
-	}
-	return current, same
 }
 
 func pageIDsForPages(pages []*tree.Page) []string {
@@ -653,16 +333,25 @@ func pageIDsForPages(pages []*tree.Page) []string {
 	return ids
 }
 
+// rewriteResolvedTargets rebuilds a page's link rows after a path/title
+// rewrite. ReplaceLinksAndHeal replaces ALL rows of the page, so every stored
+// outgoing link must come back out of here or its row is lost.
+//
+//   - Path links are rewritten by the path rules and re-resolved.
+//   - Wiki-link sentinels are title-based, never path-rewritten (that would
+//     mangle them into "/wikilink:..."). A rename rule (OldTitle → NewTitle)
+//     already rewrote [[OldTitle]] in the content, so the row follows it. The
+//     title is then re-resolved against the current tree.
 func rewriteResolvedTargets(currentPath string, outgoings []Outgoing, rules []RewriteRule, treeService *tree.TreeService) []TargetLink {
 	if len(outgoings) == 0 {
 		return nil
 	}
 
 	paths := make([]string, 0, len(outgoings))
+	var wikiTitles []string
 	for _, outgoing := range outgoings {
 		if IsWikilinkSentinel(outgoing.ToPath) {
-			// Title-based wiki-link sentinels are resolved by title, not path.
-			// Skip path rewriting — they are healed separately by HealWikiLinksForPage.
+			wikiTitles = append(wikiTitles, rewriteWikiTitle(WikilinkTitleFromSentinel(outgoing.ToPath), rules))
 			continue
 		}
 		targetPath := normalizeWikiPath(outgoing.ToPath)
@@ -672,5 +361,35 @@ func rewriteResolvedTargets(currentPath string, outgoings []Outgoing, rules []Re
 		paths = append(paths, targetPath)
 	}
 
-	return resolveTargetLinks(treeService, currentPath, paths)
+	result := resolveTargetLinks(treeService, currentPath, paths)
+	return append(result, resolveWikiLinkTargets(treeService, wikiTitles)...)
+}
+
+// rewriteWikiTitle applies a rename rule's OldTitle → NewTitle to a wiki-link
+// title, matching case-insensitively like the content rewrite does.
+func rewriteWikiTitle(title string, rules []RewriteRule) string {
+	for _, rule := range rules {
+		if rule.OldTitle != "" && rule.OldTitle != rule.NewTitle && strings.EqualFold(rule.OldTitle, title) {
+			return rule.NewTitle
+		}
+	}
+	return title
+}
+
+func (b *LinkService) GetBrokenLinks() ([]BrokenLink, error) {
+	links, err := b.store.GetBrokenLinks()
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range links {
+		page, err := b.treeService.GetPage(links[i].FromPageID)
+		if err != nil {
+			return nil, err
+		}
+
+		links[i].FromPath = page.CalculatePath()
+	}
+
+	return links, nil
 }

@@ -11,7 +11,8 @@ For engineers and self-hosters who want structured, long-lived documentation. No
 If you've looked at Wiki.js or Outline and thought "this is too much to operate for what I need" — this could fit for you.
 
 → Try it without installing: **[demo.leafwiki.com](https://demo.leafwiki.com)** · `Ctrl+E` edit · `Ctrl+S` save · resets hourly  
-→ If it fits, [a star](https://github.com/perber/leafwiki) helps others find it.
+→ If it fits, [a star](https://github.com/perber/leafwiki) helps others find it.  
+→ Useful to you? [Sponsor on GitHub](https://github.com/sponsors/perber) · [Buy a coffee on Ko-fi](https://ko-fi.com/perber)
 
 ```bash
 docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
@@ -30,9 +31,11 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
 - [Install](#install)
   - [Docker](#docker)
   - [Docker Compose](#docker-compose)
+  - [Kubernetes](#kubernetes)
   - [Linux installer](#linux-installer)
   - [Binary](#binary)
   - [Reset admin password](#reset-admin-password)
+  - [Restore a snapshot (offline)](#restore-a-snapshot-offline)
 - [Operating Modes](#operating-modes)
 - [Dev Setup](#dev-setup)
 - [Configuration](#configuration)
@@ -42,6 +45,7 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
   - [Reverse-Proxy Authentication](#reverse-proxy-authentication)
   - [Unix Socket (v0.11.3)](#unix-socket-v0113)
   - [Git Backup](#git-backup-v0113-experimental)
+  - [Email (SMTP)](#email-smtp)
   - [Security](#security)
   - [Operations notes](#operations-notes)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -57,10 +61,10 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
 **Operations:**
 - Single Go binary — no external database, no runtime dependencies
 - Markdown on disk — page content is readable outside the app, backup is `cp -r` (stop the app first)
-- Runs on Linux, macOS, Windows, Raspberry Pi (x86_64 and ARM64)
+- Runs on Linux, macOS, Windows, Raspberry Pi (x86_64 and ARM64; 32-bit x86 Linux via standalone binary)
 - Reverse-proxy friendly with `--base-path`
 - Reverse-proxy authentication via trusted HTTP header (v0.10+)
-- API keys for programmatic and agent access, admin-managed, read-only, experimental/opt-in
+- API keys for programmatic and agent access, admin-managed, scoped by role — in development, not yet ready for use
 - Three access modes: fully internal, public read with login-only editing, or open editing without login (see [Operating Modes](#operating-modes))
 - Roles: admin, editor, viewer
 
@@ -69,20 +73,22 @@ docker run -p 8080:8080 -v ~/leafwiki-data:/app/data \
 - Manual page ordering — sort order is explicit, not driven by filename (see [Sorting Pages](#sorting-pages))
 - Full-text search across titles and content, with tag-based filtering
 - Tags on pages — searchable and filterable across the wiki
-- Backlinks and link status per page (incoming, outgoing, broken links)
+- Backlinks and link status per page (incoming, outgoing, broken links), with a dedicated admin view for auditing broken links
 - Built-in Markdown editor with live preview, keyboard shortcuts, and autocomplete for internal page links
 - Optimistic locking for concurrent edits
-- Markdown: tables, task lists, footnotes, callouts (`:::info` / `:::warning`), collapsible blocks (`:::collapsible` / `:::collapsed`), Mermaid diagrams, KaTeX math blocks (`$$...$$`, inline `$...$` not supported), sanitized inline HTML
+- Markdown: tables, task lists, footnotes, callouts (`:::info` / `:::warning`), collapsible blocks (`:::collapsible` / `:::collapsed`), Mermaid diagrams, KaTeX math blocks (`$$...$$`, inline `$...$` not supported), sanitized inline HTML, embedded PDFs (`![name](file.pdf)`, optionally opened on a specific page with `![name](file.pdf#page=3)`)
 
 **Customization:**
 - Custom stylesheet (`--custom-stylesheet`, v0.8.5+)
 - Inject HTML/JS into `<head>` for analytics or custom CSS
 - Branding: logo, favicon, site name
 - Dark mode and mobile-friendly UI
+- Translated UI — ships in English, German, and Spanish; `--default-language` picks the default. Contributions of other languages are very welcome — see [docs/i18n.md](docs/i18n.md)
 
 **Opt-in via feature flags:**
 - Revision history (`--enable-revision`)
 - Automatic link rewriting when pages are renamed or moved (`--enable-link-refactor`)
+- Email via SMTP for password reset and user invitations (`--smtp-host`, v0.13.0)
 - Git backup — push wiki content to a remote Git repository via SSH or HTTP(S) (`--git-backup`, v0.11.3, experimental)
 
 **Markdown import:**
@@ -170,6 +176,10 @@ services:
     restart: unless-stopped
 ```
 
+### Kubernetes
+
+See [docs/install/kubernetes.md](docs/install/kubernetes.md) for a `Deployment` + `PersistentVolumeClaim` + `Service` + `Ingress` example (Gateway API alternative included).
+
 ### Linux installer
 
 ```bash
@@ -202,7 +212,16 @@ sudo ./install.sh --non-interactive --env-file ./.env
 
 ### Binary
 
+Download `leafwiki-<version>-<os>-<arch>` and its `.sha256` file from
+[GitHub Releases](https://github.com/perber/leafwiki/releases)
+(linux-amd64, linux-arm64, linux-386, darwin-amd64, darwin-arm64,
+windows-amd64), check that the hash matches the one in the `.sha256` file,
+and rename it to `leafwiki`:
+
 ```bash
+sha256sum leafwiki-<version>-<os>-<arch>
+cat leafwiki-<version>-<os>-<arch>.sha256
+mv leafwiki-<version>-<os>-<arch> leafwiki
 chmod +x leafwiki
 ./leafwiki --jwt-secret=yoursecret --admin-password=yourpassword --allow-insecure=true
 ```
@@ -215,6 +234,8 @@ The server binds to `127.0.0.1:8080` by default. To expose it on the network:
 
 Default data directory is `./data`. Change with `--data-dir`.
 
+> 32-bit x86 Linux (i686, e.g. Alpine on an Intel Atom) is supported on a best-effort basis: use the `linux-386` binary. It is built without CGO, so it doesn't need glibc and runs on musl-based distros. The systemd installer and Docker images only cover amd64/arm64, so the binary is the only install path on 32-bit x86 (that includes `update.sh`, which expects the systemd setup).
+
 ### Build from source
 
 Requires Go and Node.js. `make build` compiles the UI, embeds it, and produces a self-contained `leafwiki` binary (same as release/Docker builds). Use HTTP (`http://localhost:8080/`), not HTTPS, unless you terminate TLS in front of LeafWiki.
@@ -222,7 +243,7 @@ Requires Go and Node.js. `make build` compiles the UI, embeds it, and produces a
 ```bash
 git clone https://github.com/perber/leafwiki.git
 cd leafwiki
-git switch --detach v0.12.1   # or any tag / main
+git switch --detach v0.13.0   # or any tag / main
 make build
 ./leafwiki --disable-auth --host=127.0.0.1 --data-dir ./data --allow-insecure=true
 ```
@@ -234,6 +255,16 @@ For API-only local development with Vite, use `make build-api` (or `make run`) i
 ```bash
 ./leafwiki reset-admin-password
 ```
+
+### Restore a snapshot (offline)
+
+For disaster recovery or migrating to a fresh instance, restore a snapshot ZIP into the data directory while the server is stopped:
+
+```bash
+./leafwiki --data-dir ./data restore-snapshot ./data/snapshots/leafwiki-snapshot-2026-01-01.zip
+```
+
+When `--snapshot` is enabled, a live restore is also available from the admin UI (Settings → Full Backup). Use this offline command when the server can't start or you're seeding a new data directory. The `--snapshot*` flags are in [CLI Flags](#cli-flags).
 
 ---
 
@@ -337,6 +368,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `--refresh-token-timeout`        | Refresh token duration (e.g. `168h`)                                    | `168h`        | v0.7.0  |
 | `--max-asset-upload-size`        | Max upload size (e.g. `50MiB`, `52428800`)                              | `50MiB`       | v0.8.5  |
 | `--custom-stylesheet`            | Path to a `.css` file inside the data dir                               | `""`          | v0.8.5  |
+| `--default-language`             | Default UI language code (`en`, `de`, `es`)                             | `""`          | v0.13.0 |
 | `--inject-code-in-header`        | Raw HTML/JS injected into `<head>`                                      | `""`          | v0.6.0  |
 | `--hide-link-metadata-section`   | Hide backlinks and link status panel                                    | `false`       | –       |
 | `--enable-revision`              | Enable revision history                                                 | `false`       | v0.9.0  |
@@ -352,6 +384,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `--login-url`                    | Redirect to an external URL instead of the built-in login form          | `""`          | v0.12.0 |
 | `--logout-url`                   | Redirect to an external URL after logout                                | `""`          | v0.12.0 |
 | `--http-remote-user-logout-url`  | ⚠️ Deprecated, use `--logout-url` instead                               | `""`          | v0.10.0 |
+| `--user-management-url`          | Replace the built-in User Management UI with a link to an external page  | `""`          | v0.11.4 |
 | `--disable-request-log`          | Suppress per-request HTTP access log lines                              | `false`       | v0.10.1 |
 | `--log-format`                   | Log output format: `text` or `json`                                     | `text`        | v0.12.0 |
 | `--totp-encryption-key`          | Key to encrypt per-user TOTP secrets at rest (min 32 bytes); required only once a user enables TOTP | `""` | v0.12.0 |
@@ -364,16 +397,27 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `--snapshot-dir`                 | Directory to store snapshot ZIPs in                                     | `<data-dir>/snapshots` | v0.12.0 |
 | `--restore-upload-max-size`      | Max size for an uploaded backup ZIP to restore from                    | `500MiB`      | v0.12.0 |
 | `--git-backup`                   | ⚗️ Enable git backup to a remote repository                             | `false`       | v0.11.3 |
-| `--git-backup-remote`            | ⚗️ SSH or HTTP(S) remote URL for git backup (e.g. `git@github.com:user/repo.git`, `https://github.com/user/repo.git`) | `""` | v0.11.3 |
+| `--git-backup-remote`            | ⚗️ SSH remote URL for git backup (e.g. `git@github.com:user/repo.git`) | `""` | v0.11.3 |
 | `--git-backup-branch`            | ⚗️ Branch to push to                                                    | `main`        | v0.11.3 |
+| `--git-backup-path`              | ⚗️ Directory holding `root/` and `assets/` (e.g. `docs` → `docs/root`); empty = top level | `""` | v0.13.0 |
 | `--git-backup-ssh-key`           | ⚗️ Raw SSH private key (prefer env var)                                 | `""`          | v0.11.3 |
 | `--git-backup-ssh-key-path`      | ⚗️ Path to SSH private key file                                         | `""`          | v0.11.3 |
 | `--git-backup-ssh-known-hosts`   | ⚗️ Path to `known_hosts` for MITM protection                            | `""`          | v0.11.3 |
-| `--git-backup-http-username`     | ⚗️ Username for HTTP(S) basic auth                                      | `""`          | v0.12.2 |
-| `--git-backup-http-password`     | ⚗️ Password or access token for HTTP(S) basic auth (prefer env var)     | `""`          | v0.12.2 |
+| `--git-backup-http-username`     | ⚗️ Username for HTTP(S) basic auth on `http(s)://` remotes              | `""`          | v0.13.0 |
+| `--git-backup-http-password`     | ⚗️ Password or access token for HTTP(S) basic auth (prefer env var)     | `""`          | v0.13.0 |
 | `--git-backup-author-name`       | ⚗️ Git commit author name                                               | `LeafWiki Backup` | v0.11.3 |
 | `--git-backup-author-email`      | ⚗️ Git commit author email                                              | `backup@leafwiki.local` | v0.11.3 |
 | `--git-backup-interval`          | ⚗️ Backup interval (e.g. `60m`, `2h`); `0` = manual-only               | `60m`         | v0.11.3 |
+| `--smtp-host`                    | SMTP host for password-reset and invite email; unset disables email     | `""`          | v0.13.0 |
+| `--smtp-port`                    | SMTP server port                                                        | `587`         | v0.13.0 |
+| `--smtp-username`                | SMTP auth username                                                      | `""`          | v0.13.0 |
+| `--smtp-password`                | SMTP auth password (prefer env var)                                     | `""`          | v0.13.0 |
+| `--smtp-from`                    | From address for outgoing email (required when `--smtp-host` is set)    | `""`          | v0.13.0 |
+| `--smtp-from-name`               | From display name for outgoing email                                    | `LeafWiki`    | v0.13.0 |
+| `--smtp-security`                | Transport security: `none`, `starttls`, or `tls`                        | `starttls`    | v0.13.0 |
+| `--smtp-insecure-skip-verify`    | Skip TLS certificate verification for SMTP (testing only)               | `false`       | v0.13.0 |
+| `--smtp-timeout`                 | Timeout for a single SMTP send (e.g. `10s`)                             | `10s`         | v0.13.0 |
+| `--public-url`                   | Base URL for links in outgoing email (required when `--smtp-host` is set) | `""`        | v0.13.0 |
 
 > Docker image default: `LEAFWIKI_HOST` is set to `0.0.0.0` automatically by the container entrypoint if neither `--host` nor `LEAFWIKI_HOST` is provided.
 
@@ -397,6 +441,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `LEAFWIKI_REFRESH_TOKEN_TIMEOUT`        | Refresh token duration                               | `168h`        | v0.7.0  |
 | `LEAFWIKI_MAX_ASSET_UPLOAD_SIZE`        | Max upload size                                      | `50MiB`       | v0.8.5  |
 | `LEAFWIKI_CUSTOM_STYLESHEET`            | Path to `.css` file inside data dir                  | `""`          | v0.8.5  |
+| `LEAFWIKI_DEFAULT_LANGUAGE`             | Default UI language code (`en`, `de`, `es`)          | `""`          | v0.13.0 |
 | `LEAFWIKI_INJECT_CODE_IN_HEADER`        | HTML/JS injected into `<head>`                       | `""`          | v0.6.0  |
 | `LEAFWIKI_HIDE_LINK_METADATA_SECTION`   | Hide backlinks and link status panel                 | `false`       | –       |
 | `LEAFWIKI_ENABLE_REVISION`              | Revision history                                     | `false`       | v0.9.0  |
@@ -412,6 +457,7 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `LEAFWIKI_LOGIN_URL`                    | Redirect to an external URL instead of the login form | `""`          | v0.12.0 |
 | `LEAFWIKI_LOGOUT_URL`                   | Redirect to an external URL after logout             | `""`          | v0.12.0 |
 | `LEAFWIKI_HTTP_REMOTE_USER_LOGOUT_URL`  | ⚠️ Deprecated, use `LEAFWIKI_LOGOUT_URL` instead     | `""`          | v0.10.0 |
+| `LEAFWIKI_USER_MANAGEMENT_URL`          | Replace the built-in User Management UI with an external link | `""`  | v0.11.4 |
 | `LEAFWIKI_DISABLE_REQUEST_LOG`          | Suppress per-request HTTP access log lines           | `false`       | v0.10.1 |
 | `LEAFWIKI_LOG_FORMAT`                   | Log output format: `text` or `json`                  | `text`        | v0.12.0 |
 | `LEAFWIKI_LOG_LEVEL`                    | Log level: `debug`, `info`, `warn`, `error` (env-var only, no CLI flag) | `info` | v0.8.0  |
@@ -425,16 +471,27 @@ For plain HTTP: add `--allow-insecure=true` so login and CSRF cookies work.
 | `LEAFWIKI_SNAPSHOT_DIR`                 | Directory to store snapshot ZIPs in                  | `<data-dir>/snapshots` | v0.12.0 |
 | `LEAFWIKI_RESTORE_UPLOAD_MAX_SIZE`      | Max size for an uploaded backup ZIP to restore from  | `500MiB`      | v0.12.0 |
 | `LEAFWIKI_GIT_BACKUP`                   | ⚗️ Enable git backup                                | `false`       | v0.11.3 |
-| `LEAFWIKI_GIT_BACKUP_REMOTE`            | ⚗️ SSH or HTTP(S) remote URL                        | `""`          | v0.11.3 |
+| `LEAFWIKI_GIT_BACKUP_REMOTE`            | ⚗️ SSH remote URL                                   | `""`          | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_BRANCH`            | ⚗️ Branch to push to                                | `main`        | v0.11.3 |
+| `LEAFWIKI_GIT_BACKUP_PATH`              | ⚗️ Directory holding `root/` and `assets/` (e.g. `docs` → `docs/root`); empty = top level | `""` | v0.13.0 |
 | `LEAFWIKI_GIT_BACKUP_SSH_KEY`           | ⚗️ Raw SSH private key (preferred over path)        | `""`          | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_SSH_KEY_PATH`      | ⚗️ Path to SSH private key file                     | `""`          | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_SSH_KNOWN_HOSTS`   | ⚗️ Path to `known_hosts` file                       | `""`          | v0.11.3 |
-| `LEAFWIKI_GIT_BACKUP_HTTP_USERNAME`     | ⚗️ Username for HTTP(S) basic auth                  | `""`          | v0.12.2 |
-| `LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD`     | ⚗️ Password or access token for HTTP(S) basic auth  | `""`          | v0.12.2 |
+| `LEAFWIKI_GIT_BACKUP_HTTP_USERNAME`     | ⚗️ Username for HTTP(S) basic auth                  | `""`          | v0.13.0 |
+| `LEAFWIKI_GIT_BACKUP_HTTP_PASSWORD`     | ⚗️ Password or access token for HTTP(S) basic auth  | `""`          | v0.13.0 |
 | `LEAFWIKI_GIT_BACKUP_AUTHOR_NAME`       | ⚗️ Git commit author name                           | `LeafWiki Backup` | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_AUTHOR_EMAIL`      | ⚗️ Git commit author email                          | `backup@leafwiki.local` | v0.11.3 |
 | `LEAFWIKI_GIT_BACKUP_INTERVAL`          | ⚗️ Backup interval (e.g. `60m`); `0` = manual-only | `60m`         | v0.11.3 |
+| `LEAFWIKI_SMTP_HOST`                    | SMTP host for password-reset/invite email; unset disables email | `""` | v0.13.0 |
+| `LEAFWIKI_SMTP_PORT`                    | SMTP server port                                    | `587`         | v0.13.0 |
+| `LEAFWIKI_SMTP_USERNAME`               | SMTP auth username                                   | `""`          | v0.13.0 |
+| `LEAFWIKI_SMTP_PASSWORD`               | SMTP auth password                                   | `""`          | v0.13.0 |
+| `LEAFWIKI_SMTP_FROM`                    | From address (required with `LEAFWIKI_SMTP_HOST`)   | `""`          | v0.13.0 |
+| `LEAFWIKI_SMTP_FROM_NAME`              | From display name                                    | `LeafWiki`    | v0.13.0 |
+| `LEAFWIKI_SMTP_SECURITY`               | Transport security: `none`, `starttls`, or `tls`    | `starttls`    | v0.13.0 |
+| `LEAFWIKI_SMTP_INSECURE_SKIP_VERIFY`   | Skip TLS certificate verification for SMTP           | `false`       | v0.13.0 |
+| `LEAFWIKI_SMTP_TIMEOUT`                | Timeout for a single SMTP send                       | `10s`         | v0.13.0 |
+| `LEAFWIKI_PUBLIC_URL`                  | Base URL for links in outgoing email (required with `LEAFWIKI_SMTP_HOST`) | `""` | v0.13.0 |
 
 ### Custom Stylesheet
 
@@ -519,9 +576,7 @@ Use `--unix-socket` when LeafWiki should listen on a local unix domain socket in
 
 > **Experimental** — This feature is new and may change in future releases. Test it thoroughly before relying on it for critical data.
 
-Git Backup pushes wiki **content** to a remote Git repository on a configurable interval, either via **SSH** or via **HTTP(S) with username + password** (v0.12.2+). It covers the `root/` (pages) and `assets/` directories. Database files (`.db`, `.db-wal`, etc.) and runtime files are excluded via `.gitignore`.
-
-Which transport you use is derived from the remote URL: `git@...` / `ssh://...` authenticate with an SSH key, `https://...` / `http://...` with a username and password. On GitHub, GitLab and friends the "password" is an access token — which is often the more practical option, because a fine-grained token can be scoped to a **single repository**, whereas an SSH key added to your account grants access to everything that account can reach.
+Git Backup pushes wiki **content** to a remote Git repository on a configurable interval, via **SSH** or **HTTP(S)**. Only the `root/` (pages) and `assets/` directories are committed, so database files (`.db`, `.db-wal`, etc.) and other runtime files are never included; `.gitignore` rules are still honoured. By default the content is committed at the repository top level — set `--git-backup-path` to nest it under a directory (useful for a monorepo).
 
 Backups run automatically on a configurable interval and can also be triggered manually from the **Git Content Backup** page.
 
@@ -532,11 +587,12 @@ Backups run automatically on a configurable interval and can also be triggered m
 | `--git-backup` | Enable git backup | `false` |
 | `--git-backup-remote` | SSH or HTTP(S) remote URL (e.g. `git@github.com:user/repo.git`, `https://github.com/user/repo.git`) | `""` |
 | `--git-backup-branch` | Branch to push to | `main` |
+| `--git-backup-path` | Directory holding `root/` and `assets/`, e.g. `docs` → `docs/root` + `docs/assets`; empty = repository top level (v0.13.0+) | `""` |
 | `--git-backup-ssh-key` | Raw SSH private key (prefer env var) | `""` |
 | `--git-backup-ssh-key-path` | Path to SSH private key file | `""` |
 | `--git-backup-ssh-known-hosts` | Path to `known_hosts` for MITM protection | `""` |
-| `--git-backup-http-username` | Username for HTTP(S) basic auth (v0.12.2+) | `""` |
-| `--git-backup-http-password` | Password or access token for HTTP(S) basic auth (prefer env var, v0.12.2+) | `""` |
+| `--git-backup-http-username` | Username for HTTP(S) basic auth (v0.13.0+) | `""` |
+| `--git-backup-http-password` | Password or access token for HTTP(S) basic auth (prefer env var, v0.13.0+) | `""` |
 | `--git-backup-author-name` | Git commit author name | `LeafWiki Backup` |
 | `--git-backup-author-email` | Git commit author email | `backup@leafwiki.local` |
 | `--git-backup-interval` | Backup interval (e.g. `60m`, `2h`); `0` = manual-only | `60m` |
@@ -548,6 +604,7 @@ Backups run automatically on a configurable interval and can also be triggered m
 | `LEAFWIKI_GIT_BACKUP` | Enable git backup |
 | `LEAFWIKI_GIT_BACKUP_REMOTE` | SSH or HTTP(S) remote URL |
 | `LEAFWIKI_GIT_BACKUP_BRANCH` | Branch to push to |
+| `LEAFWIKI_GIT_BACKUP_PATH` | Directory holding `root/` and `assets/`, e.g. `docs` → `docs/root` + `docs/assets` |
 | `LEAFWIKI_GIT_BACKUP_SSH_KEY` | Raw SSH private key |
 | `LEAFWIKI_GIT_BACKUP_SSH_KEY_PATH` | Path to SSH private key file |
 | `LEAFWIKI_GIT_BACKUP_SSH_KNOWN_HOSTS` | Path to `known_hosts` file |
@@ -568,7 +625,7 @@ environment:
   - LEAFWIKI_GIT_BACKUP_INTERVAL=60m
 ```
 
-**Example — HTTPS with an access token (Docker Compose, v0.12.2+):**
+**Example — HTTPS with an access token (Docker Compose, v0.13.0+):**
 
 ```yaml
 environment:
@@ -591,6 +648,33 @@ On GitHub, create a **fine-grained personal access token** limited to the backup
 - `--git-backup-ssh-known-hosts` is optional but recommended for SSH remotes. If not set, LeafWiki falls back to `~/.ssh/known_hosts`. If that file does not exist either (common in containers), SSH host key verification is **disabled** — leaving connections open to MITM attacks. Set this flag explicitly in production. It has no effect on HTTP(S) remotes, which are verified via TLS.
 - If the remote diverges (e.g. someone pushed directly to the backup branch), LeafWiki will stop auto-pushing and show a **Conflict — remote diverged** warning in the UI. Click **Force Push** in the UI to overwrite the remote with the current local backup history. Your wiki content is never lost — the local backup repo is always authoritative.
 - This backs up **content only** — the SQLite database is not included. For a full backup, use your data directory (`cp -r` with the app stopped).
+- When LeafWiki first connects to a remote that already contains a backup, it syncs that content into the local data directory before the wiki loads its pages (local files always win — nothing is overwritten). A new instance therefore picks up the backed-up pages instead of overwriting the remote with an empty wiki, and it does not seed its default welcome page when the backup already has content. After that first sync, backups behave normally, including committing deletions.
+- `--git-backup-path` (e.g. `docs`) commits `root/` and `assets/` under that directory instead of the top level — `docs` produces `docs/root/` and `docs/assets/` — and pulls external edits back from there. This is handy when the backup remote is a monorepo: files outside the configured directory are left untouched. LeafWiki's live content still lives in `<data-dir>/root` and `<data-dir>/assets`; nothing is copied into the repository working tree. Leave it empty to keep the historical top-level layout.
+
+---
+
+### Email (SMTP)
+
+Available since v0.13.0. Configure an SMTP server to enable the **forgot-password** flow and **email-based user invitations**. Without `--smtp-host`, both features stay off and the login form shows no password-reset link.
+
+```bash
+./leafwiki \
+  --jwt-secret=yoursecret \
+  --admin-password=yourpassword \
+  --smtp-host=smtp.example.com \
+  --smtp-port=587 \
+  --smtp-security=starttls \
+  --smtp-username=leafwiki@example.com \
+  --smtp-password=yourpassword \
+  --smtp-from=leafwiki@example.com \
+  --public-url=https://wiki.example.com
+```
+
+- `--smtp-from` and `--public-url` are **required** once `--smtp-host` is set — the server refuses to start otherwise
+- `--public-url` must be an absolute `http(s)://` URL; it is the base for links in outgoing email
+- `--smtp-security` is one of `none`, `starttls` (default), or `tls`
+- Prefer `LEAFWIKI_SMTP_PASSWORD` over the flag to keep the password out of process listings
+- `--smtp-insecure-skip-verify` disables TLS certificate verification — for testing only
 
 ---
 
@@ -656,18 +740,24 @@ LeafWiki resolves relative page links with **page-as-folder** semantics: the cur
 
 A trailing `.md` suffix in a link target is ignored for page lookup (for example `setup.md` → `setup`), which matches common filesystem / Obsidian-style Markdown.
 
-This differs from plain filesystem tools that treat the current file''s directory as the base. A broader sibling-folder model is discussed in #1236.
-
 ## External Edits & Resync
 
-If you edit Markdown files directly on disk — a text editor, Git, a script, a bulk import — LeafWiki won't pick up the changes on its own. Trigger a resync one of two ways:
+LeafWiki is intended to be the primary writer for a workspace. However, Markdown files may still be changed outside LeafWiki — for example through a text editor, Git, a script, or a bulk import.
 
-- **Admin UI:** trigger it manually from the maintenance/admin settings page, with live progress across four phases (tree, links, tags, search).
-- **OS signal:** send `SIGUSR1` or `SIGHUP` to the running process (e.g., from a git post-receive hook or a cron job) — no restart needed.
+LeafWiki does not continuously watch the filesystem for these changes. To make externally modified files visible to LeafWiki, trigger a resync in one of two ways:
 
-Both paths share the same resync job, so either way you get the same consistent result. This is separate from `.leafwikiignore` changes, which are only read at startup.
+* **Admin UI:** click the **Refresh** button in the page-tree toolbar (admins only). It runs a resync with live progress across four phases (tree, links, tags, search); if HTTP [Git Backup](#git-backup-v0113-experimental) is configured, it first pulls the latest commits from the remote. Non-admin users see the same button, but for them it only re-fetches the current page tree.
+* **OS signal:** send `SIGUSR1` or `SIGHUP` to the running process — no restart required. This can be useful when an external workflow needs to explicitly tell LeafWiki that files have changed.
 
-**New files without a `leafwiki_id`:** every page's identity lives in a `leafwiki_id` field in its own frontmatter, not in its filename or path — that's what lets pages survive renames and moves without losing their identity. If you add a `.md` file yourself (not created through the app) and it has no `leafwiki_id` yet, the next resync generates one and **writes it back into the file on disk**. This is automatic and requires no action from you, but it does mean the file changes on disk after the resync — worth knowing if you manage `root/` with your own separate Git workflow (outside LeafWiki's built-in [Git Backup](#git-backup-v0113-experimental)), since that ID write-back will show up as an extra diff you didn't make yourself.
+Both paths run the same resync job and produce the same result. A resync should be considered an explicit reconciliation of the workspace rather than continuous bidirectional filesystem synchronization.
+
+Changes to `.leafwikiignore` are separate and are only read at startup.
+
+**New files without a `leafwiki_id`:** LeafWiki stores the identity of a page in the `leafwiki_id` field in its frontmatter rather than deriving it from the filename or path. This allows LeafWiki to retain the identity of a document when it is renamed or moved.
+
+If a Markdown file created outside LeafWiki does not yet contain a `leafwiki_id`, the next resync generates one and writes it back to the file. No manual action is required, but the file will therefore change on disk during the resync.
+
+If `root/` is managed by a separate Git workflow outside LeafWiki's built-in [Git Backup](#git-backup-v0113-experimental), this generated ID will appear as an additional diff.
 
 ---
 
@@ -698,8 +788,9 @@ The sort dialog lets you drag items into position, use the ↑ ↓ arrow buttons
 If it's useful to you:
 
 - ⭐ **[Star the repo](https://github.com/perber/leafwiki)** — helps others find it
-- 💛 **[Sponsor on GitHub](https://leafwiki.com/support)** — supports ongoing maintenance, bug fixes, and new features  
-- 🚀 **[Don't want to self-host? Get a free beta spot](https://leafwiki.com/hosted/#waitlist)** — 10 spots, hosted beta starting September 2026, help shape the hosted version
+- 💛 **[Sponsor on GitHub](https://github.com/sponsors/perber)** — supports ongoing maintenance, bug fixes, and new features
+- ☕ **[Buy a coffee on Ko-fi](https://ko-fi.com/perber)** — a one-time thank-you
+- 🚀 **[Don't want to self-host? LeafWiki Hosted](https://leafwiki.com/hosted/)** — managed LeafWiki, your content stays plain Markdown
 
 Need help deploying LeafWiki for your team? [Business support & setup →](https://leafwiki.com/support/)
 
@@ -709,3 +800,5 @@ Need help deploying LeafWiki for your team? [Business support & setup →](https
 
 Contributions, discussions, and feedback are welcome.  
 Open an issue or start a discussion on GitHub. Follow the repository to get notified about new releases.
+
+**Translations:** the UI currently ships in English, German, Spanish, French, and Simplified Chinese. Adding another language is a self-contained contribution — [docs/i18n.md](docs/i18n.md) walks through it.

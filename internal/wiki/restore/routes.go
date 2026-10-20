@@ -9,7 +9,6 @@ import (
 	coreauth "github.com/perber/wiki/internal/core/auth"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 	"github.com/perber/wiki/internal/restore"
 )
 
@@ -40,20 +39,19 @@ func NewRoutes(manager *restore.Manager, authService *coreauth.AuthService) *Rou
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	adminGroup := authGroup.Group("/admin")
 	adminGroup.Use(authmw.RequireAdmin(opts.AuthDisabled))
 
-	adminGroup.POST("/restore/upload", r.handleTriggerUpload)
-	adminGroup.POST("/restore/:id", r.handleTrigger)
+	// A restore replaces users.db and api_keys.db, so it is browser-session
+	// only: an API key must not be able to swap in its own credentials.
+	sessionOnly := authmw.RequireCookieSession()
+
+	adminGroup.POST("/restore/upload", sessionOnly, r.handleTriggerUpload)
+	adminGroup.POST("/restore/:id", sessionOnly, r.handleTrigger)
 	adminGroup.GET("/restore/status", r.handleStatus)
-	adminGroup.POST("/restore/self-restart", r.handleSelfRestart)
+	adminGroup.POST("/restore/self-restart", sessionOnly, r.handleSelfRestart)
 }
 
 // respondNotEnabled writes the standard 503 response for handlers that need

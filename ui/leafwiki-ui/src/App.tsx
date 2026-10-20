@@ -1,8 +1,4 @@
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import {
-  clearPrivilegedVisibilityState,
-  getVisibilityScope,
-} from '@/features/auth/visibilityScope'
 import { createLeafWikiRouter } from '@/features/router/router'
 import { useBootstrapAuth } from '@/lib/bootstrapAuth'
 import { BASE_PATH } from '@/lib/config'
@@ -33,24 +29,11 @@ function App() {
   // bootstrap authentication on app start -> session store
   useBootstrapAuth(configHasLoaded && !authDisabled)
 
-  const sessionUser = useSessionStore((s) => s.user)
-  const isLoggedIn = !!sessionUser
-  const userId = sessionUser?.id ?? null
-  const userRole = sessionUser?.role ?? null
+  const isLoggedIn = useSessionStore((s) => !!s.user)
+  const userId = useSessionStore((s) => s.user?.id ?? null)
   const isRefreshing = useSessionStore((s) => s.isRefreshing)
   const isReadOnly = useIsReadOnly()
   const isReadOnlyViewer = isReadOnly && !isLoggedIn
-  const visibilityScopeRef = useRef<string | null>(null)
-  const visibilityScope = getVisibilityScope(authDisabled, userId, userRole)
-
-  useLayoutEffect(() => {
-    if (!configHasLoaded) return
-    const previous = visibilityScopeRef.current
-    visibilityScopeRef.current = visibilityScope
-    if (previous && previous !== visibilityScope) {
-      clearPrivilegedVisibilityState()
-    }
-  }, [configHasLoaded, visibilityScope])
   const loadFavorites = useFavoritesStore((s) => s.loadFavorites)
   const clearFavorites = useFavoritesStore((s) => s.clearFavorites)
   const loadUserSettings = useUserSettingsStore((s) => s.loadUserSettings)
@@ -66,7 +49,7 @@ function App() {
   // browser never sees the first user's favorites.
   useEffect(() => {
     if (userId) {
-      loadFavorites(userId)
+      loadFavorites()
     } else {
       clearFavorites()
     }
@@ -124,7 +107,7 @@ function App() {
               </div>
             }
           >
-            <RouterProvider key={visibilityScope} router={router} />
+            <RouterProvider router={router} />
           </Suspense>
         </ErrorBoundary>
       ) : null}

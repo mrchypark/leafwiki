@@ -3,17 +3,13 @@ package pages
 import (
 	"context"
 
-	"github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/favorites"
 )
 
 type AddFavoriteInput struct {
-	UserID       string
-	PageID       string
-	User         *auth.User
-	AuthDisabled bool
+	UserID string
+	PageID string
 }
 
 // AddFavoriteUseCase favorites a page for a given user. Any authenticated
@@ -29,10 +25,6 @@ func NewAddFavoriteUseCase(treeService *tree.TreeService, store *favorites.Favor
 }
 
 func (uc *AddFavoriteUseCase) Execute(_ context.Context, in AddFavoriteInput) error {
-	node, err := uc.treeService.SnapshotPageNode(in.PageID)
-	if err != nil || node == nil || !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
-		return tree.ErrPageNotFound
-	}
 	if _, err := uc.treeService.GetPage(in.PageID); err != nil {
 		return err
 	}

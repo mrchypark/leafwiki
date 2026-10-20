@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { isDynamicImportChunkError } from '@/lib/dynamicImportError'
 import i18next from '@/lib/i18n'
+import { useEffect, useRef } from 'react'
 
 type MermaidDefault = (typeof import('mermaid'))['default']
 
@@ -36,12 +37,17 @@ async function ensureMermaidInitialized(
   return mermaid
 }
 
+export type MermaidRenderError = {
+  message: string
+  isChunkLoadError: boolean
+}
+
 export type MermaidInjectorOps = {
   containerRef: React.RefObject<HTMLDivElement | null>
   code: string
   dataLine?: string
   theme: 'default' | 'dark'
-  onError: (message: string | null) => void
+  onError: (error: MermaidRenderError | null) => void
 }
 
 function djb2(str: string) {
@@ -133,7 +139,11 @@ export function useMermaidInjector({
         // <foreignObject> nodes do not cause a parseerror element to be
         // injected into the DOM (raw XML error visible to the user).
         // Use <template> to keep the fragment inert (no side-effect fetches).
+        // XSS: the SVG comes from mermaid.render with securityLevel 'antiscript',
+        // which runs HTML labels through DOMPurify. Keep that level (or stricter)
+        // when changing the mermaid config.
         const template = document.createElement('template')
+        // eslint-disable-next-line no-restricted-syntax
         template.innerHTML = svg
         const newSvg = template.content.querySelector(
           'svg',
@@ -172,7 +182,10 @@ export function useMermaidInjector({
         lastHashRef.current = null
         const message = error instanceof Error ? error.message : String(error)
         console.warn('Mermaid diagram could not be rendered:', message)
-        onError(message)
+        onError({
+          message,
+          isChunkLoadError: isDynamicImportChunkError(message),
+        })
       }
     }
 

@@ -4,16 +4,12 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/favorites"
 )
 
 type ListFavoritesInput struct {
-	UserID       string
-	User         *auth.User
-	AuthDisabled bool
+	UserID string
 }
 
 type ListFavoritesOutput struct {
@@ -47,9 +43,6 @@ func (uc *ListFavoritesUseCase) Execute(_ context.Context, in ListFavoritesInput
 	for i, p := range pages {
 		if errs[i] != nil {
 			uc.log.Warn("skipping stale favorite", "userID", in.UserID, "pageID", ids[i], "error", errs[i])
-			continue
-		}
-		if p == nil || p.PageNode == nil || !pagevisibility.CanView(p.PageNode, in.User, in.AuthDisabled) {
 			continue
 		}
 		result = append(result, p)

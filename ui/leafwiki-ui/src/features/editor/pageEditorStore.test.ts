@@ -9,7 +9,7 @@ import {
   updatePage,
   updatePageDraft,
 } from '@/lib/api/pages'
-import { useLinkStatusStore } from '../links/linkstatus_store'
+import { useLinkStatusStore } from '../links/linkStatusStore'
 import { confirmPageRefactor } from '../page/pageRefactorDialogState'
 import { useConfigStore } from '@/stores/config'
 import { useTreeStore } from '@/stores/tree'

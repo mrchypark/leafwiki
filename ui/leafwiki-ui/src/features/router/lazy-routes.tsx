@@ -4,11 +4,11 @@ export const AccountSettings = lazy(
   () => import('../settings/account/AccountSettings'),
 )
 
-// The 6 admin-only settings sections share one dynamic-import specifier
+// The admin-only settings sections share one dynamic-import specifier
 // (../settings/adminSections) so the bundler collapses them into a single
-// chunk, loaded once when an admin opens any one of them — see
-// pleaf/root/AI-Gen-Infos/plans/open/features/
-// settings-admin-sections-shared-chunk.md.
+// chunk, loaded once when an admin opens any one of them. One chunk per
+// section saved almost no bytes but cost a network round-trip on every
+// switch between settings tabs.
 export const ApiKeysManagement = lazy(() =>
   import('../settings/adminSections').then((m) => ({
     default: m.ApiKeysManagement,
@@ -27,14 +27,29 @@ export const BrandingSettings = lazy(() =>
 export const Importer = lazy(() =>
   import('../settings/adminSections').then((m) => ({ default: m.Importer })),
 )
+export const PublicAccessSettings = lazy(() =>
+  import('../settings/adminSections').then((m) => ({
+    default: m.PublicAccessSettings,
+  })),
+)
 export const SnapshotSettings = lazy(() =>
   import('../settings/adminSections').then((m) => ({
     default: m.SnapshotSettings,
   })),
 )
+export const TocDisplaySettings = lazy(() =>
+  import('../settings/adminSections').then((m) => ({
+    default: m.TocDisplaySettings,
+  })),
+)
 export const UserManagement = lazy(() =>
   import('../settings/adminSections').then((m) => ({
     default: m.UserManagement,
+  })),
+)
+export const BrokenLinks = lazy(() =>
+  import('../settings/adminSections').then((m) => ({
+    default: m.BrokenLinks,
   })),
 )
 

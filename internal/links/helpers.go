@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -38,32 +37,37 @@ func WikilinkTitleFromSentinel(toPath string) string {
 	return strings.TrimPrefix(toPath, wikilinkSentinelPrefix)
 }
 
+// LinkState is the resolution state of a stored link. It is computed on write
+// (source save and title reconcile), never on read.
+type LinkState int
+
+const (
+	// LinkResolved: the target exists and is unique.
+	LinkResolved LinkState = 0
+	// LinkBroken: the target does not exist.
+	LinkBroken LinkState = 1
+	// LinkAmbiguous: a [[Title]] matches several pages. Not broken — it shows
+	// up as a backlink on every matching page.
+	LinkAmbiguous LinkState = 2
+)
+
+// classifyTitleMatches is the single rule mapping the number of pages that
+// match a wiki-link title to a link state.
+func classifyTitleMatches(matches int) LinkState {
+	switch matches {
+	case 0:
+		return LinkBroken
+	case 1:
+		return LinkResolved
+	default:
+		return LinkAmbiguous
+	}
+}
+
 type TargetLink struct {
 	TargetPageID   string
 	TargetPagePath string
-	Broken         bool
-}
-
-func publishedPagesByTitle(treeService *tree.TreeService, title string) []*tree.PageNode {
-	if treeService == nil {
-		return nil
-	}
-	pages := treeService.SnapshotPagesByTitle(title)
-	published := make([]*tree.PageNode, 0, len(pages))
-	for _, page := range pages {
-		if !pagevisibility.IsInDraftSubtree(page) {
-			published = append(published, page)
-		}
-	}
-	return published
-}
-
-func publishedPageByID(treeService *tree.TreeService, pageID string) *tree.PageNode {
-	node, err := treeService.SnapshotPageNode(pageID)
-	if err != nil || pagevisibility.IsInDraftSubtree(node) {
-		return nil
-	}
-	return node
+	State          LinkState
 }
 
 var markdownParser = goldmark.New()
@@ -117,11 +121,11 @@ func extractLinksFromMarkdown(content string) []string {
 // [[Target|Alias]] syntax found in content. The returned strings are the raw
 // target values (may be a title or a "Folder/Title" path hint).
 func extractWikiLinksFromMarkdown(content string) []string {
-	excluded := NewMarkdownRefactorEngine().collectExcludedRanges(content)
 	matches := wikiLinkRe.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
 		return nil
 	}
+	excluded := NewMarkdownRefactorEngine().collectExcludedRanges(content)
 	seen := make(map[string]struct{}, len(matches))
 	targets := make([]string, 0, len(matches))
 	for _, m := range matches {
@@ -143,12 +147,17 @@ func extractWikiLinksFromMarkdown(content string) []string {
 
 // resolveWikiLinkTargets resolves [[Title]] and [[Folder/Title]] targets.
 //
-// Targets containing "/" are first tried as direct route-path lookups
-// ([[Folder/Title]] → /folder/title). If the path lookup fails, the target
-// is retried as a full title (handles titles like "C/C++"). A single title
-// match resolves the link; zero or N>1 matches produce a broken sentinel
-// stored as "wikilink:<target>" so the healing infrastructure can later
-// find and fix the record when a matching page is created.
+// Every target — including one containing "/" — is tried as a title lookup
+// first. A single title match always wins, even for a target like "TCP/IP"
+// or "C/C++ Guide" that also happens to look like a route path; this is
+// deliberate so a wikilink always prefers the page whose actual title
+// matches, rather than silently resolving to an unrelated page that just
+// happens to share a slug path. Only when there is NO title match at all is
+// a slash-containing target retried as a direct route-path lookup
+// ([[Folder/Title]] → /folder/title), which supports nested-path link hints
+// that are not real page titles. An ambiguous title match (N>1) is never
+// retried as a route path; it is stored as LinkAmbiguous (see
+// classifyTitleMatches), never silently resolved via a different mechanism.
 func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []TargetLink {
 	if !treeService.IsLoaded() || len(targets) == 0 {
 		return nil
@@ -156,56 +165,39 @@ func resolveWikiLinkTargets(treeService *tree.TreeService, targets []string) []T
 
 	var result []TargetLink
 	for _, target := range targets {
-		if strings.Contains(target, "/") {
+		pages := treeService.FindPagesByTitle(target)
+
+		// A slash-containing target with NO title match is retried as a direct
+		// route-path hint ([[Folder/Title]] → /folder/title).
+		if strings.Contains(target, "/") && len(pages) == 0 {
 			routePath := strings.TrimPrefix(target, "/")
 			page, err := treeService.FindPageByRoutePath(routePath)
-			var pageNode *tree.PageNode
 			if err == nil && page != nil {
-				pageNode = publishedPageByID(treeService, page.ID)
-			}
-			if pageNode != nil {
 				result = append(result, TargetLink{
-					TargetPageID:   pageNode.ID,
-					TargetPagePath: normalizeWikiPath(pageNode.CalculatePath()),
-					Broken:         false,
+					TargetPageID:   page.ID,
+					TargetPagePath: normalizeWikiPath(page.CalculatePath()),
+					State:          LinkResolved,
 				})
 				continue
 			}
-			// Path lookup failed — fall through to title lookup so that
-			// titles containing "/" (e.g. "C/C++") can still be resolved.
-			pages := publishedPagesByTitle(treeService, target)
-			if len(pages) == 1 {
-				result = append(result, TargetLink{
-					TargetPageID:   pages[0].ID,
-					TargetPagePath: wikilinkSentinel(target),
-					Broken:         false,
-				})
-				continue
-			}
-			// Store as a normal broken route path so HealLinksForExactPath
-			// can heal it when the page is later created at that path.
+			// Store as a normal broken route path so
+			// HealLinksForExactPath can heal it when the page is later
+			// created at that path.
 			result = append(result, TargetLink{
-				Broken:         true,
+				State:          LinkBroken,
 				TargetPagePath: "/" + routePath,
 			})
 			continue
 		}
 
-		// Pure title-based lookup.
-		pages := publishedPagesByTitle(treeService, target)
-		if len(pages) == 1 {
-			result = append(result, TargetLink{
-				TargetPageID:   pages[0].ID,
-				TargetPagePath: wikilinkSentinel(target),
-				Broken:         false,
-			})
-		} else {
-			// 0 matches (not found) or N>1 (ambiguous) → broken sentinel.
-			result = append(result, TargetLink{
-				Broken:         true,
-				TargetPagePath: wikilinkSentinel(target),
-			})
+		link := TargetLink{
+			State:          classifyTitleMatches(len(pages)),
+			TargetPagePath: wikilinkSentinel(target),
 		}
+		if len(pages) == 1 {
+			link.TargetPageID = pages[0].ID
+		}
+		result = append(result, link)
 	}
 	return result
 }
@@ -282,8 +274,8 @@ func resolveURLPath(currentPath, href string) (string, error) {
 	return normalizeWikiPath(resolved.Path), nil
 }
 
-func resolveTargetLinks(treeService *tree.TreeService, currentPath string, links []string) []TargetLink {
-	if !treeService.IsLoaded() {
+func resolveTargetLinks(tree *tree.TreeService, currentPath string, links []string) []TargetLink {
+	if !tree.IsLoaded() {
 		return nil
 	}
 
@@ -307,23 +299,20 @@ func resolveTargetLinks(treeService *tree.TreeService, currentPath string, links
 		}
 
 		// find page by route path
-		page, err := treeService.FindPageByRoutePath(normalizedForLookup)
-		var pageNode *tree.PageNode
+		page, err := tree.FindPageByRoutePath(normalizedForLookup)
 		if err == nil && page != nil {
-			pageNode = publishedPageByID(treeService, page.ID)
-		}
-		if pageNode != nil {
+			// found page
 			targetLinks = append(targetLinks, TargetLink{
-				TargetPageID:   pageNode.ID,
+				TargetPageID:   page.ID,
 				TargetPagePath: resolvedPath,
-				Broken:         false,
+				State:          LinkResolved,
 			})
 		} else {
 			// not found, broken link
 			targetLinks = append(targetLinks, TargetLink{
 				TargetPageID:   "",
 				TargetPagePath: resolvedPath,
-				Broken:         true,
+				State:          LinkBroken,
 			})
 		}
 	}
@@ -348,7 +337,7 @@ func toBacklinkResultItem(tree *tree.TreeService, backlink Backlink) BacklinkRes
 		return BacklinkResultItem{}
 	}
 
-	page, err := tree.SnapshotPageNode(backlink.FromPageID)
+	page, err := tree.FindPageByID(backlink.FromPageID)
 	if err != nil {
 		return BacklinkResultItem{}
 	}
@@ -382,7 +371,7 @@ func toOutgoingResultItem(tree *tree.TreeService, outgoing Outgoing) OutgoingRes
 	item := OutgoingResultItem{
 		ToPageID:   outgoing.ToPageID,
 		ToPath:     displayPath,
-		Broken:     outgoing.Broken,
+		Broken:     outgoing.State == LinkBroken,
 		FromPageID: outgoing.FromPageID,
 	}
 
@@ -394,7 +383,7 @@ func toOutgoingResultItem(tree *tree.TreeService, outgoing Outgoing) OutgoingRes
 		return item
 	}
 
-	toPage, err := tree.SnapshotPageNode(outgoing.ToPageID)
+	toPage, err := tree.FindPageByID(outgoing.ToPageID)
 	if err != nil || toPage == nil {
 		return item
 	}

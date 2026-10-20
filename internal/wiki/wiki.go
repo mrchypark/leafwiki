@@ -2,9 +2,7 @@ package wiki
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,9 +15,7 @@ import (
 	"github.com/perber/wiki/internal/core/revision"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/favorites"
-	httpinternal "github.com/perber/wiki/internal/http"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
-	coreimporter "github.com/perber/wiki/internal/importer"
 	"github.com/perber/wiki/internal/links"
 	"github.com/perber/wiki/internal/properties"
 	"github.com/perber/wiki/internal/search"
@@ -33,9 +29,9 @@ import (
 	wikibranding "github.com/perber/wiki/internal/wiki/branding"
 	wikihealth "github.com/perber/wiki/internal/wiki/health"
 	wikiimporter "github.com/perber/wiki/internal/wiki/importer"
+	wikiinstancesettings "github.com/perber/wiki/internal/wiki/instancesettings"
 	wikilinks "github.com/perber/wiki/internal/wiki/links"
 	wikipages "github.com/perber/wiki/internal/wiki/pages"
-	"github.com/perber/wiki/internal/wiki/pagesave"
 	wikiproperties "github.com/perber/wiki/internal/wiki/properties"
 	wikirestore "github.com/perber/wiki/internal/wiki/restore"
 	wikiresync "github.com/perber/wiki/internal/wiki/resync"
@@ -64,41 +60,39 @@ type Wiki struct {
 	storageDir        string
 
 	// Domain route registrars (populated by NewWiki).
-	pagesRoutes        *wikipages.Routes
-	authRoutes         *wikiauth.Routes
-	assetsRoutes       *wikiassets.Routes
-	revisionsRoutes    *wikirevisions.Routes
-	searchRoutes       *wikisearch.Routes
-	linksRoutes        *wikilinks.Routes
-	tagsRoutes         *wikitags.Routes
-	propertiesRoutes   *wikiproperties.Routes
-	brandingRoutes     *wikibranding.Routes
-	avatarRoutes       *wikiavatar.Routes
-	apiKeysRoutes      *wikiapikeys.Routes
-	importerRoutes     *wikiimporter.Routes
-	healthRoutes       *wikihealth.Routes
-	revision           *revision.Service
-	links              *links.LinkService
-	tags               *tags.TagsService
-	props              *properties.PropertiesService
-	searchEffect       *pagesave.SearchIndexSideEffect
-	tagsEffect         *pagesave.TagsSideEffect
-	propertiesEffect   *pagesave.PropertiesSideEffect
-	favorites          *favorites.FavoritesStore
-	userSettings       *usersettings.UserSettingsService
-	userSettingsRoutes *wikiusersettings.Routes
-	backupRoutes       *wikibackup.Routes
-	snapshotRoutes     *wikisnapshot.Routes
-	restoreRoutes      *wikirestore.Routes
-	resyncRoutes       *wikiresync.Routes
-	resyncJob          *wikiresync.ResyncJob
-	ignoreCache        *ignore.Cache
-	reloadMu           sync.Mutex
-	reloadWG           sync.WaitGroup
-	shutdownCtx        context.Context
-	shutdownCancel     context.CancelFunc
-	log                *slog.Logger
-	metrics            *httpmetrics.HTTPMetrics
+	pagesRoutes            *wikipages.Routes
+	authRoutes             *wikiauth.Routes
+	assetsRoutes           *wikiassets.Routes
+	revisionsRoutes        *wikirevisions.Routes
+	searchRoutes           *wikisearch.Routes
+	linksRoutes            *wikilinks.Routes
+	tagsRoutes             *wikitags.Routes
+	propertiesRoutes       *wikiproperties.Routes
+	brandingRoutes         *wikibranding.Routes
+	avatarRoutes           *wikiavatar.Routes
+	apiKeysRoutes          *wikiapikeys.Routes
+	importerRoutes         *wikiimporter.Routes
+	healthRoutes           *wikihealth.Routes
+	revision               *revision.Service
+	links                  *links.LinkService
+	tags                   *tags.TagsService
+	props                  *properties.PropertiesService
+	favorites              *favorites.FavoritesStore
+	userSettings           *usersettings.UserSettingsService
+	userSettingsRoutes     *wikiusersettings.Routes
+	backupRoutes           *wikibackup.Routes
+	snapshotRoutes         *wikisnapshot.Routes
+	restoreRoutes          *wikirestore.Routes
+	instanceSettingsRoutes *wikiinstancesettings.Routes
+	resyncRoutes           *wikiresync.Routes
+	resyncJob              *wikiresync.ResyncJob
+	ignoreCache            *ignore.Cache
+	reloadMu               sync.Mutex
+	reloadWG               sync.WaitGroup
+	shutdownCtx            context.Context
+	shutdownCancel         context.CancelFunc
+	log                    *slog.Logger
+	metrics                *httpmetrics.HTTPMetrics
 }
 
 const SYSTEM_USER_ID = "system"
@@ -157,7 +151,7 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 	if err := w.initUserSettingsService(); err != nil {
 		return nil, err
 	}
-	w.bootstrapTagsAndProperties(w.shutdownCtx)
+	w.bootstrapTagsAndProperties()
 	if err := w.initSearch(); err != nil {
 		return nil, err
 	}
@@ -179,500 +173,9 @@ func NewWiki(options *WikiOptions) (*Wiki, error) {
 			})
 		w.ensureBaselineRevisions()
 	}
+	w.metrics.RegisterRuntimeStats(runtimeStatsSource{w: w})
 	w.buildRoutes(options)
 	return w, nil
-}
-
-func (w *Wiki) ensureBaselineRevisions() {
-	var ids []string
-	if err := w.tree.WalkNodes(func(id string) error {
-		ids = append(ids, id)
-		return nil
-	}); err != nil {
-		w.log.Warn("failed to enumerate pages for baseline revisions", "error", err)
-		return
-	}
-	if len(ids) == 0 {
-		return
-	}
-	pages, pageErrs := w.tree.GetPages(ids)
-	var valid []*tree.Page
-	for i, p := range pages {
-		if pageErrs[i] != nil {
-			w.log.Warn("failed to load page for baseline revision", "pageID", ids[i], "error", pageErrs[i])
-			continue
-		}
-		if p != nil && !p.Draft {
-			valid = append(valid, p)
-		}
-	}
-	if len(valid) == 0 {
-		return
-	}
-	errs := w.revision.RecordContentUpdates(valid, SYSTEM_USER_ID, "baseline")
-	for i, err := range errs {
-		if err != nil {
-			w.log.Warn("baseline revision failed", "pageID", valid[i].ID, "error", err)
-		}
-	}
-}
-
-// ─── Subsystem initializers ───────────────────────────────────────────────────
-
-func (w *Wiki) initAuth(options *WikiOptions) error {
-	store, err := auth.NewUserStore(w.storageDir)
-	if err != nil {
-		return err
-	}
-	w.user = auth.NewUserService(store)
-	w.user.SetEditorLimit(options.EditorLimit)
-	if !options.AuthDisabled {
-		if err := w.user.InitDefaultAdmin(options.AdminUsername, options.AdminEmail, options.AdminPassword); err != nil {
-			return err
-		}
-	}
-	w.userResolver, err = auth.NewUserResolver(w.UserService)
-	if err != nil {
-		return err
-	}
-	if options.TOTPEncryptionKey != "" {
-		totpService, err := auth.NewTOTPService([]byte(options.TOTPEncryptionKey))
-		if err != nil {
-			return fmt.Errorf("invalid TOTP encryption key: %w", err)
-		}
-		w.totp = totpService
-	}
-	if !options.AuthDisabled {
-		sessionStore, err := auth.NewSessionStore(w.storageDir)
-		if err != nil {
-			return err
-		}
-		sessions := auth.NewSessionManager(sessionStore, options.JWTSecret, options.AccessTokenTimeout, options.RefreshTokenTimeout)
-		w.auth = auth.NewAuthService(w.user, sessions, w.totp)
-
-		// API keys are only meaningful when authentication is meaningful:
-		// key management is admin-only and RequireAdmin already hard-blocks
-		// admin operations when auth is disabled, so no key can be created
-		// in that mode anyway. Keeping construction inside this block (like
-		// sessionStore/w.auth) means w.APIKeyService() is nil when
-		// AuthDisabled, which in turn keeps the Bearer middleware from being
-		// registered at all — a key created before a later --disable-auth
-		// restart must not keep authenticating (and narrowing/blocking)
-		// requests in a mode where auth is supposed to be irrelevant.
-		//
-		// The feature is additionally gated behind EnableAPIKeyManagement:
-		// it ships experimental and off by default, so w.apiKeys stays nil
-		// (and the Bearer middleware/admin routes stay disabled) until an
-		// operator explicitly opts in.
-		if options.EnableAPIKeyManagement {
-			apiKeyStore, err := auth.NewAPIKeyStore(w.storageDir)
-			if err != nil {
-				return err
-			}
-			w.apiKeys = auth.NewAPIKeyService(apiKeyStore, w.auth)
-		}
-	}
-	return nil
-}
-
-// initEmail constructs the password-reset/invite token service when both
-// SMTP is configured and auth is enabled — mirroring the EnableAPIKeyManagement
-// block above, this keeps w.emailTokenService nil (and the corresponding
-// routes returning ErrEmailDisabled) whenever either precondition is false,
-// rather than constructing something unusable. Must run after initAuth,
-// which sets w.user and w.auth.
-func (w *Wiki) initEmail(options *WikiOptions) error {
-	if !options.SMTP.Enabled() || options.AuthDisabled {
-		return nil
-	}
-
-	store, err := auth.NewEmailTokenStore(w.storageDir)
-	if err != nil {
-		return err
-	}
-	w.emailTokenStore = store
-
-	mailer := email.NewService(options.SMTP)
-	w.emailTokenService = auth.NewEmailTokenService(store, w.user, w.auth, mailer, options.SMTP.PublicURL)
-	return nil
-}
-
-func (w *Wiki) initCoreServices(options *WikiOptions) error {
-	// Create a shared ignore cache for multi-level .leafwikiignore resolution.
-	rootDir := filepath.Join(w.storageDir, "root")
-	w.ignoreCache = ignore.NewCache(rootDir)
-
-	w.tree = tree.NewTreeService(w.storageDir)
-	w.tree.SetIgnoreCache(w.ignoreCache)
-	if err := w.tree.LoadTree(); err != nil {
-		return err
-	}
-	w.slug = tree.NewSlugService()
-	w.asset = assets.NewAssetService(w.storageDir, w.slug)
-	w.asset.SetIgnoreCache(w.ignoreCache)
-
-	return nil
-}
-
-func (w *Wiki) initLinkService() error {
-	linksStore, err := links.NewLinksStore(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init links store: %w", err)
-	}
-	w.links = links.NewLinkService(w.storageDir, w.tree, linksStore)
-	if err := w.links.IndexAllPages(); err != nil {
-		w.log.Warn("failed to index links on startup", "error", err)
-	}
-	return nil
-}
-
-func (w *Wiki) initTagsService() error {
-	tagsStore, err := tags.NewTagsStore(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init tags store: %w", err)
-	}
-	w.tags = tags.NewTagsService(tagsStore)
-	w.tagsEffect = pagesave.NewTagsSideEffect(w.tags, w.tree, w.log, w.metrics)
-	return nil
-}
-
-func (w *Wiki) initPropertiesService() error {
-	propsStore, err := properties.NewPropertiesStore(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init properties store: %w", err)
-	}
-	w.props = properties.NewPropertiesService(propsStore)
-	w.propertiesEffect = pagesave.NewPropertiesSideEffect(w.props, w.tree, w.log, w.metrics)
-	return nil
-}
-
-func (w *Wiki) initFavoritesService() error {
-	store, err := favorites.NewFavoritesStore(w.storageDir, w.log)
-	if err != nil {
-		return fmt.Errorf("failed to init favorites store: %w", err)
-	}
-	w.favorites = store
-	return nil
-}
-
-func (w *Wiki) initUserSettingsService() error {
-	store, err := usersettings.NewUserSettingsStore(w.storageDir, w.log)
-	if err != nil {
-		return fmt.Errorf("failed to init user settings store: %w", err)
-	}
-	w.userSettings = usersettings.NewUserSettingsService(store)
-	return nil
-}
-
-// bootstrapTagsAndProperties rebuilds both projections through their shared
-// runtime coordination boundaries.
-func (w *Wiki) bootstrapTagsAndProperties(ctx context.Context) {
-	if err := pagesave.IndexAllTagsAndPropertiesContext(ctx, w.tagsEffect, w.propertiesEffect); err != nil {
-		w.log.Warn("failed to rebuild tags and properties indexes", "error", err)
-	}
-}
-
-func (w *Wiki) initSearch() error {
-	var err error
-	w.searchIndex, err = search.NewSQLiteIndex(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init search index: %w", err)
-	}
-	w.status = search.NewIndexingStatus()
-	w.searchEffect = pagesave.NewSearchIndexSideEffect(w.searchIndex, w.tree, w.log, w.metrics)
-	w.log.Info("search indexing started")
-	w.reloadWG.Add(1)
-	go func() {
-		defer w.reloadWG.Done()
-		w.status.Start()
-		defer w.status.Finish()
-		if err := w.searchEffect.IndexAllPagesContext(w.shutdownCtx); err != nil {
-			w.log.Warn("search bootstrap failed", "error", err)
-			w.status.Fail()
-		} else {
-			w.log.Info("search indexing completed")
-			w.status.Success()
-		}
-	}()
-	return nil
-}
-
-func (w *Wiki) initBranding() error {
-	var err error
-	w.branding, err = branding.NewBrandingService(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init branding service: %w", err)
-	}
-	return nil
-}
-
-func (w *Wiki) initAvatarService() error {
-	var err error
-	w.avatar, err = avatar.NewAvatarService(w.storageDir)
-	if err != nil {
-		return fmt.Errorf("failed to init avatar service: %w", err)
-	}
-	return nil
-}
-
-func (w *Wiki) buildRoutes(options *WikiOptions) {
-	w.pagesRoutes = w.buildPagesRoutes()
-	w.authRoutes = w.buildAuthRoutes()
-	w.assetsRoutes = w.buildAssetsRoutes()
-	w.revisionsRoutes = w.buildRevisionsRoutes()
-	w.searchRoutes = w.buildSearchRoutes()
-	w.linksRoutes = w.buildLinksRoutes()
-	w.tagsRoutes = w.buildTagsRoutes()
-	w.propertiesRoutes = w.buildPropertiesRoutes()
-	w.brandingRoutes = w.buildBrandingRoutes()
-	w.avatarRoutes = w.buildAvatarRoutes()
-	w.userSettingsRoutes = w.buildUserSettingsRoutes()
-	w.apiKeysRoutes = w.buildAPIKeysRoutes()
-	w.importerRoutes = w.buildImporterRoutes(options)
-	w.healthRoutes = wikihealth.NewRoutes(wikihealth.RoutesConfig{
-		Index:      w.searchIndex,
-		Status:     w.status,
-		StorageDir: w.storageDir,
-	})
-	w.resyncRoutes = wikiresync.NewRoutes(
-		wikiresync.NewTriggerResyncUseCase(w.resyncJob, w.launchReloadWithProgress, w.metrics),
-		wikiresync.NewGetResyncStatusUseCase(w.resyncJob),
-		w.auth,
-	)
-}
-
-// ─── Domain route builder helpers ────────────────────────────────────────────
-
-func (w *Wiki) newPageOrchestrator() *pagesave.PageSaveOrchestrator {
-	return pagesave.NewPageSaveOrchestrator(
-		w.metrics,
-		w.searchEffect,
-		pagesave.NewLinkIndexSideEffect(w.links, w.log, w.metrics),
-		pagesave.NewRevisionSideEffect(w.revision, w.log, w.metrics),
-		w.tagsEffect,
-		w.propertiesEffect,
-	)
-}
-
-func (w *Wiki) buildPagesRoutes() *wikipages.Routes {
-	o := w.newPageOrchestrator()
-	return wikipages.NewRoutes(wikipages.RoutesConfig{
-		TreeService:      w.tree,
-		CreatePage:       wikipages.NewCreatePageUseCase(w.tree, w.slug, o, w.log, w.metrics),
-		UpdatePage:       wikipages.NewUpdatePageUseCase(w.tree, w.slug, o, w.log, w.metrics),
-		DeletePage:       wikipages.NewDeletePageUseCase(w.tree, w.revision, w.asset, w.favorites, o, w.log, w.metrics),
-		MovePage:         wikipages.NewMovePageUseCase(w.tree, o, w.log, w.metrics),
-		ConvertPage:      wikipages.NewConvertPageUseCase(w.tree, w.revision, w.log),
-		CopyPage:         wikipages.NewCopyPageUseCase(w.tree, w.slug, o, w.asset, w.log),
-		GetPage:          wikipages.NewGetPageUseCase(w.tree),
-		FindByPath:       wikipages.NewFindByPathUseCase(w.tree),
-		FindByTitle:      wikipages.NewFindByTitleUseCase(w.tree),
-		LookupPath:       wikipages.NewLookupPagePathUseCase(w.tree),
-		ResolvePermalink: wikipages.NewResolvePermalinkUseCase(w.tree),
-		SortPages:        wikipages.NewSortPagesUseCase(w.tree),
-		EnsurePath:       wikipages.NewEnsurePathUseCase(w.tree, w.slug, o, w.log),
-		SuggestSlug:      wikipages.NewSuggestSlugUseCase(w.tree, w.slug),
-		PreviewRefactor:  wikipages.NewPreviewPageRefactorUseCase(w.tree, w.slug, w.links, w.log),
-		ApplyRefactor:    wikipages.NewApplyPageRefactorUseCase(w.tree, w.slug, w.links, o, w.log, w.metrics),
-		PinPage:          wikipages.NewPinPageUseCase(w.tree, w.log),
-		AddFavorite:      wikipages.NewAddFavoriteUseCase(w.tree, w.favorites),
-		RemoveFavorite:   wikipages.NewRemoveFavoriteUseCase(w.favorites),
-		ListFavorites:    wikipages.NewListFavoritesUseCase(w.tree, w.favorites, w.log),
-		UserResolver:     w.userResolver,
-		AuthService:      w.auth,
-	})
-}
-
-func (w *Wiki) buildAuthRoutes() *wikiauth.Routes {
-	return wikiauth.NewRoutes(wikiauth.RoutesConfig{
-		Login:             wikiauth.NewLoginUseCase(w.auth, w.metrics),
-		CompleteTOTPLogin: wikiauth.NewCompleteTOTPLoginUseCase(w.auth, w.metrics),
-		Logout:            wikiauth.NewLogoutUseCase(w.auth, w.metrics),
-		RefreshToken:      wikiauth.NewRefreshTokenUseCase(w.auth, w.metrics),
-		CreateUser:        wikiauth.NewCreateUserUseCase(w.UserService, w.userResolver, w.log),
-		UpdateUser:        wikiauth.NewUpdateUserUseCase(w.UserService, w.userResolver, w.log),
-		ChangeOwnPassword: wikiauth.NewChangeOwnPasswordUseCase(w.UserService),
-		DeleteUser:        wikiauth.NewDeleteUserUseCase(w.UserService, w.userResolver, w.favorites, w.userSettings, w.apiKeys, w.log),
-		GetUsers:          wikiauth.NewGetUsersUseCase(w.UserService),
-		GetUserByID:       wikiauth.NewGetUserByIDUseCase(w.UserService),
-		StartTOTPSetup:    wikiauth.NewStartTOTPSetupUseCase(w.auth),
-		ConfirmTOTPSetup:  wikiauth.NewConfirmTOTPSetupUseCase(w.auth, w.metrics),
-		DisableTOTP:       wikiauth.NewDisableTOTPUseCase(w.auth, w.metrics),
-		GetTOTPStatus:     wikiauth.NewGetTOTPStatusUseCase(w.auth),
-		AuthService:       w.auth,
-
-		RequestPasswordReset: wikiauth.NewRequestPasswordResetUseCase(w.EmailTokenService),
-		ConfirmPasswordReset: wikiauth.NewConfirmPasswordResetUseCase(w.EmailTokenService),
-		InviteUser:           wikiauth.NewInviteUserUseCase(w.UserService, w.EmailTokenService, w.userResolver, w.log),
-		ResendInvite:         wikiauth.NewResendInviteUseCase(w.UserService, w.EmailTokenService),
-		ConfirmInvite:        wikiauth.NewConfirmInviteUseCase(w.EmailTokenService, w.auth),
-	})
-}
-
-func (w *Wiki) buildAssetsRoutes() *wikiassets.Routes {
-	return wikiassets.NewRoutes(wikiassets.RoutesConfig{
-		Upload:      wikiassets.NewUploadAssetUseCase(w.tree, w.asset, w.revision, w.log),
-		List:        wikiassets.NewListAssetsUseCase(w.tree, w.asset),
-		Rename:      wikiassets.NewRenameAssetUseCase(w.tree, w.asset, w.revision, w.log),
-		Delete:      wikiassets.NewDeleteAssetUseCase(w.tree, w.asset, w.revision, w.log),
-		AuthService: w.auth,
-		Tree:        w.tree,
-		AssetsDir:   w.asset.GetAssetsDir(),
-		Log:         w.log,
-	})
-}
-
-func (w *Wiki) buildRevisionsRoutes() *wikirevisions.Routes {
-	return wikirevisions.NewRoutes(wikirevisions.RoutesConfig{
-		ListRevisions:    wikirevisions.NewListRevisionsUseCase(w.revision),
-		GetRevision:      wikirevisions.NewGetRevisionUseCase(w.revision),
-		CompareRevisions: wikirevisions.NewCompareRevisionsUseCase(w.revision),
-		GetRevisionAsset: wikirevisions.NewGetRevisionAssetUseCase(w.revision),
-		GetLatest:        wikirevisions.NewGetLatestRevisionUseCase(w.revision),
-		RestoreRevision:  wikirevisions.NewRestoreRevisionUseCase(w.revision, w.tree, w.newPageOrchestrator(), w.log, w.metrics),
-		CheckIntegrity:   wikirevisions.NewCheckIntegrityUseCase(w.revision),
-		UserResolver:     w.userResolver,
-		AuthService:      w.auth,
-		Tree:             w.tree,
-	})
-}
-
-func (w *Wiki) buildSearchRoutes() *wikisearch.Routes {
-	return wikisearch.NewRoutes(wikisearch.RoutesConfig{
-		Search:            wikisearch.NewSearchUseCase(w.searchIndex, w.tags, w.tree),
-		GetIndexingStatus: wikisearch.NewGetIndexingStatusUseCase(w.status),
-		AuthService:       w.auth,
-	})
-}
-
-func (w *Wiki) buildLinksRoutes() *wikilinks.Routes {
-	return wikilinks.NewRoutes(wikilinks.RoutesConfig{
-		GetLinkStatus: wikilinks.NewGetLinkStatusUseCase(w.links, w.tree),
-		AuthService:   w.auth,
-	})
-}
-
-func (w *Wiki) buildTagsRoutes() *wikitags.Routes {
-	return wikitags.NewRoutes(wikitags.RoutesConfig{
-		GetTags:        wikitags.NewGetTagsUseCase(w.tags, w.tree),
-		GetPagesByTags: wikitags.NewGetPagesByTagsUseCase(w.tags, w.tree, w.userResolver),
-		AuthService:    w.auth,
-	})
-}
-
-func (w *Wiki) buildPropertiesRoutes() *wikiproperties.Routes {
-	return wikiproperties.NewRoutes(wikiproperties.RoutesConfig{
-		GetPropertyKeys:    wikiproperties.NewGetPropertyKeysUseCase(w.props, w.tree),
-		GetPagesByProperty: wikiproperties.NewGetPagesByPropertyUseCase(w.props, w.tree, w.userResolver),
-		AuthService:        w.auth,
-	})
-}
-
-func (w *Wiki) buildBrandingRoutes() *wikibranding.Routes {
-	return wikibranding.NewRoutes(wikibranding.RoutesConfig{
-		GetBranding:     wikibranding.NewGetBrandingUseCase(w.branding),
-		UpdateBranding:  wikibranding.NewUpdateBrandingUseCase(w.branding),
-		UploadLogo:      wikibranding.NewUploadLogoUseCase(w.branding),
-		DeleteLogo:      wikibranding.NewDeleteLogoUseCase(w.branding),
-		UploadFavicon:   wikibranding.NewUploadFaviconUseCase(w.branding),
-		DeleteFavicon:   wikibranding.NewDeleteFaviconUseCase(w.branding),
-		BrandingService: w.branding,
-		AuthService:     w.auth,
-		Log:             w.log,
-	})
-}
-
-func (w *Wiki) buildAvatarRoutes() *wikiavatar.Routes {
-	return wikiavatar.NewRoutes(wikiavatar.RoutesConfig{
-		UploadAvatar:  wikiavatar.NewUploadAvatarUseCase(w.avatar),
-		DeleteAvatar:  wikiavatar.NewDeleteAvatarUseCase(w.avatar),
-		AvatarService: w.avatar,
-		AuthService:   w.auth,
-	})
-}
-
-func (w *Wiki) buildUserSettingsRoutes() *wikiusersettings.Routes {
-	return wikiusersettings.NewRoutes(wikiusersettings.RoutesConfig{
-		GetUserSettings:    wikiusersettings.NewGetUserSettingsUseCase(w.userSettings),
-		UpdateUserSettings: wikiusersettings.NewUpdateUserSettingsUseCase(w.userSettings),
-		AuthService:        w.auth,
-	})
-}
-
-func (w *Wiki) buildAPIKeysRoutes() *wikiapikeys.Routes {
-	return wikiapikeys.NewRoutes(wikiapikeys.RoutesConfig{
-		CreateAPIKey: wikiapikeys.NewCreateAPIKeyUseCase(w.apiKeys),
-		ListAPIKeys:  wikiapikeys.NewListAPIKeysUseCase(w.apiKeys),
-		RevokeAPIKey: wikiapikeys.NewRevokeAPIKeyUseCase(w.apiKeys),
-		AuthService:  w.auth,
-	})
-}
-
-func (w *Wiki) buildImporterRoutes(options *WikiOptions) *wikiimporter.Routes {
-	importerDir := filepath.Join(options.StorageDir, ".importer")
-	adapter := NewWikiImportAdapter(w)
-	planner := coreimporter.NewPlanner(adapter, w.slug, options.StorageDir)
-	planner.SetIgnoreCache(w.ignoreCache)
-
-	store := coreimporter.NewPlanStore(filepath.Join(importerDir, "current-plan.json"))
-	svc := coreimporter.NewImporterService(planner, store, filepath.Join(importerDir, "workspaces"), options.MaxAssetUploadSizeBytes)
-	return wikiimporter.NewRoutes(wikiimporter.RoutesConfig{
-		CreatePlan:  wikiimporter.NewCreateImportPlanUseCase(svc),
-		GetPlan:     wikiimporter.NewGetImportPlanUseCase(svc),
-		Execute:     wikiimporter.NewExecuteImportUseCase(svc),
-		ClearPlan:   wikiimporter.NewClearImportPlanUseCase(svc),
-		AuthService: w.auth,
-		Svc:         svc,
-		Log:         w.log,
-	})
-}
-
-// ─── Registrars / FrontendConfig ─────────────────────────────────────────────
-
-// Registrars returns all domain route registrars in registration order.
-func (w *Wiki) Registrars() []httpinternal.RouteRegistrar {
-	registrars := []httpinternal.RouteRegistrar{
-		w.authRoutes,
-		w.pagesRoutes,
-		w.assetsRoutes,
-		w.revisionsRoutes,
-		w.searchRoutes,
-		w.linksRoutes,
-		w.tagsRoutes,
-		w.propertiesRoutes,
-		w.brandingRoutes,
-		w.avatarRoutes,
-		w.userSettingsRoutes,
-		w.apiKeysRoutes,
-		w.importerRoutes,
-		w.healthRoutes,
-		w.resyncRoutes,
-	}
-	if w.backupRoutes != nil {
-		registrars = append(registrars, w.backupRoutes)
-	}
-	if w.snapshotRoutes != nil {
-		registrars = append(registrars, w.snapshotRoutes)
-	}
-	if w.restoreRoutes != nil {
-		registrars = append(registrars, w.restoreRoutes)
-	}
-	return registrars
-}
-
-// SetBackupRoutes sets the backup routes and must be called before router creation.
-func (w *Wiki) SetBackupRoutes(r *wikibackup.Routes) {
-	w.backupRoutes = r
-}
-
-// SetSnapshotRoutes sets the full-backup (snapshot) routes and must be called before router creation.
-func (w *Wiki) SetSnapshotRoutes(r *wikisnapshot.Routes) {
-	w.snapshotRoutes = r
-}
-
-// SetRestoreRoutes sets the live-restore routes and must be called before router creation.
-func (w *Wiki) SetRestoreRoutes(r *wikirestore.Routes) {
-	w.restoreRoutes = r
 }
 
 // AuthService returns the authentication service.
@@ -690,236 +193,6 @@ func (w *Wiki) BrandingService() *branding.BrandingService {
 // unavailable until an operator sets one).
 func (w *Wiki) TOTPService() *auth.TOTPService {
 	return w.totp
-}
-
-// FrontendConfig returns the minimal runtime data required by the router to serve the SPA.
-func (w *Wiki) FrontendConfig() httpinternal.FrontendConfig {
-	return httpinternal.FrontendConfig{
-		StorageDir: w.storageDir,
-		GetSiteName: func() string {
-			cfg, err := w.branding.GetBranding()
-			if err != nil || cfg == nil {
-				return ""
-			}
-			return cfg.SiteName
-		},
-		GetFaviconFile: func() string {
-			cfg, err := w.branding.GetBranding()
-			if err != nil || cfg == nil {
-				return ""
-			}
-			return cfg.FaviconFile
-		},
-	}
-}
-
-func (w *Wiki) EnsureWelcomePage() error {
-	if w.tree.HasPages() {
-		w.log.Info("Welcome page already exists, skipping creation")
-		return nil
-	}
-	o := w.newPageOrchestrator()
-	k := tree.NodeKindPage
-	createOut, err := wikipages.NewCreatePageUseCase(w.tree, w.slug, o, w.log, w.metrics).Execute(
-		context.Background(),
-		wikipages.CreatePageInput{UserID: SYSTEM_USER_ID, Title: "Welcome to LeafWiki", Slug: "welcome-to-leafwiki", Kind: &k},
-	)
-	if err != nil {
-		return err
-	}
-	p := createOut.Page
-
-	// Set the content of the welcome page
-	content := `# Welcome to LeafWiki!
-
-LeafWiki – A fast wiki for people who think in folders, not feeds.
-Single Go binary. Markdown on disk. No external database service.
-
-LeafWiki is a lightweight, self-hosted wiki for runbooks, internal docs, and technical notes — built for fast writing and explicit structure. It keeps your content as plain Markdown on disk and gives you fast navigation, search, and editing — without running additional services.
-
-
----
-
-## Features
-
-- **Markdown-based** pages stored on disk (no database required)
-- **Hierarchical navigation** with sections and pages
-- **Full-text search** powered by SQLite FTS5
-- **Asset management** (upload, rename, delete attachments)
-- **Revision history** with snapshots and restore
-- **Import** from Markdown zip archives
-- **Branding** customization (site name, logo, favicon)
-- **Multi-user** with role-based access control (admin / editor / viewer)
-- **Public access mode** for read-only anonymous browsing
-
-## Getting Started
-
-1. Create your first page using the **+** button in the sidebar
-2. Write in **Markdown** — headings, lists, code blocks, and links are all supported
-3. Use **sections** to group related pages into a folder-like hierarchy
-4. Upload files by dragging them into the editor
-
-For more information, visit the [LeafWiki GitHub repository](https://github.com/perber/leafwiki).
-`
-	current, err := w.tree.GetPage(p.ID)
-	if err != nil {
-		return err
-	}
-	if _, err := wikipages.NewUpdatePageUseCase(w.tree, w.slug, o, w.log, w.metrics).Execute(
-		context.Background(),
-		wikipages.UpdatePageInput{UserID: SYSTEM_USER_ID, ID: p.ID, Version: current.Version(), Title: p.Title, Slug: p.Slug, Content: &content},
-	); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// ReloadFromFS reruns the startup-time filesystem reconciliation without
-// restarting the process. It serializes concurrent callers (signal handler +
-// HTTP endpoint) so indexes are never rebuilt from two goroutines at once.
-//
-// What is reloaded: page tree, link index, tag/property indexes, search index.
-// What is NOT reloaded: assets (served directly from disk), auth/users
-// (SQLite-based), revisions (stored per-page, no re-baseline).
-func (w *Wiki) ReloadFromFS() error {
-	return w.ReloadFromFSContext(context.Background())
-}
-
-func (w *Wiki) ReloadFromFSContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	w.reloadMu.Lock()
-	defer w.reloadMu.Unlock()
-
-	w.log.Info("filesystem reload started")
-
-	if err := w.tree.ReconstructTreeFromFSContext(ctx); err != nil {
-		return fmt.Errorf("tree reconstruction failed: %w", err)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if err := w.links.IndexAllPagesContext(ctx); err != nil {
-		w.log.Warn("link re-index failed during reload", "error", err)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	w.bootstrapTagsAndProperties(ctx)
-
-	w.status.Start()
-	defer w.status.Finish()
-	if err := w.searchEffect.IndexAllPagesContext(ctx); err != nil {
-		w.log.Warn("search re-index failed during reload", "error", err)
-		w.status.Fail()
-		return fmt.Errorf("search re-index failed: %w", err)
-	}
-
-	w.status.Success()
-	w.log.Info("filesystem reload completed")
-	return nil
-}
-
-// launchReloadWithProgress adds to reloadWG and starts reloadWithProgress in a goroutine.
-// The caller is responsible for having already called resyncJob.Start().
-func (w *Wiki) launchReloadWithProgress() {
-	w.reloadWG.Add(1)
-	go func() {
-		defer w.reloadWG.Done()
-		w.reloadWithProgress(w.shutdownCtx)
-	}()
-}
-
-// reloadWithProgress runs the filesystem reload while updating resyncJob phases.
-// Must only be called via launchReloadWithProgress (which tracks the WG).
-func (w *Wiki) reloadWithProgress(ctx context.Context) {
-	job := w.resyncJob
-	started := time.Now()
-	var finishErr error
-
-	defer func() {
-		w.metrics.ObserveResyncRun(finishErr, started)
-	}()
-
-	// Catch panics so a bug in any phase always releases the job and mutex.
-	defer func() {
-		if r := recover(); r != nil {
-			finishErr = fmt.Errorf("panic during reload: %v", r)
-			w.log.Error("panic during filesystem reload", "panic", r)
-			job.Finish(finishErr)
-		}
-	}()
-
-	w.reloadMu.Lock()
-	defer w.reloadMu.Unlock()
-
-	w.log.Info("filesystem reload started (async)")
-
-	job.SetPhase(wikiresync.PhaseTree)
-	if err := w.tree.ReconstructTreeFromFSContext(ctx); err != nil {
-		finishErr = fmt.Errorf("tree reconstruction failed: %w", err)
-		job.Finish(finishErr)
-		return
-	}
-
-	if ctx.Err() != nil {
-		finishErr = ctx.Err()
-		job.Finish(finishErr)
-		return
-	}
-
-	job.SetPhase(wikiresync.PhaseLinks)
-	if err := w.links.IndexAllPagesContext(ctx); err != nil {
-		if ctx.Err() != nil {
-			finishErr = ctx.Err()
-			job.Finish(finishErr)
-			return
-		}
-		w.log.Warn("link re-index failed during reload", "error", err)
-	}
-
-	if ctx.Err() != nil {
-		finishErr = ctx.Err()
-		job.Finish(finishErr)
-		return
-	}
-
-	job.SetPhase(wikiresync.PhaseTags)
-	w.bootstrapTagsAndProperties(ctx)
-
-	job.SetPhase(wikiresync.PhaseSearch)
-	w.status.Start()
-	if err := w.searchEffect.IndexAllPagesContext(ctx); err != nil {
-		w.log.Warn("search re-index failed during reload", "error", err)
-		w.status.Fail()
-		w.status.Finish()
-		finishErr = fmt.Errorf("search re-index failed: %w", err)
-		job.Finish(finishErr)
-		return
-	}
-	w.status.Success()
-	w.status.Finish()
-
-	w.log.Info("filesystem reload completed (async)")
-	finishErr = nil
-	job.Finish(nil)
-}
-
-// TriggerResyncAsync starts a background filesystem reload if none is already running.
-// Used by the signal handler so SIGUSR1/SIGHUP also goes through the shared ResyncJob.
-func (w *Wiki) TriggerResyncAsync() {
-	if !w.resyncJob.Start() {
-		w.log.Info("resync already running, signal ignored")
-		return
-	}
-	w.launchReloadWithProgress()
 }
 
 // ─── Service getters (test infrastructure) ───────────────────────────────────
@@ -1006,6 +279,7 @@ func (w *Wiki) Close() error {
 			w.log.Error("error closing links", "error", err)
 		}
 	}
+
 	if w.userSettings != nil {
 		if err := w.userSettings.Close(); err != nil {
 			w.log.Error("error closing user settings store", "error", err)

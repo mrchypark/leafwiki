@@ -5,77 +5,65 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 )
 
 // Routes is the RouteRegistrar for the links domain.
 type Routes struct {
-	getLinkStatus *GetLinkStatusUseCase
-	authService   *coreauth.AuthService
-	authDisabled  bool
+	getLinkStatus  *GetLinkStatusUseCase
+	getBrokenLinks *GetBrokenLinksUseCase
+	authService    *coreauth.AuthService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
 type RoutesConfig struct {
-	GetLinkStatus *GetLinkStatusUseCase
-	AuthService   *coreauth.AuthService
+	GetLinkStatus  *GetLinkStatusUseCase
+	GetBrokenLinks *GetBrokenLinksUseCase
+	AuthService    *coreauth.AuthService
 }
 
 // NewRoutes constructs the links RouteRegistrar.
 func NewRoutes(cfg RoutesConfig) *Routes {
 	return &Routes{
-		getLinkStatus: cfg.GetLinkStatus,
-		authService:   cfg.AuthService,
+		getLinkStatus:  cfg.GetLinkStatus,
+		getBrokenLinks: cfg.GetBrokenLinks,
+		authService:    cfg.AuthService,
 	}
 }
 
 // RegisterRoutes implements RouteRegistrar.
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
-	opts := ctx.Opts
-	r.authDisabled = opts.AuthDisabled
+	// Registered once, gated per request so this read can flip between
+	// authenticated-only and public without a restart (see APIReadGroup).
+	readGroup := ctx.APIReadGroup(r.authService)
+	readGroup.GET("/pages/:id/links", r.handleGetLinkStatus)
 
-	if opts.PublicAccess {
-		pub := ctx.Base.Group("/api")
-		if !opts.AuthDisabled {
-			pub.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
-		}
-		pub.GET("/pages/:id/links", r.handleGetLinkStatus)
-	}
-
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
-
-	if !opts.PublicAccess {
-		authGroup.GET("/pages/:id/links", r.handleGetLinkStatus)
-	}
+	// The wiki-wide broken-link audit is an admin maintenance view (the UI
+	// exposes it only to admins), not a per-page read — keep it behind admin
+	// auth even when the instance is in public mode.
+	authGroup := ctx.APIAuthGroup(r.authService)
+	authGroup.GET("/links/broken", authmw.RequireAdmin(ctx.Opts.AuthDisabled), r.handleGetBrokenLinks)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 func (r *Routes) handleGetLinkStatus(c *gin.Context) {
-	if !r.authDisabled {
-		c.Header("Cache-Control", "private, no-store")
-	}
 	pageID := c.Param("id")
-	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{
-		PageID: pageID, User: authmw.TryGetUser(c), AuthDisabled: r.authDisabled,
-	})
+	out, err := r.getLinkStatus.Execute(c.Request.Context(), GetLinkStatusInput{PageID: pageID})
 	if err != nil {
 		respondWithLinkError(c, err)
 		return
 	}
-	if r.getLinkStatus != nil && r.getLinkStatus.tree != nil {
-		if node, findErr := r.getLinkStatus.tree.SnapshotPageNode(pageID); findErr == nil && pagevisibility.IsInDraftSubtree(node) {
-			c.Header("Cache-Control", "private, no-store")
-			c.Header("Pragma", "no-cache")
-		}
-	}
 	c.JSON(http.StatusOK, out.Status)
+}
+
+func (r *Routes) handleGetBrokenLinks(c *gin.Context) {
+	out, err := r.getBrokenLinks.Execute(c.Request.Context())
+	if err != nil {
+		respondWithLinkError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, out)
 }

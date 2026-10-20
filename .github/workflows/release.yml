@@ -22,12 +22,12 @@ jobs:
           fetch-depth: 0  # Fetch all history for accurate changelog generation
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25.x'
+          go-version: '1.26.x'
 
       - name: Make release binaries
         run: |
@@ -35,8 +35,14 @@ jobs:
           echo "Using version: $VERSION"
           make release VERSION=$VERSION
 
+      - name: Verify release checksums
+        # Users download binary + .sha256 into one directory and run
+        # `sha256sum -c`; the files must name the bare binary, no dir prefix.
+        working-directory: releases
+        run: sha256sum -c *.sha256
+
       - name: Attest release binaries
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'releases/leafwiki-${{ github.ref_name }}-*'
 
@@ -79,7 +85,7 @@ jobs:
       - name: Publish GitHub Release
         # use pinned version because of issue described here:
         # https://github.com/softprops/action-gh-release/issues/628
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         if: github.ref_type == 'tag'
         with:
           tag_name: ${{ github.ref_name }}
@@ -88,6 +94,8 @@ jobs:
           files: |
             releases/leafwiki-${{ github.ref_name }}-linux-amd64
             releases/leafwiki-${{ github.ref_name }}-linux-amd64.sha256
+            releases/leafwiki-${{ github.ref_name }}-linux-386
+            releases/leafwiki-${{ github.ref_name }}-linux-386.sha256
             releases/leafwiki-${{ github.ref_name }}-linux-arm64
             releases/leafwiki-${{ github.ref_name }}-linux-arm64.sha256
             releases/leafwiki-${{ github.ref_name }}-darwin-amd64

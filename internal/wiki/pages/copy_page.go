@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/perber/wiki/internal/core/assets"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	"github.com/perber/wiki/internal/wiki/pagesave"
@@ -63,9 +62,9 @@ func (uc *CopyPageUseCase) Execute(_ context.Context, in CopyPageInput) (*CopyPa
 	if err != nil {
 		return nil, err
 	}
+
 	kind := tree.NodeKindPage
-	draft := pagevisibility.IsInDraftSubtree(page.PageNode)
-	copyID, err := uc.tree.CreateNodeWithDraft(in.UserID, in.TargetParentID, in.Title, in.Slug, &kind, draft)
+	copyID, err := uc.tree.CreateNode(in.UserID, in.TargetParentID, in.Title, in.Slug, &kind)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +82,14 @@ func (uc *CopyPageUseCase) Execute(_ context.Context, in CopyPageInput) (*CopyPa
 	}
 
 	updatedContent := strings.ReplaceAll(page.Content, "/assets/"+page.ID+"/", "/assets/"+copyPage.ID+"/")
-	if err := uc.tree.UpdateNode(in.UserID, copyPage.ID, copyPage.Title, copyPage.Slug, &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := uc.tree.UpdateNode(tree.UpdateNodeInput{
+		UserID:          in.UserID,
+		ID:              copyPage.ID,
+		Title:           copyPage.Title,
+		Slug:            copyPage.Slug,
+		Content:         &updatedContent,
+		ExpectedVersion: tree.VersionUnchecked,
+	}); err != nil {
 		cleanup()
 		_ = uc.assets.DeleteAllAssetsForPage(copyPage.PageNode)
 		return nil, err

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	corelinks "github.com/perber/wiki/internal/links"
@@ -21,9 +19,7 @@ var ErrLinkServiceUnavailable = sharederrors.NewLocalizedError(
 // ─── GetLinkStatusUseCase ────────────────────────────────────────────────────
 
 type GetLinkStatusInput struct {
-	PageID       string
-	User         *auth.User
-	AuthDisabled bool
+	PageID string
 }
 
 type GetLinkStatusOutput struct {
@@ -43,82 +39,60 @@ func (uc *GetLinkStatusUseCase) Execute(_ context.Context, in GetLinkStatusInput
 	if uc.links == nil {
 		return nil, ErrLinkServiceUnavailable
 	}
-	node, err := uc.tree.SnapshotPageNode(in.PageID)
+	page, err := uc.tree.GetPage(in.PageID)
 	if err != nil {
 		if errors.Is(err, tree.ErrPageNotFound) {
-			return nil, linkPageNotFoundError(err)
+			return nil, sharederrors.NewLocalizedError(
+				ErrCodeLinkPageNotFound,
+				"Page not found",
+				"page not found",
+				err,
+			)
 		}
 		return nil, err
 	}
-	if pagevisibility.IsInDraftSubtree(node) {
-		if !pagevisibility.CanView(node, in.User, in.AuthDisabled) {
-			return nil, linkPageNotFoundError(nil)
-		}
-		return &GetLinkStatusOutput{Status: &corelinks.LinkStatusResult{
-			Backlinks:       []corelinks.BacklinkResultItem{},
-			BrokenIncoming:  []corelinks.BacklinkResultItem{},
-			Outgoings:       []corelinks.OutgoingResultItem{},
-			BrokenOutgoings: []corelinks.OutgoingResultItem{},
-		}}, nil
-	}
-	status, err := uc.links.GetLinkStatusForPage(in.PageID, node.CalculatePath())
+	status, err := uc.links.GetLinkStatusForPage(in.PageID, page.CalculatePath())
 	if err != nil {
 		return nil, err
 	}
-	filterLinkStatus(status, uc.tree)
 	return &GetLinkStatusOutput{Status: status}, nil
 }
 
-func linkPageNotFoundError(err error) error {
-	return sharederrors.NewLocalizedError(
-		ErrCodeLinkPageNotFound,
-		"Page not found",
-		"page not found",
-		err,
-	)
+type GetBrokenLinksOutput struct {
+	Links []corelinks.BrokenLink `json:"links"`
 }
 
-func filterLinkStatus(status *corelinks.LinkStatusResult, treeService *tree.TreeService) {
-	if status == nil {
-		return
-	}
-	published := make(map[string]struct{})
-	for _, pageID := range pagevisibility.AllPublishedPageIDs(treeService) {
-		published[pageID] = struct{}{}
-	}
-	status.Backlinks = filterPublicBacklinks(status.Backlinks, published)
-	status.BrokenIncoming = filterPublicBacklinks(status.BrokenIncoming, published)
-	status.Outgoings = filterPublicOutgoings(status.Outgoings, published)
-	status.BrokenOutgoings = filterPublicOutgoings(status.BrokenOutgoings, published)
-	status.Counts = corelinks.LinkStatusCounts{
-		Backlinks:       len(status.Backlinks),
-		BrokenIncoming:  len(status.BrokenIncoming),
-		Outgoings:       len(status.Outgoings),
-		BrokenOutgoings: len(status.BrokenOutgoings),
+type GetBrokenLinksUseCase struct {
+	links *corelinks.LinkService
+}
+
+func NewGetBrokenLinksUseCase(
+	l *corelinks.LinkService,
+) *GetBrokenLinksUseCase {
+	return &GetBrokenLinksUseCase{
+		links: l,
 	}
 }
 
-func filterPublicBacklinks(items []corelinks.BacklinkResultItem, published map[string]struct{}) []corelinks.BacklinkResultItem {
-	visible := make([]corelinks.BacklinkResultItem, 0, len(items))
-	for _, item := range items {
-		if _, ok := published[item.FromPageID]; ok {
-			visible = append(visible, item)
-		}
+func (uc *GetBrokenLinksUseCase) Execute(
+	_ context.Context,
+) (*GetBrokenLinksOutput, error) {
+	if uc.links == nil {
+		return nil, ErrLinkServiceUnavailable
 	}
-	return visible
-}
 
-func filterPublicOutgoings(items []corelinks.OutgoingResultItem, published map[string]struct{}) []corelinks.OutgoingResultItem {
-	visible := make([]corelinks.OutgoingResultItem, 0, len(items))
-	for _, item := range items {
-		if item.ToPageID != "" {
-			if _, ok := published[item.ToPageID]; !ok {
-				continue
-			}
-		}
-		visible = append(visible, item)
+	links, err := uc.links.GetBrokenLinks()
+	if err != nil {
+		return nil, err
 	}
-	return visible
+
+	if links == nil {
+		links = []corelinks.BrokenLink{}
+	}
+
+	return &GetBrokenLinksOutput{
+		Links: links,
+	}, nil
 }
 
 // ─── GetBacklinksUseCase ─────────────────────────────────────────────────────

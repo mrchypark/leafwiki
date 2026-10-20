@@ -2,7 +2,6 @@ package pagesave
 
 import (
 	"log/slog"
-	"sync"
 
 	"github.com/perber/wiki/internal/core/tree"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
@@ -12,21 +11,15 @@ import (
 // PropertiesSideEffect updates the properties index after every page mutation.
 type PropertiesSideEffect struct {
 	svc     *properties.PropertiesService
-	tree    *tree.TreeService
 	log     *slog.Logger
 	metrics *httpmetrics.HTTPMetrics
-	mu      sync.Mutex
 }
 
-func NewPropertiesSideEffect(svc *properties.PropertiesService, treeService *tree.TreeService, log *slog.Logger, metrics ...*httpmetrics.HTTPMetrics) *PropertiesSideEffect {
+func NewPropertiesSideEffect(svc *properties.PropertiesService, log *slog.Logger, metrics *httpmetrics.HTTPMetrics) *PropertiesSideEffect {
 	if log == nil {
 		log = slog.Default()
 	}
-	var m *httpmetrics.HTTPMetrics
-	if len(metrics) > 0 {
-		m = metrics[0]
-	}
-	return &PropertiesSideEffect{svc: svc, tree: treeService, log: log, metrics: m}
+	return &PropertiesSideEffect{svc: svc, log: log, metrics: metrics}
 }
 
 func (e *PropertiesSideEffect) Name() string {
@@ -37,28 +30,33 @@ func (e *PropertiesSideEffect) Apply(event PageSaveEvent) {
 	if e.svc == nil {
 		return
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, state := range loadProjectionPages(e.tree, projectionPageIDs(event, false)) {
-		if state.err != nil {
-			e.log.Warn("failed to load current page for property index", "pageID", state.id, "error", state.err)
-			e.recordFailure(event.Operation)
-			continue
+	switch event.Operation {
+	case PageOperationCreate, PageOperationUpdate, PageOperationRestore:
+		if event.After != nil {
+			e.setProperties(event.After, event.Operation)
 		}
-		if state.remove {
-			if err := e.svc.DeletePropertiesForPage(state.id); err != nil {
-				e.log.Warn("failed to delete page property index", "pageID", state.id, "error", err)
-				e.recordFailure(event.Operation)
-			}
-			continue
-		}
-		if err := e.svc.SetPropertiesForPage(state.id, properties.ExtractPropertiesFromContent(state.page.RawContent)); err != nil {
-			e.log.Warn("failed to reconcile property index", "pageID", state.id, "error", err)
-			e.recordFailure(event.Operation)
+
+	case PageOperationMove:
+		// page_id is stable across moves; properties in frontmatter are unchanged — no-op.
+
+	case PageOperationDelete:
+		for _, p := range event.AffectedPages {
+			e.deleteProperties(p, event.Operation)
 		}
 	}
 }
 
-func (e *PropertiesSideEffect) recordFailure(operation PageOperationType) {
-	e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
+func (e *PropertiesSideEffect) setProperties(p *tree.Page, operation PageOperationType) {
+	props := properties.ExtractPropertiesFromContent(p.RawContent)
+	if err := e.svc.SetPropertiesForPage(p.ID, props); err != nil {
+		e.log.Warn("failed to set properties for page", "pageID", p.ID, "error", err)
+		e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
+	}
+}
+
+func (e *PropertiesSideEffect) deleteProperties(p *tree.Page, operation PageOperationType) {
+	if err := e.svc.DeletePropertiesForPage(p.ID); err != nil {
+		e.log.Warn("failed to delete properties for page", "pageID", p.ID, "error", err)
+		e.metrics.IncPageSaveSideEffectFailure(string(operation), e.Name())
+	}
 }

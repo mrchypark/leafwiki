@@ -10,8 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
-	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
 	"github.com/perber/wiki/internal/http/dto"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
@@ -35,7 +33,6 @@ type Routes struct {
 	checkIntegrity   *CheckIntegrityUseCase
 	userResolver     *coreauth.UserResolver
 	authService      *coreauth.AuthService
-	tree             *tree.TreeService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -49,7 +46,6 @@ type RoutesConfig struct {
 	CheckIntegrity   *CheckIntegrityUseCase
 	UserResolver     *coreauth.UserResolver
 	AuthService      *coreauth.AuthService
-	Tree             *tree.TreeService
 }
 
 // NewRoutes constructs the revisions RouteRegistrar.
@@ -64,7 +60,6 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 		checkIntegrity:   cfg.CheckIntegrity,
 		userResolver:     cfg.UserResolver,
 		authService:      cfg.AuthService,
-		tree:             cfg.Tree,
 	}
 }
 
@@ -72,13 +67,7 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
-	authGroup.Use(r.requireVisiblePage(opts.AuthDisabled))
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	// Revision routes are behind the EnableRevision feature flag.
 	if opts.EnableRevision {
@@ -90,29 +79,6 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 		authGroup.POST("/pages/:id/revisions/:revisionId/restore", authmw.RequireEditorOrAdmin(), r.handleRestoreRevision)
 	}
 
-}
-
-func (r *Routes) requireVisiblePage(authDisabled bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if r.tree == nil {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		node, err := r.tree.SnapshotPageNode(strings.TrimSpace(c.Param("id")))
-		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		if !authDisabled {
-			c.Header("Cache-Control", "private, no-store")
-			c.Header("Pragma", "no-cache")
-		}
-		c.Next()
-	}
-}
-
-func (r *Routes) requirePageVisibility(authDisabled bool) gin.HandlerFunc {
-	return r.requireVisiblePage(authDisabled)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -273,11 +239,7 @@ func (r *Routes) handleGetRevisionAsset(c *gin.Context) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	disposition := mime.FormatMediaType("inline", map[string]string{"filename": path.Base(assetName)})
-	if disposition == "" {
-		disposition = "inline"
-	}
-	c.Header("Content-Disposition", disposition)
+	security.SetUntrustedFileHeaders(c.Writer.Header(), assetName)
 	c.Writer.Header().Set("Content-Type", contentType)
 	http.ServeContent(c.Writer, c.Request, path.Base(assetName), stat.ModTime(), f)
 }

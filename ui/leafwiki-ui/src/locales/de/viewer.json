@@ -28,6 +28,7 @@
   },
   "mermaid": {
     "renderError": "Mermaid-Diagramm konnte nicht gerendert werden.",
+    "chunkLoadError": "Dieses Diagramm konnte nicht geladen werden, da eine neuere Version von LeafWiki verfügbar ist. Lade die Seite neu, um dies zu beheben.",
     "noSvgOutput": "Kein SVG-Element in der Mermaid-Ausgabe"
   },
   "headline": {
@@ -69,6 +70,7 @@
   "toc": {
     "title": "Inhaltsverzeichnis",
     "onThisPage": "Auf dieser Seite",
+    "downloads": "Angehängte Medien",
     "collapse": "Inhaltsverzeichnis einklappen",
     "expand": "Inhaltsverzeichnis ausklappen"
   },
@@ -137,6 +139,9 @@
   },
   "imagePreview": {
     "openInNewTab": "In neuem Tab öffnen"
+  },
+  "pdfEmbed": {
+    "defaultTitle": "PDF"
   },
   "pageSwitcher": {
     "trigger": "Zu Seite wechseln",

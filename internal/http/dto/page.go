@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	"github.com/perber/wiki/internal/core/tree"
 )
 
@@ -25,19 +24,16 @@ type NodeMetadata struct {
 
 // Node is the HTTP representation of a page tree node.
 type Node struct {
-	ID             string        `json:"id"`
-	Title          string        `json:"title"`
-	Slug           string        `json:"slug"`
-	Path           string        `json:"path"`
-	Version        string        `json:"version"`
-	Position       int           `json:"position"`
-	Kind           tree.NodeKind `json:"kind"`
-	Children       []*Node       `json:"children"`
-	Metadata       NodeMetadata  `json:"metadata"`
-	Pinned         bool          `json:"pinned,omitempty"`
-	Draft          bool          `json:"draft,omitempty"`
-	EffectiveDraft bool          `json:"effectiveDraft,omitempty"`
-	AncestorDraft  bool          `json:"ancestorDraft,omitempty"`
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Slug     string        `json:"slug"`
+	Path     string        `json:"path"`
+	Version  string        `json:"version"`
+	Position int           `json:"position"`
+	Kind     tree.NodeKind `json:"kind"`
+	Children []*Node       `json:"children"`
+	Metadata NodeMetadata  `json:"metadata"`
+	Pinned   bool          `json:"pinned,omitempty"`
 }
 
 // Page is the HTTP representation of a full page (node + content).
@@ -52,7 +48,7 @@ type Page struct {
 // ToAPIPage converts a tree.Page to its HTTP representation.
 func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 	return &Page{
-		Node:       ToAPINode(p.PageNode, BuildPathFromNode(p.Parent), userResolver),
+		Node:       ToAPINode(p.PageNode, "", userResolver),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},
@@ -63,7 +59,7 @@ func ToAPIPage(p *tree.Page, userResolver *auth.UserResolver) *Page {
 // ToAPIPageWithDepth converts a tree.Page with a depth-limited node tree.
 func ToAPIPageWithDepth(p *tree.Page, userResolver *auth.UserResolver, depth int) *Page {
 	return &Page{
-		Node:       ToAPINodeWithDepth(p.PageNode, BuildPathFromNode(p.Parent), userResolver, depth),
+		Node:       ToAPINodeWithDepth(p.PageNode, "", userResolver, depth),
 		Content:    p.Content,
 		Path:       BuildPathFromNode(p.PageNode),
 		Tags:       []string{},
@@ -99,17 +95,14 @@ func ToAPINode(node *tree.PageNode, parentPath string, userResolver *auth.UserRe
 	}
 
 	apiNode := &Node{
-		ID:             node.ID,
-		Title:          node.Title,
-		Slug:           node.Slug,
-		Path:           path,
-		Version:        node.Version(),
-		Position:       node.Position,
-		Kind:           node.Kind,
-		Pinned:         node.Pinned,
-		Draft:          node.Draft,
-		EffectiveDraft: pagevisibility.IsInDraftSubtree(node),
-		AncestorDraft:  pagevisibility.IsInDraftSubtree(node.Parent),
+		ID:       node.ID,
+		Title:    node.Title,
+		Slug:     node.Slug,
+		Path:     path,
+		Version:  node.Version(),
+		Position: node.Position,
+		Kind:     node.Kind,
+		Pinned:   node.Pinned,
 		Metadata: NodeMetadata{
 			CreatedAt:    node.Metadata.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:    node.Metadata.UpdatedAt.Format(time.RFC3339),

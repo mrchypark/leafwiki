@@ -2,7 +2,7 @@ name: Frontend E2E
 
 on:
   pull_request:
-    branches: 
+    branches:
       - main
       - release/*
       - releases/*
@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: e2e
 
-    steps: 
+    steps:
       - name: 📥 Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -56,3 +56,12 @@ jobs:
 
       - name: 🧪 Run inherited draft subtree tests with public access
         run: E2E_PUBLIC_ACCESS=true ./e2e/run.sh tests/drafts.spec.ts
+
+      - name: 📦 Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-test-results
+          path: e2e/test-results/
+          retention-days: 1
+          if-no-files-found: ignore

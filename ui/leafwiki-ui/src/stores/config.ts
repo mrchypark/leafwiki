@@ -1,5 +1,9 @@
 import { getConfig } from '@/lib/api/config'
 import {
+  setAlwaysShowToc as setAlwaysShowTocApi,
+  setPublicAccess as setPublicAccessApi,
+} from '@/lib/api/instanceSettings'
+import {
   DEFAULT_AVATAR_ALLOWED_EXTS,
   DEFAULT_MAX_ASSET_UPLOAD_SIZE_BYTES,
   DEFAULT_MAX_AVATAR_UPLOAD_SIZE_BYTES,
@@ -10,6 +14,8 @@ import { create } from 'zustand'
 
 type ConfigStore = {
   publicAccess: boolean
+  publicAccessEnvManaged: boolean
+  alwaysShowToc: boolean
   editorLimit: number
   hideLinkMetadataSection: boolean
   authDisabled: boolean
@@ -20,6 +26,8 @@ type ConfigStore = {
   enableLinkRefactor: boolean
   enableApiKeyManagement: boolean
   gitBackupEnabled: boolean
+  gitBackupEnvManaged: boolean
+  gitBackupConfigured: boolean
   snapshotEnabled: boolean
   smtpEnabled: boolean
   totpAvailable: boolean
@@ -42,6 +50,14 @@ type ConfigStore = {
   // header-auth session (see lib/api/auth.ts's fetchWithAuth).
   configLoadSucceeded: boolean
   loadConfig: () => Promise<void>
+  // Runtime toggle of public mode (admin only, settings-managed instances).
+  // Updates the store in place on success — no reload needed for this tab;
+  // other open tabs / anonymous visitors pick it up on their next
+  // /api/config load.
+  setPublicAccess: (enabled: boolean) => Promise<void>
+  // Runtime toggle of "always show TOC" (admin only). Updates the store in
+  // place on success, same as setPublicAccess.
+  setAlwaysShowToc: (alwaysShow: boolean) => Promise<void>
 }
 
 // A single failed attempt would otherwise leave configLoadSucceeded false —
@@ -53,6 +69,8 @@ const CONFIG_LOAD_RETRY_DELAYS_MS = [500, 1000]
 
 export const useConfigStore = create<ConfigStore>((set) => ({
   publicAccess: false,
+  publicAccessEnvManaged: false,
+  alwaysShowToc: false,
   editorLimit: 0,
   hideLinkMetadataSection: false,
   authDisabled: false,
@@ -63,6 +81,8 @@ export const useConfigStore = create<ConfigStore>((set) => ({
   enableLinkRefactor: false,
   enableApiKeyManagement: false,
   gitBackupEnabled: false,
+  gitBackupEnvManaged: false,
+  gitBackupConfigured: false,
   snapshotEnabled: false,
   smtpEnabled: false,
   totpAvailable: false,
@@ -100,6 +120,8 @@ export const useConfigStore = create<ConfigStore>((set) => ({
 
         set({
           publicAccess: config.publicAccess,
+          publicAccessEnvManaged: config.publicAccessEnvManaged ?? false,
+          alwaysShowToc: config.alwaysShowToc ?? false,
           editorLimit: config.editorLimit ?? 0,
           hideLinkMetadataSection: config.hideLinkMetadataSection,
           authDisabled: config.authDisabled,
@@ -110,6 +132,8 @@ export const useConfigStore = create<ConfigStore>((set) => ({
           enableLinkRefactor: config.enableLinkRefactor ?? false,
           enableApiKeyManagement: config.enableApiKeyManagement ?? false,
           gitBackupEnabled: config.gitBackupEnabled ?? false,
+          gitBackupEnvManaged: config.gitBackupEnvManaged ?? false,
+          gitBackupConfigured: config.gitBackupConfigured ?? false,
           snapshotEnabled: config.snapshotEnabled ?? false,
           smtpEnabled: config.smtpEnabled ?? false,
           totpAvailable: config.totpAvailable ?? false,
@@ -161,5 +185,15 @@ export const useConfigStore = create<ConfigStore>((set) => ({
         await sleep(CONFIG_LOAD_RETRY_DELAYS_MS[attempt - 1])
       }
     }
+  },
+
+  setPublicAccess: async (enabled: boolean) => {
+    const res = await setPublicAccessApi(enabled)
+    set({ publicAccess: res.enabled })
+  },
+
+  setAlwaysShowToc: async (alwaysShow: boolean) => {
+    const res = await setAlwaysShowTocApi(alwaysShow)
+    set({ alwaysShowToc: res.alwaysShow })
   },
 }))

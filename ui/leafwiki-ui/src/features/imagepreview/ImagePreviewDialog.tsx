@@ -67,7 +67,7 @@ export function ImagePreviewDialog({ src, alt }: Props) {
         }}
       >
         <DialogHeader className="px-6 pt-6">
-          <DialogTitle className="mt-3 flex flex-wrap items-baseline gap-2">
+          <DialogTitle className="mt-3 flex flex-wrap items-baseline gap-2 leading-[1.2]">
             <span className="truncate">{alt ?? ''}</span>
             {natural ? (
               <span className="text-muted-foreground text-sm font-normal">
@@ -96,7 +96,7 @@ export function ImagePreviewDialog({ src, alt }: Props) {
               setNatural({ w: img.naturalWidth, h: img.naturalHeight })
             }}
             // Never scale up images beyond their natural size
-            className="bg-muted h-auto max-h-[75vh] w-auto max-w-full rounded-lg object-contain"
+            className="bg-muted-surface h-auto max-h-[75vh] w-auto max-w-full rounded-lg object-contain"
           />
         </div>
       </DialogContent>

@@ -11,19 +11,25 @@ import {
   BackupSettings,
   BrandingSettings,
   Importer,
+  PublicAccessSettings,
   SnapshotSettings,
+  TocDisplaySettings,
   UserManagement,
+  BrokenLinks,
 } from '@/features/router/lazy-routes'
 import { useConfigStore } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
 import {
   Camera,
   GitBranch,
+  Globe,
   KeyRound,
+  ListTree,
   Palette,
   Upload,
   User,
   Users,
+  Link2Off,
   type LucideIcon,
 } from 'lucide-react'
 import type { ComponentType, LazyExoticComponent } from 'react'
@@ -32,6 +38,7 @@ export interface SettingsSectionContext {
   role: string | undefined
   authDisabled: boolean
   gitBackupEnabled: boolean
+  gitBackupEnvManaged: boolean
   snapshotEnabled: boolean
   enableApiKeyManagement: boolean
   totpAvailable: boolean
@@ -89,6 +96,26 @@ export const settingsSections: SettingsSection[] = [
     Component: BrandingSettings,
   },
   {
+    id: 'public-access',
+    path: 'public-access',
+    labelKey: 'menuLabel',
+    ns: 'publicAccess',
+    icon: Globe,
+    roles: ['admin'],
+    // Always visible to admins; env-managed instances render a status-only
+    // view inside the component rather than being hidden.
+    Component: PublicAccessSettings,
+  },
+  {
+    id: 'toc-display',
+    path: 'toc-display',
+    labelKey: 'menuLabel',
+    ns: 'tocDisplay',
+    icon: ListTree,
+    roles: ['admin'],
+    Component: TocDisplaySettings,
+  },
+  {
     id: 'users',
     path: 'users',
     labelKey: 'userMenu.userManagement',
@@ -121,7 +148,8 @@ export const settingsSections: SettingsSection[] = [
     ns: 'backup',
     icon: GitBranch,
     roles: ['admin'],
-    isEnabled: (ctx) => ctx.gitBackupEnabled,
+    // Always visible to admins: when git backup is env-managed the section is
+    // status-only, otherwise it hosts the configuration form.
     Component: BackupSettings,
   },
   {
@@ -143,12 +171,22 @@ export const settingsSections: SettingsSection[] = [
     roles: ['admin'],
     Component: Importer,
   },
+  {
+    id: 'brokenLinks',
+    path: 'brokenLinks',
+    labelKey: 'menuLabel',
+    ns: 'brokenLinks',
+    icon: Link2Off,
+    roles: ['admin'],
+    Component: BrokenLinks,
+  },
 ]
 
 export function useSettingsSectionContext(): SettingsSectionContext {
   const role = useSessionStore((s) => s.user?.role)
   const authDisabled = useConfigStore((s) => s.authDisabled)
   const gitBackupEnabled = useConfigStore((s) => s.gitBackupEnabled)
+  const gitBackupEnvManaged = useConfigStore((s) => s.gitBackupEnvManaged)
   const snapshotEnabled = useConfigStore((s) => s.snapshotEnabled)
   const enableApiKeyManagement = useConfigStore((s) => s.enableApiKeyManagement)
   const totpAvailable = useConfigStore((s) => s.totpAvailable)
@@ -159,6 +197,7 @@ export function useSettingsSectionContext(): SettingsSectionContext {
     role,
     authDisabled,
     gitBackupEnabled,
+    gitBackupEnvManaged,
     snapshotEnabled,
     enableApiKeyManagement,
     totpAvailable,

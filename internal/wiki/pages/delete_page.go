@@ -40,13 +40,9 @@ func NewDeletePageUseCase(
 	f *favorites.FavoritesStore,
 	o *pagesave.PageSaveOrchestrator,
 	log *slog.Logger,
-	metrics ...*httpmetrics.HTTPMetrics,
+	metrics *httpmetrics.HTTPMetrics,
 ) *DeletePageUseCase {
-	var m *httpmetrics.HTTPMetrics
-	if len(metrics) > 0 {
-		m = metrics[0]
-	}
-	return &DeletePageUseCase{tree: t, revision: r, assets: a, favorites: f, orchestrator: o, log: log, metrics: m}
+	return &DeletePageUseCase{tree: t, revision: r, assets: a, favorites: f, orchestrator: o, log: log, metrics: metrics}
 }
 
 // Execute deletes the page, cleaning up links (via orchestrator), assets, and revision data.
@@ -68,17 +64,16 @@ func (uc *DeletePageUseCase) Execute(_ context.Context, in DeletePageInput) (err
 	}
 
 	if in.Recursive {
-		var subtreeIDs, affectedTitles []string
+		var subtreeIDs []string
 
 		if uc.tree.IsLoaded() {
 			node, err := uc.tree.FindPageByID(in.ID)
 			if err == nil && node != nil {
-				subtreeIDs, affectedTitles = collectSubtreeIDsAndTitles(node)
+				subtreeIDs = collectSubtreeIDs(node)
 			}
 		}
 		if len(subtreeIDs) == 0 {
 			subtreeIDs = []string{in.ID}
-			affectedTitles = []string{page.Title}
 		}
 
 		// Build affected pages list before deletion (paths are no longer reachable after).
@@ -99,21 +94,19 @@ func (uc *DeletePageUseCase) Execute(_ context.Context, in DeletePageInput) (err
 		}
 
 		uc.orchestrator.Run(pagesave.PageSaveEvent{
-			Operation:       pagesave.PageOperationDelete,
-			UserID:          in.UserID,
-			Before:          page,
-			OldPath:         oldPath,
-			AffectedPages:   affectedPages,
-			AffectedPageIDs: subtreeIDs,
-			AffectedTitles:  affectedTitles,
+			Operation:     pagesave.PageOperationDelete,
+			UserID:        in.UserID,
+			Before:        page,
+			OldPath:       oldPath,
+			AffectedPages: affectedPages,
 		})
 
-		for _, pageID := range subtreeIDs {
-			if err := uc.assets.DeleteAllAssetsForPageID(pageID); err != nil {
-				uc.log.Warn("failed to delete assets for page", "pageID", pageID, "error", err)
+		for _, p := range affectedPages {
+			if err := uc.assets.DeleteAllAssetsForPage(p.PageNode); err != nil {
+				uc.log.Warn("failed to delete assets for page", "pageID", p.ID, "error", err)
 			}
-			if err := uc.favorites.DeleteAllForPage(pageID); err != nil {
-				uc.log.Warn("failed to delete favorites for page", "pageID", pageID, "error", err)
+			if err := uc.favorites.DeleteAllForPage(p.ID); err != nil {
+				uc.log.Warn("failed to delete favorites for page", "pageID", p.ID, "error", err)
 			}
 		}
 
@@ -128,16 +121,14 @@ func (uc *DeletePageUseCase) Execute(_ context.Context, in DeletePageInput) (err
 	}
 
 	uc.orchestrator.Run(pagesave.PageSaveEvent{
-		Operation:       pagesave.PageOperationDelete,
-		UserID:          in.UserID,
-		Before:          page,
-		OldPath:         oldPath,
-		AffectedPages:   []*tree.Page{page},
-		AffectedPageIDs: []string{in.ID},
-		AffectedTitles:  []string{page.Title},
+		Operation:     pagesave.PageOperationDelete,
+		UserID:        in.UserID,
+		Before:        page,
+		OldPath:       oldPath,
+		AffectedPages: []*tree.Page{page},
 	})
 
-	if err := uc.assets.DeleteAllAssetsForPageID(page.ID); err != nil {
+	if err := uc.assets.DeleteAllAssetsForPage(page.PageNode); err != nil {
 		uc.log.Warn("failed to delete assets for page", "pageID", page.ID, "error", err)
 	}
 	if err := uc.favorites.DeleteAllForPage(page.ID); err != nil {

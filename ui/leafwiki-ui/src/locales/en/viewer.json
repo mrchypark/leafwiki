@@ -28,6 +28,7 @@
   },
   "mermaid": {
     "renderError": "Unable to render Mermaid diagram.",
+    "chunkLoadError": "This diagram couldn't load because a newer version of LeafWiki is available. Reload the page to fix this.",
     "noSvgOutput": "No SVG element in Mermaid output"
   },
   "headline": {
@@ -78,6 +79,7 @@
   "toc": {
     "title": "Table of contents",
     "onThisPage": "On this page",
+    "downloads": "Attached Media",
     "collapse": "Collapse table of contents",
     "expand": "Expand table of contents"
   },
@@ -146,6 +148,9 @@
   },
   "imagePreview": {
     "openInNewTab": "Open in new tab"
+  },
+  "pdfEmbed": {
+    "defaultTitle": "PDF"
   },
   "pageSwitcher": {
     "trigger": "Go to page",

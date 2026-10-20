@@ -46,7 +46,7 @@ func createAndIndexPage(t *testing.T, ts *tree.TreeService, svc *coretags.TagsSe
 	}
 	fm += "---\n\n" + body
 
-	if err := ts.UpdateNode("system", *idPtr, title, slug, &fm, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := ts.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: *idPtr, Title: title, Slug: slug, Content: &fm, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode %q: %v", slug, err)
 	}
 
@@ -78,33 +78,6 @@ func TestGetPagesByTagsUseCase_ReturnsMatchingPages(t *testing.T) {
 	}
 	if out.Pages[0].ID != id1 {
 		t.Errorf("page ID = %q, want %q", out.Pages[0].ID, id1)
-	}
-}
-
-func TestTagUseCases_FilterStaleDraftRowsAndCounts(t *testing.T) {
-	pagesUC, svc, ts := setupUseCases(t)
-	publicID := createAndIndexPage(t, ts, svc, "Public", "public", []string{"shared"}, "public")
-	draftID := createAndIndexPage(t, ts, svc, "Draft", "draft", []string{"shared", "secret"}, "private")
-	draft, err := ts.FindPageByID(draftID)
-	if err != nil {
-		t.Fatalf("FindPageByID: %v", err)
-	}
-	draft.Draft = true
-
-	pages, err := pagesUC.Execute(context.Background(), GetPagesByTagsInput{Tags: []string{"shared"}})
-	if err != nil {
-		t.Fatalf("GetPages Execute: %v", err)
-	}
-	if len(pages.Pages) != 1 || pages.Pages[0].ID != publicID {
-		t.Fatalf("stale draft leaked from pages: %#v", pages.Pages)
-	}
-
-	tags, err := NewGetTagsUseCase(svc, ts).Execute(context.Background(), GetTagsInput{Limit: 50})
-	if err != nil {
-		t.Fatalf("GetTags Execute: %v", err)
-	}
-	if len(tags.Tags) != 1 || tags.Tags[0].Tag != "shared" || tags.Tags[0].Count != 1 {
-		t.Fatalf("stale draft affected tag counts: %#v", tags.Tags)
 	}
 }
 

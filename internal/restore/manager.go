@@ -391,8 +391,8 @@ func (m *Manager) runFromZipPath(zipPath string, limits coreshared.ExtractionLim
 	}
 
 	m.job.SetPhase(PhaseReloadingBranding)
-	if err := m.cfg.BrandingService.Reload(); err != nil {
-		m.rollbackOrIntervene(sw, fmt.Errorf("failed to reload branding: %w", err))
+	if err := m.reloadAll(); err != nil {
+		m.rollbackOrIntervene(sw, fmt.Errorf("failed to reload settings: %w", err))
 		return
 	}
 
@@ -402,6 +402,23 @@ func (m *Manager) runFromZipPath(zipPath string, limits coreshared.ExtractionLim
 		m.cfg.TriggerResync()
 	}
 	m.job.Finish(nil)
+}
+
+// reloadAll re-reads every configured settings.Reloadable (nil-safe, one per
+// entry) from the restored files, accumulating every failure rather than
+// stopping at the first — mirroring reopenAllStores' error-accumulation
+// style below.
+func (m *Manager) reloadAll() error {
+	var errs []error
+	for _, r := range m.cfg.Reloadables {
+		if r == nil {
+			continue
+		}
+		if err := r.Reload(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // rollbackOrIntervene is the shared failure path for every phase after

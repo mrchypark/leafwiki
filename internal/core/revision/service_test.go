@@ -43,7 +43,7 @@ func createRevisionTestPage(t *testing.T, treeService *tree.TreeService, title, 
 	if err != nil {
 		t.Fatalf("CreateNode failed: %v", err)
 	}
-	if err := treeService.UpdateNode("tester", *id, title, slug, &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: *id, Title: title, Slug: slug, Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 	return *id
@@ -57,191 +57,6 @@ func writeLiveAsset(t *testing.T, storageDir, pageID, name, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile asset failed: %v", err)
-	}
-}
-
-func setRevisionTestDraft(t *testing.T, treeService *tree.TreeService, pageID string, draft bool) {
-	t.Helper()
-	page, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage: %v", err)
-	}
-	if err := treeService.UpdateNodeWithDraft("tester", pageID, page.Title, page.Slug, nil, tree.VersionUnchecked, nil, nil, false, &draft); err != nil {
-		t.Fatalf("UpdateNodeWithDraft(%v): %v", draft, err)
-	}
-}
-
-func TestRevisionWriters_SkipDraftAndResumeAfterPublish(t *testing.T) {
-	service, treeService, storageDir := newRevisionTestService(t)
-	pageID := createRevisionTestPage(t, treeService, "Page", "page", "public version one")
-	publicRevision, created, err := service.RecordContentUpdate(pageID, "tester", "public")
-	if err != nil || !created {
-		t.Fatalf("initial public revision: created=%v err=%v", created, err)
-	}
-	setRevisionTestDraft(t, treeService, pageID, true)
-
-	draftContent := "draft-only secret"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode(draft): %v", err)
-	}
-	if rev, created, err := service.RecordContentUpdate(pageID, "tester", "draft"); err != nil || created || rev != nil {
-		t.Fatalf("draft content revision = %#v, created=%v, err=%v", rev, created, err)
-	}
-	draftPage, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage(draft): %v", err)
-	}
-	if errs := service.RecordContentUpdates([]*tree.Page{draftPage}, "system", "baseline"); len(errs) != 1 || errs[0] != nil {
-		t.Fatalf("draft batch errors = %#v", errs)
-	}
-	writeLiveAsset(t, storageDir, pageID, "draft.txt", "private asset")
-	if rev, created, err := service.RecordAssetChange(pageID, "tester", "draft asset"); err != nil || created || rev != nil {
-		t.Fatalf("draft asset revision = %#v, created=%v, err=%v", rev, created, err)
-	}
-	if rev, created, err := service.RecordStructureChange(pageID, "tester", "draft structure"); err != nil || created || rev != nil {
-		t.Fatalf("draft structure revision = %#v, created=%v, err=%v", rev, created, err)
-	}
-	if err := service.RestoreRevision(pageID, publicRevision.ID, "tester"); err != nil {
-		t.Fatalf("draft restore: %v", err)
-	}
-	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 1 {
-		t.Fatalf("revisions after draft writers = %#v, err=%v", revisions, err)
-	}
-
-	setRevisionTestDraft(t, treeService, pageID, false)
-	publicContent := "public version two"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &publicContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode(public): %v", err)
-	}
-	if _, created, err := service.RecordContentUpdate(pageID, "tester", "published"); err != nil || !created {
-		t.Fatalf("published content revision: created=%v err=%v", created, err)
-	}
-	writeLiveAsset(t, storageDir, pageID, "public.txt", "public asset")
-	if _, created, err := service.RecordAssetChange(pageID, "tester", "public asset"); err != nil || !created {
-		t.Fatalf("published asset revision: created=%v err=%v", created, err)
-	}
-	if _, created, err := service.RecordStructureChange(pageID, "tester", "public structure"); err != nil || !created {
-		t.Fatalf("published structure revision: created=%v err=%v", created, err)
-	}
-	if err := service.RestoreRevision(pageID, publicRevision.ID, "tester"); err != nil {
-		t.Fatalf("published restore: %v", err)
-	}
-	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 5 {
-		t.Fatalf("published revisions = %#v, err=%v", revisions, err)
-	}
-}
-
-func TestRecordContentUpdates_SkipsSuppliedPageFromDraftAncestorAfterPublish(t *testing.T) {
-	service, treeService, _ := newRevisionTestService(t)
-	sectionKind := tree.NodeKindSection
-	sectionID, err := treeService.CreateNode("tester", nil, "Section", "section", &sectionKind)
-	if err != nil {
-		t.Fatalf("CreateNode(section): %v", err)
-	}
-	pageKind := tree.NodeKindPage
-	pageID, err := treeService.CreateNode("tester", sectionID, "Page", "page", &pageKind)
-	if err != nil {
-		t.Fatalf("CreateNode(page): %v", err)
-	}
-
-	setRevisionTestDraft(t, treeService, *sectionID, true)
-	draftContent := "draft-only secret"
-	if err := treeService.UpdateNode("tester", *pageID, "Page", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode(draft): %v", err)
-	}
-	draftPage, err := treeService.GetPage(*pageID)
-	if err != nil {
-		t.Fatalf("GetPage(draft): %v", err)
-	}
-	setRevisionTestDraft(t, treeService, *sectionID, false)
-
-	errs := service.RecordContentUpdates([]*tree.Page{draftPage}, "tester", "stale draft")
-	if len(errs) != 1 || errs[0] != nil {
-		t.Fatalf("RecordContentUpdates errors = %#v", errs)
-	}
-	if revisions, err := service.ListRevisions(*pageID); err != nil || len(revisions) != 0 {
-		t.Fatalf("revisions = %#v, err=%v", revisions, err)
-	}
-}
-
-func TestRecordContentUpdates_ReturnsVersionConflictWhenPublicPageChangesWhileWaitingForLock(t *testing.T) {
-	service, treeService, _ := newRevisionTestService(t)
-	pageID := createRevisionTestPage(t, treeService, "Page", "page", "first")
-	if _, created, err := service.RecordContentUpdate(pageID, "tester", "baseline"); err != nil || !created {
-		t.Fatalf("RecordContentUpdate(baseline): created=%v err=%v", created, err)
-	}
-	suppliedContent := "supplied public version"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &suppliedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode(supplied): %v", err)
-	}
-	page, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage: %v", err)
-	}
-
-	mu := service.pageWriteLock(pageID)
-	mu.Lock()
-	started := make(chan struct{})
-	done := make(chan []error, 1)
-	go func() {
-		close(started)
-		done <- service.RecordContentUpdates([]*tree.Page{page}, "tester", "stale public")
-	}()
-	<-started
-
-	updatedContent := "second"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		mu.Unlock()
-		t.Fatalf("UpdateNode: %v", err)
-	}
-	mu.Unlock()
-
-	select {
-	case errs := <-done:
-		if len(errs) != 1 || !errors.Is(errs[0], tree.ErrVersionConflict) {
-			t.Fatalf("RecordContentUpdates errors = %#v, want ErrVersionConflict", errs)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for content revision")
-	}
-	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 1 {
-		t.Fatalf("revisions = %#v, err=%v", revisions, err)
-	}
-	if _, err := os.Stat(service.store.contentBlobPath(pageID, sha256HexBytes([]byte(suppliedContent)))); !os.IsNotExist(err) {
-		t.Fatalf("stale supplied content blob exists or stat failed: %v", err)
-	}
-}
-
-func TestRecordContentUpdates_SkipsWhenPageBecomesDraftWhileWaitingForLock(t *testing.T) {
-	service, treeService, _ := newRevisionTestService(t)
-	pageID := createRevisionTestPage(t, treeService, "Page", "page", "public")
-	page, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage: %v", err)
-	}
-
-	mu := service.pageWriteLock(pageID)
-	mu.Lock()
-	started := make(chan struct{})
-	done := make(chan []error, 1)
-	go func() {
-		close(started)
-		done <- service.RecordContentUpdates([]*tree.Page{page}, "tester", "became draft")
-	}()
-	<-started
-	setRevisionTestDraft(t, treeService, pageID, true)
-	mu.Unlock()
-
-	select {
-	case errs := <-done:
-		if len(errs) != 1 || errs[0] != nil {
-			t.Fatalf("RecordContentUpdates errors = %#v", errs)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for content revision")
-	}
-	if revisions, err := service.ListRevisions(pageID); err != nil || len(revisions) != 0 {
-		t.Fatalf("revisions = %#v, err=%v", revisions, err)
 	}
 }
 
@@ -276,71 +91,6 @@ func TestRecordContentUpdateHappyPathAndNoop(t *testing.T) {
 	}
 	if rev2.ID != rev.ID {
 		t.Fatalf("expected same revision on noop, got %q vs %q", rev2.ID, rev.ID)
-	}
-}
-
-func TestRecordPublishedBaseline_CapturesTitleOnlyAndAssetOnlyChanges(t *testing.T) {
-	tests := []struct {
-		name      string
-		mutate    func(*testing.T, *tree.TreeService, string, string)
-		wantTitle string
-		wantAsset string
-	}{
-		{
-			name: "title only",
-			mutate: func(t *testing.T, treeService *tree.TreeService, pageID, _ string) {
-				page, err := treeService.GetPage(pageID)
-				if err != nil {
-					t.Fatalf("GetPage() error = %v", err)
-				}
-				if err := treeService.UpdateNode("editor", pageID, "Edited title", page.Slug, nil, page.Version(), nil, nil, false); err != nil {
-					t.Fatalf("UpdateNode() error = %v", err)
-				}
-			},
-			wantTitle: "Edited title",
-			wantAsset: "old asset",
-		},
-		{
-			name: "asset only",
-			mutate: func(t *testing.T, _ *tree.TreeService, pageID, storageDir string) {
-				writeLiveAsset(t, storageDir, pageID, "asset.txt", "new asset")
-			},
-			wantTitle: "Page",
-			wantAsset: "new asset",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service, treeService, storageDir := newRevisionTestService(t)
-			pageID := createRevisionTestPage(t, treeService, "Page", "page", "content")
-			writeLiveAsset(t, storageDir, pageID, "asset.txt", "old asset")
-			baseline, created, err := service.RecordContentUpdate(pageID, "editor", "baseline")
-			if err != nil || !created {
-				t.Fatalf("RecordContentUpdate() revision = %#v, created = %v, error = %v", baseline, created, err)
-			}
-
-			tt.mutate(t, treeService, pageID, storageDir)
-			published, err := service.RecordPublishedBaseline(pageID, "editor", "page published")
-			if err != nil {
-				t.Fatalf("RecordPublishedBaseline() error = %v", err)
-			}
-			if published.ID == baseline.ID || published.Type != RevisionTypeContentUpdate || published.Title != tt.wantTitle {
-				t.Fatalf("published revision = %#v", published)
-			}
-			asset, err := service.GetRevisionAsset(pageID, published.ID, "asset.txt")
-			if err != nil {
-				t.Fatalf("GetRevisionAsset() error = %v", err)
-			}
-			content, err := os.ReadFile(asset.Path)
-			if err != nil || string(content) != tt.wantAsset {
-				t.Fatalf("published asset = %q, error = %v, want %q", content, err, tt.wantAsset)
-			}
-			revisions, err := service.ListRevisions(pageID)
-			if err != nil || len(revisions) != 2 {
-				t.Fatalf("published revisions = %#v, error = %v", revisions, err)
-			}
-		})
 	}
 }
 
@@ -784,7 +534,7 @@ func TestRecordContentAndAssetUpdatesWithoutAssets(t *testing.T) {
 	}
 
 	content := "hello-2"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode content failed: %v", err)
 	}
 	assetRev3, created, err := service.RecordAssetChange(pageID, "tester", "asset after content")
@@ -796,7 +546,7 @@ func TestRecordContentAndAssetUpdatesWithoutAssets(t *testing.T) {
 	}
 
 	content = "hello-3"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode second content failed: %v", err)
 	}
 	contentRev, created, err := service.RecordContentUpdate(pageID, "tester", "content")
@@ -829,7 +579,7 @@ func TestRestoreRevisionRehydratesLivePageState(t *testing.T) {
 	pageID := *pageIDPtr
 
 	originalContent := "first version"
-	if err := treeService.UpdateNode("tester", pageID, "Original", "original", &originalContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Original", Slug: "original", Content: &originalContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode(original) failed: %v", err)
 	}
 	writeLiveAsset(t, storageDir, pageID, "old.txt", "old-asset")
@@ -842,7 +592,7 @@ func TestRestoreRevisionRehydratesLivePageState(t *testing.T) {
 	}
 
 	changedContent := "second version"
-	if err := treeService.UpdateNode("tester", pageID, "Changed", "changed", &changedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Changed", Slug: "changed", Content: &changedContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode(changed) failed: %v", err)
 	}
 	if err := treeService.MoveNode("tester", pageID, *archiveID, tree.VersionUnchecked); err != nil {
@@ -892,59 +642,6 @@ func TestRestoreRevisionRehydratesLivePageState(t *testing.T) {
 	}
 }
 
-func TestRestoreRevision_RestoresDraftWithoutRecordingRevision(t *testing.T) {
-	service, treeService, storageDir := newRevisionTestService(t)
-	pageID := createRevisionTestPage(t, treeService, "Page", "page", "published")
-	writeLiveAsset(t, storageDir, pageID, "asset.txt", "published asset")
-
-	publishedRevision, created, err := service.RecordAssetChange(pageID, "editor", "published")
-	if err != nil {
-		t.Fatalf("RecordAssetChange failed: %v", err)
-	}
-	if !created || publishedRevision == nil {
-		t.Fatal("expected published revision")
-	}
-
-	page, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage failed: %v", err)
-	}
-	if err := treeService.SetDraft("editor", pageID, true, page.Version()); err != nil {
-		t.Fatalf("SetDraft failed: %v", err)
-	}
-	draftContent := "draft changes"
-	if err := treeService.UpdateNode("editor", pageID, "Draft title", "page", &draftContent, tree.VersionUnchecked, nil, nil, false); err != nil {
-		t.Fatalf("UpdateNode draft failed: %v", err)
-	}
-	writeLiveAsset(t, storageDir, pageID, "asset.txt", "draft asset")
-
-	if err := service.RestoreRevision(pageID, publishedRevision.ID, "editor"); err != nil {
-		t.Fatalf("RestoreRevision failed: %v", err)
-	}
-
-	restored, err := treeService.GetPage(pageID)
-	if err != nil {
-		t.Fatalf("GetPage restored draft failed: %v", err)
-	}
-	if !restored.Draft || restored.Content != "published" || restored.Title != "Page" {
-		t.Fatalf("restored draft = %#v", restored)
-	}
-	asset, err := os.ReadFile(filepath.Join(storageDir, "assets", pageID, "asset.txt"))
-	if err != nil {
-		t.Fatalf("ReadFile restored asset failed: %v", err)
-	}
-	if string(asset) != "published asset" {
-		t.Fatalf("restored asset = %q", asset)
-	}
-	revisions, err := service.ListRevisions(pageID)
-	if err != nil {
-		t.Fatalf("ListRevisions failed: %v", err)
-	}
-	if len(revisions) != 1 || revisions[0].ID != publishedRevision.ID {
-		t.Fatalf("draft restore recorded a revision: %#v", revisions)
-	}
-}
-
 func TestRecordContentUpdate_CapturesHistoricalCustomFrontmatter(t *testing.T) {
 	service, treeService, _ := newRevisionTestService(t)
 
@@ -962,7 +659,7 @@ func TestRecordContentUpdate_CapturesHistoricalCustomFrontmatter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildMarkdownWithExtraFrontmatter(first) failed: %v", err)
 	}
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &firstRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &firstRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode(first raw) failed: %v", err)
 	}
 
@@ -984,7 +681,7 @@ func TestRecordContentUpdate_CapturesHistoricalCustomFrontmatter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildMarkdownWithExtraFrontmatter(second) failed: %v", err)
 	}
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &secondRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &secondRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode(second raw) failed: %v", err)
 	}
 
@@ -1024,7 +721,7 @@ func TestRestoreRevision_RestoresHistoricalCustomFrontmatterAndKeepsManagedField
 	if err != nil {
 		t.Fatalf("BuildMarkdownWithExtraFrontmatter(first) failed: %v", err)
 	}
-	if err := treeService.UpdateNode("creator", pageID, "Page", "page", &firstRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "creator", ID: pageID, Title: "Page", Slug: "page", Content: &firstRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode(first raw) failed: %v", err)
 	}
 	firstRev, created, err := service.RecordContentUpdate(pageID, "creator", "first")
@@ -1042,7 +739,7 @@ func TestRestoreRevision_RestoresHistoricalCustomFrontmatterAndKeepsManagedField
 	if err != nil {
 		t.Fatalf("BuildMarkdownWithExtraFrontmatter(second) failed: %v", err)
 	}
-	if err := treeService.UpdateNode("editor", pageID, "Changed", "page", &secondRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "editor", ID: pageID, Title: "Changed", Slug: "page", Content: &secondRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode(second raw) failed: %v", err)
 	}
 	if _, _, err := service.RecordContentUpdate(pageID, "editor", "second"); err != nil {
@@ -1139,7 +836,7 @@ func TestRestoreRevision_LegacyRevisionPreservesCurrentCustomFrontmatter(t *test
 	if err != nil {
 		t.Fatalf("BuildMarkdownWithExtraFrontmatter(initial) failed: %v", err)
 	}
-	if err := treeService.UpdateNode("creator", pageID, "Page", "page", &initialRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "creator", ID: pageID, Title: "Page", Slug: "page", Content: &initialRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode(initial raw) failed: %v", err)
 	}
 
@@ -1198,7 +895,7 @@ func TestRestoreRevision_LegacyBodyThatLooksLikeFrontmatterStaysBody(t *testing.
 	pageID := *pageIDPtr
 
 	initialContent := "Current body"
-	if err := treeService.UpdateNode("creator", pageID, "Page", "page", &initialContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "creator", ID: pageID, Title: "Page", Slug: "page", Content: &initialContent, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode(initial content) failed: %v", err)
 	}
 
@@ -1270,7 +967,7 @@ func TestRecordContentAndStructureRebuildMissingPreviousManifest(t *testing.T) {
 	}
 
 	content := "hello-updated"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 	contentRev, created, err := service.RecordContentUpdate(pageID, "tester", "content")
@@ -1375,7 +1072,7 @@ func TestCompareRevisionSnapshots(t *testing.T) {
 	}
 
 	content := "two"
-	if err := treeService.UpdateNode("tester", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "tester", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 	writeLiveAsset(t, storageDir, pageID, "b.txt", "asset-b")
@@ -1462,7 +1159,7 @@ func TestRecordContentUpdate_CoalescesWithinWindow(t *testing.T) {
 	}
 
 	content := "version two"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1499,7 +1196,7 @@ func TestRecordContentUpdate_NoCoalesceWhenDisabled(t *testing.T) {
 	}
 
 	content := "version two"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1530,7 +1227,7 @@ func TestRecordContentUpdate_NoCoalesceDifferentAuthor(t *testing.T) {
 	}
 
 	content := "version two"
-	if err := treeService.UpdateNode("bob", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "bob", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1567,7 +1264,7 @@ func TestRecordContentUpdate_NoCoalesceAfterWindowExpired(t *testing.T) {
 	}
 
 	content := "version two"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1599,7 +1296,7 @@ func TestRecordContentUpdate_NoCoalesceForNonContentRevision(t *testing.T) {
 
 	// Change content so the noop check does not fire.
 	content := "version two"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1626,7 +1323,7 @@ func TestRecordContentUpdate_ConcurrentSavesNoOrphanedBlobs(t *testing.T) {
 	// Update content sequentially before spawning goroutines — concurrent
 	// UpdateNode calls on the same page would race inside the tree service.
 	content := "updated content"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 
@@ -1673,7 +1370,7 @@ func TestRecordContentUpdate_CoalescingGCsOldScopedBlob(t *testing.T) {
 	}
 
 	content := "version two"
-	if err := treeService.UpdateNode("alice", pageID, "Page", "page", &content, tree.VersionUnchecked, nil, nil, false); err != nil {
+	if err := treeService.UpdateNode(tree.UpdateNodeInput{UserID: "alice", ID: pageID, Title: "Page", Slug: "page", Content: &content, ExpectedVersion: tree.VersionUnchecked}); err != nil {
 		t.Fatalf("UpdateNode failed: %v", err)
 	}
 

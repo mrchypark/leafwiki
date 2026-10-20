@@ -3,16 +3,11 @@ package assets
 import (
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
-	"github.com/perber/wiki/internal/core/pagevisibility"
-	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 )
 
 const maxMultipartMemory = 32 << 20 // 32 MiB
@@ -26,7 +21,6 @@ type Routes struct {
 	authService *coreauth.AuthService
 	assetsDir   string
 	log         *slog.Logger
-	tree        *tree.TreeService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
@@ -38,7 +32,6 @@ type RoutesConfig struct {
 	AuthService *coreauth.AuthService
 	AssetsDir   string
 	Log         *slog.Logger
-	Tree        *tree.TreeService
 }
 
 // NewRoutes constructs the assets RouteRegistrar.
@@ -51,7 +44,6 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 		authService: cfg.AuthService,
 		assetsDir:   cfg.AssetsDir,
 		log:         cfg.Log,
-		tree:        cfg.Tree,
 	}
 }
 
@@ -59,75 +51,29 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	// Static file serving for /assets with access control.
+	// Static /assets files share the read gate (public mode / --disable-auth /
+	// session), but on their own path and without CSRF (GET-only static FS),
+	// so this one group is wired inline rather than via APIReadGroup.
 	if r.assetsDir != "" {
 		assetsFS := gin.Dir(r.assetsDir, false)
 		assetsGroup := ctx.Base.Group("/assets")
-		switch {
-		case opts.AuthDisabled:
-			assetsGroup.Use(authmw.InjectPublicEditor(true))
-		case opts.PublicAccess:
-			assetsGroup.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
-		default:
-			assetsGroup.Use(
-				authmw.RequireAuth(r.authService, ctx.AuthCookies, false),
-			)
-		}
-		assetsGroup.Use(r.requireAssetPageVisible(opts.AuthDisabled, true))
+		assetsGroup.Use(
+			assetServeHeaders(),
+			authmw.InjectPublicEditor(opts.AuthDisabled),
+			authmw.RequireAuthOrPublicRead(r.authService, ctx.AuthCookies, opts.AuthDisabled, opts.PublicAccess),
+		)
 		assetsGroup.StaticFS("/", assetsFS)
 	}
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
-	authGroup.Use(r.requireAssetPageVisible(opts.AuthDisabled, false))
+	// Listing a page's assets is a read: registered once, gated per request.
+	readGroup := ctx.APIReadGroup(r.authService)
+	readGroup.GET("/pages/:id/assets", r.handleList)
 
+	// Mutations always need a real authenticated editor/admin.
+	authGroup := ctx.APIAuthGroup(r.authService)
 	authGroup.POST("/pages/:id/assets", authmw.RequireEditorOrAdmin(), r.handleUpload(opts.MaxAssetUploadSizeBytes))
-	authGroup.GET("/pages/:id/assets", authmw.RequireEditorOrAdmin(), r.handleList)
 	authGroup.PUT("/pages/:id/assets/rename", authmw.RequireEditorOrAdmin(), r.handleRename)
 	authGroup.DELETE("/pages/:id/assets/:name", authmw.RequireEditorOrAdmin(), r.handleDelete)
-}
-
-func (r *Routes) requireAssetPageVisible(authDisabled, static bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if r.tree == nil {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		id := strings.TrimSpace(c.Param("id"))
-		if static {
-			path := strings.TrimPrefix(c.Param("filepath"), "/")
-			id, _, _ = strings.Cut(path, "/")
-			if decoded, err := url.PathUnescape(id); err == nil {
-				id = decoded
-			} else {
-				id = ""
-			}
-		}
-		node, err := r.tree.SnapshotPageNode(id)
-		if err != nil || !pagevisibility.CanView(node, authmw.TryGetUser(c), authDisabled) {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		// Asset URLs stay stable when a published page becomes a draft. Do not let
-		// an authenticated wiki cache a formerly public response past that change.
-		if !authDisabled {
-			c.Header("Cache-Control", "private, no-store")
-			c.Header("Pragma", "no-cache")
-		}
-		c.Next()
-	}
-}
-
-func (r *Routes) requireStaticAssetVisibility(authDisabled bool) gin.HandlerFunc {
-	return r.requireAssetPageVisible(authDisabled, true)
-}
-
-func (r *Routes) requireDraftManagement(authDisabled bool) gin.HandlerFunc {
-	return r.requireAssetPageVisible(authDisabled, false)
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────

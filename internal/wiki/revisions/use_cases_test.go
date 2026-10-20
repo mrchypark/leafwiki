@@ -41,6 +41,11 @@ func newTestDeps(t *testing.T) *testDeps {
 		t.Fatalf("failed to create links store: %v", err)
 	}
 	linkService := links.NewLinkService(storageDir, treeService, linksStore)
+	t.Cleanup(func() {
+		if err := linkService.Close(); err != nil {
+			t.Errorf("failed to close link service: %v", err)
+		}
+	})
 
 	revService := revision.NewService(storageDir, treeService, nil, revision.ServiceOptions{})
 
@@ -99,7 +104,8 @@ func TestRestoreRevisionUseCase_RestoresAssetsAndStructure(t *testing.T) {
 
 	originalContent := "first version"
 	pageOut, err := updateUC.Execute(context.Background(), wikipages.UpdatePageInput{
-		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Original", Slug: "original", Content: &originalContent})
+		UserID: "system", ID: page.Page.ID, Version: page.Page.Version(), Title: "Original", Slug: "original", Content: &originalContent, Kind: pageKind(),
+	})
 	if err != nil {
 		t.Fatalf("UpdatePage(original) failed: %v", err)
 	}
@@ -122,7 +128,8 @@ func TestRestoreRevisionUseCase_RestoresAssetsAndStructure(t *testing.T) {
 
 	changedContent := "second version"
 	pageOut, err = updateUC.Execute(context.Background(), wikipages.UpdatePageInput{
-		UserID: "system", ID: pageOut.Page.ID, Version: pageOut.Page.Version(), Title: "Changed", Slug: "changed", Content: &changedContent})
+		UserID: "system", ID: pageOut.Page.ID, Version: pageOut.Page.Version(), Title: "Changed", Slug: "changed", Content: &changedContent, Kind: pageKind(),
+	})
 	if err != nil {
 		t.Fatalf("UpdatePage(changed) failed: %v", err)
 	}

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/shared/htmlutil"
 	"github.com/perber/wiki/internal/core/tree"
@@ -53,11 +52,11 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 	if len(in.Tags) > 0 {
 		pageIDs = []string{}
 		if uc.tags != nil {
-			matchedPageIDs, err := uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
+			var err error
+			pageIDs, err = uc.tags.GetPageIDsByTags(normalizeTags(in.Tags))
 			if err != nil {
 				return nil, err
 			}
-			pageIDs = append(pageIDs, matchedPageIDs...)
 		}
 	}
 
@@ -65,12 +64,12 @@ func (uc *SearchUseCase) Execute(_ context.Context, in SearchInput) (*SearchOutp
 		return uc.searchByTags(pageIDs, in.Offset, in.Limit)
 	}
 
-	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
+	result, err := uc.index.Search(in.Query, pageIDs, in.Offset, in.Limit)
 	if err != nil {
 		return nil, err
 	}
-	fullMatchPageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, fullMatchPageIDs)
-	result, err := uc.index.Search(in.Query, fullMatchPageIDs, in.Offset, in.Limit)
+
+	fullMatchPageIDs, err := uc.index.SearchPageIDs(in.Query, pageIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -92,27 +91,20 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 			},
 		}, nil
 	}
-	pageIDs = pagevisibility.FilterPublishedPageIDs(uc.tree, pageIDs)
-
-	excerpts, err := uc.tags.GetExcerptsForPages(pageIDs)
-	if err != nil {
-		return nil, err
-	}
 
 	items := make([]coresearch.SearchResultItem, 0, len(pageIDs))
 	for _, pageID := range pageIDs {
-		node, err := uc.tree.SnapshotPageNode(pageID)
+		node, err := uc.tree.FindPageByID(pageID)
 		if err != nil || node == nil {
 			continue
 		}
 
 		items = append(items, coresearch.SearchResultItem{
-			PageID:  node.ID,
-			Title:   htmlutil.EscapeText(node.Title),
-			Path:    dto.BuildPathFromNode(node),
-			Kind:    string(node.Kind),
-			Rank:    1,
-			Excerpt: excerpts[pageID],
+			PageID: node.ID,
+			Title:  htmlutil.EscapeText(node.Title),
+			Path:   dto.BuildPathFromNode(node),
+			Kind:   string(node.Kind),
+			Rank:   1,
 		})
 	}
 
@@ -139,6 +131,17 @@ func (uc *SearchUseCase) searchByTags(pageIDs []string, offset, limit int) (*Sea
 		end = count
 	}
 	pagedItems := items[offset:end]
+	displayedIDs := make([]string, len(pagedItems))
+	for i, item := range pagedItems {
+		displayedIDs[i] = item.PageID
+	}
+	excerpts, err := uc.tags.GetExcerptsForPages(displayedIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range pagedItems {
+		pagedItems[i].Excerpt = excerpts[pagedItems[i].PageID]
+	}
 	uc.attachTags(pagedItems)
 
 	return &SearchOutput{

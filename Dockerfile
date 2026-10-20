@@ -1,5 +1,5 @@
 # Step 1: Frontend
-FROM node:26-alpine@sha256:725aeba2364a9b16beae49e180d83bd597dbd0b15c47f1f28875c290bfd255b9 AS frontend-build
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS frontend-build
 WORKDIR /app
 ARG APP_VERSION
 COPY ./ui/leafwiki-ui/package*.json ./
@@ -8,7 +8,7 @@ COPY ./ui/leafwiki-ui/ ./
 RUN VITE_API_URL=/ APP_VERSION=${APP_VERSION} npm run build
 
 # Step 2: Backend + Build binary
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS backend-build
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS backend-build
 WORKDIR /app
 ARG APP_VERSION
 ARG DISABLE_REFRESH_TOKEN_RATE_LIMIT=false
@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 go build \
 	-o /out/leafwiki ./cmd/leafwiki
 
 # Step 3: Final image (small)
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS final
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS final
 WORKDIR /app
 COPY --from=backend-build /out/leafwiki /app/leafwiki
 

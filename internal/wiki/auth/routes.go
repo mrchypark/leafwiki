@@ -135,37 +135,37 @@ func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	)
 	meGroup.GET("/auth/me", r.handleMe)
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
+	authGroup := ctx.APIAuthGroup(r.authService)
 
-	authGroup.POST("/auth/logout", r.handleLogout(ctx))
+	// Routes that manage credentials, sessions or users stay browser-session
+	// only: an API key skips CSRF, so without this a key could create accounts
+	// or change credentials and turn itself into a permanent login.
+	sessionOnly := authmw.RequireCookieSession()
 
-	authGroup.POST("/users", authmw.RequireAdmin(opts.AuthDisabled), r.handleCreateUser)
+	authGroup.POST("/auth/logout", sessionOnly, r.handleLogout(ctx))
+
+	authGroup.POST("/users", sessionOnly, authmw.RequireAdmin(opts.AuthDisabled), r.handleCreateUser)
 	authGroup.GET("/users", authmw.RequireAdmin(opts.AuthDisabled), r.handleGetUsers)
-	authGroup.PUT("/users/:id", authmw.RequireSelfOrAdmin(opts.AuthDisabled), r.handleUpdateUser)
-	authGroup.DELETE("/users/:id", authmw.RequireAdmin(opts.AuthDisabled), r.handleDeleteUser)
+	authGroup.PUT("/users/:id", sessionOnly, authmw.RequireAdmin(opts.AuthDisabled), r.handleUpdateUser)
+	authGroup.DELETE("/users/:id", sessionOnly, authmw.RequireAdmin(opts.AuthDisabled), r.handleDeleteUser)
 	// Invite is only ever meaningful with SMTP configured — the underlying
 	// use cases already short-circuit on ErrEmailDisabled when emailTokens()
 	// is nil (SMTP off or auth disabled), so registering these unconditionally
 	// (mirroring POST /users above) just means that case surfaces as a clean
 	// 403 instead of a 404.
-	authGroup.POST("/users/invite", authmw.RequireAdmin(opts.AuthDisabled), r.handleInviteUser)
-	authGroup.POST("/users/:id/invite/resend", authmw.RequireAdmin(opts.AuthDisabled), r.handleResendInvite)
+	authGroup.POST("/users/invite", sessionOnly, authmw.RequireAdmin(opts.AuthDisabled), r.handleInviteUser)
+	authGroup.POST("/users/:id/invite/resend", sessionOnly, authmw.RequireAdmin(opts.AuthDisabled), r.handleResendInvite)
 
 	if !opts.AuthDisabled {
-		authGroup.PUT("/users/me/password", r.handleChangeOwnPassword)
+		authGroup.PUT("/users/me/password", sessionOnly, r.handleChangeOwnPassword(ctx))
 
 		// Setup/confirm/disable all guess a secret (password, TOTP code, or
 		// recovery code); share one rate-limit budget separate from the
 		// pre-auth login endpoints above.
 		totpSetupRateLimiter := security.NewRateLimiter(10, 5*time.Minute, true)
-		authGroup.POST("/users/me/totp/setup/start", totpSetupRateLimiter, r.handleStartTOTPSetup)
-		authGroup.POST("/users/me/totp/setup/confirm", totpSetupRateLimiter, r.handleConfirmTOTPSetup(ctx))
-		authGroup.POST("/users/me/totp/disable", totpSetupRateLimiter, r.handleDisableTOTP(ctx))
+		authGroup.POST("/users/me/totp/setup/start", sessionOnly, totpSetupRateLimiter, r.handleStartTOTPSetup)
+		authGroup.POST("/users/me/totp/setup/confirm", sessionOnly, totpSetupRateLimiter, r.handleConfirmTOTPSetup(ctx))
+		authGroup.POST("/users/me/totp/disable", sessionOnly, totpSetupRateLimiter, r.handleDisableTOTP(ctx))
 		authGroup.GET("/users/me/totp/status", r.handleTOTPStatus)
 
 		// Pre-auth password-reset/invite-accept endpoints: like login, these
@@ -206,7 +206,9 @@ func (r *Routes) handleConfig(ctx httpinternal.RouterContext) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"publicAccess":            opts.PublicAccess,
+			"publicAccess":            opts.PublicAccess.Enabled(),
+			"publicAccessEnvManaged":  opts.PublicAccess.EnvManaged(),
+			"alwaysShowToc":           opts.AlwaysShowToc.AlwaysShow(),
 			"editorLimit":             opts.EditorLimit,
 			"hideLinkMetadataSection": opts.HideLinkMetadataSection,
 			"authDisabled":            opts.AuthDisabled,
@@ -222,6 +224,8 @@ func (r *Routes) handleConfig(ctx httpinternal.RouterContext) gin.HandlerFunc {
 			"enableLinkRefactor":       opts.EnableLinkRefactor,
 			"enableApiKeyManagement":   opts.EnableAPIKeyManagement,
 			"gitBackupEnabled":         opts.GitBackupEnabled,
+			"gitBackupEnvManaged":      opts.GitBackupEnvManaged,
+			"gitBackupConfigured":      opts.GitBackupConfigured,
 			"snapshotEnabled":          opts.SnapshotEnabled,
 			"smtpEnabled":              opts.SMTPEnabled,
 			"totpAvailable":            opts.TOTPAvailable,
@@ -464,7 +468,7 @@ func (r *Routes) handleUpdateUser(c *gin.Context) {
 	}
 	out, err := r.updateUser.Execute(c.Request.Context(), UpdateUserInput{
 		ID: id, Username: req.Username, Email: req.Email, Password: req.Password, Role: req.Role,
-		RequesterIsAdmin: requester.HasRole(coreauth.RoleAdmin),
+		RequesterID: requester.ID, RequesterIsAdmin: requester.HasRole(coreauth.RoleAdmin),
 	})
 	if err != nil {
 		respondWithAuthError(c, err)
@@ -482,26 +486,39 @@ func (r *Routes) handleDeleteUser(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (r *Routes) handleChangeOwnPassword(c *gin.Context) {
-	user := authmw.MustGetUser(c)
-	if user == nil {
-		return
+// handleChangeOwnPassword changes the current user's password after verifying
+// the old one. Every other session for the user is revoked; the session making
+// this request is identified via its own refresh cookie and left intact.
+func (r *Routes) handleChangeOwnPassword(rctx httpinternal.RouterContext) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user := authmw.MustGetUser(c)
+		if user == nil {
+			return
+		}
+		var req struct {
+			OldPassword string `json:"oldPassword" binding:"required"`
+			NewPassword string `json:"newPassword" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			respondWithAuthStatusError(c, http.StatusBadRequest, ErrCodeAuthInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
+			return
+		}
+		refreshToken, err := rctx.AuthCookies.ReadRefresh(c)
+		if err != nil {
+			// Falls back to revoking every session for this user, including
+			// the one making this request (see
+			// AuthService.RevokeAllUserSessionsExceptCurrent) — log it so an
+			// unexpected logout right after a password change is diagnosable.
+			slog.Default().Warn("could not read refresh token while changing password; will revoke all sessions", "userID", user.ID, "error", err)
+		}
+		if err := r.changeOwnPassword.Execute(c.Request.Context(), ChangeOwnPasswordInput{
+			UserID: user.ID, OldPassword: req.OldPassword, NewPassword: req.NewPassword, CurrentRefreshToken: refreshToken,
+		}); err != nil {
+			respondWithAuthError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
-	var req struct {
-		OldPassword string `json:"oldPassword" binding:"required"`
-		NewPassword string `json:"newPassword" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondWithAuthStatusError(c, http.StatusBadRequest, ErrCodeAuthInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
-		return
-	}
-	if err := r.changeOwnPassword.Execute(c.Request.Context(), ChangeOwnPasswordInput{
-		UserID: user.ID, OldPassword: req.OldPassword, NewPassword: req.NewPassword,
-	}); err != nil {
-		respondWithAuthError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
 }
 
 // handleStartTOTPSetup begins TOTP enrollment for the current user: verifies

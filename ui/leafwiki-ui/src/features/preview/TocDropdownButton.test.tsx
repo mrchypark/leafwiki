@@ -1,14 +1,16 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TocDropdownButton } from './TocDropdownButton'
 import type { TocEntry } from './extractTocEntries'
+import type { PageAttachment } from '@/lib/api/assets'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => {
       const map: Record<string, string> = {
         'toc.onThisPage': 'On this page',
+        'toc.downloads': 'Attached Media',
       }
       return map[key] ?? key
     },
@@ -54,9 +56,9 @@ afterEach(() => {
   document.querySelectorAll('h2[id]').forEach((el) => el.remove())
 })
 
-async function openDropdown() {
+async function openDropdown(name: RegExp | string = /on this page/i) {
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: /on this page/i }))
+  await user.click(screen.getByRole('button', { name }))
 }
 
 describe('TocDropdownButton — rendering', () => {
@@ -151,5 +153,66 @@ describe('TocDropdownButton — click navigation', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByText('Background'))
     expect(scrollMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('TocDropdownButton — downloads', () => {
+  const downloads: PageAttachment[] = [
+    { name: 'notes.pdf', url: '/assets/p1/notes.pdf' },
+  ]
+
+  it('lists attachments below the entries', async () => {
+    render(<TocDropdownButton entries={entries} downloads={downloads} />)
+    await openDropdown()
+
+    const link = await screen.findByTestId('toc-dropdown-download-notes.pdf')
+    expect(link).toHaveAttribute('href', '/assets/p1/notes.pdf')
+    expect(link).toHaveAttribute('download', 'notes.pdf')
+  })
+
+  it('shows the downloads label when entries are also present', async () => {
+    render(<TocDropdownButton entries={entries} downloads={downloads} />)
+    await openDropdown()
+    expect(await screen.findByText('Attached Media')).toBeInTheDocument()
+  })
+
+  it('omits the downloads label when there are no entries', async () => {
+    render(<TocDropdownButton entries={[]} downloads={downloads} />)
+    await openDropdown(/attached media/i)
+    const menu = await screen.findByRole('menu')
+    expect(
+      await within(menu).findByTestId('toc-dropdown-download-notes.pdf'),
+    ).toBeInTheDocument()
+    expect(within(menu).queryByText('Attached Media')).not.toBeInTheDocument()
+  })
+
+  it('renders no downloads section when there are none', async () => {
+    render(<TocDropdownButton entries={entries} downloads={[]} />)
+    await openDropdown()
+    expect(screen.queryByText('Attached Media')).not.toBeInTheDocument()
+  })
+
+  it('shows the downloads label as the trigger text when there are no entries', () => {
+    render(<TocDropdownButton entries={[]} downloads={downloads} />)
+    expect(
+      screen.getByRole('button', { name: 'Attached Media' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /on this page/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps the "on this page" trigger text when entries are present, even with downloads', () => {
+    render(<TocDropdownButton entries={entries} downloads={downloads} />)
+    expect(
+      screen.getByRole('button', { name: /on this page/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('falls back to "on this page" when there are neither entries nor downloads', () => {
+    render(<TocDropdownButton entries={[]} downloads={[]} />)
+    expect(
+      screen.getByRole('button', { name: /on this page/i }),
+    ).toBeInTheDocument()
   })
 })

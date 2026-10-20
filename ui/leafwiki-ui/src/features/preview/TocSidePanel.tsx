@@ -1,14 +1,18 @@
 import { scrollToHeadlineHash } from '@/lib/scrollToHeadline'
+import { withBasePath } from '@/lib/routePath'
 import { cn } from '@/lib/utils'
 import { useTocPanelStore } from '@/stores/tocPanel'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { PageAttachment } from '@/lib/api/assets'
 import type { TocEntry } from './extractTocEntries'
+import { tocTitleKey } from './tocTitleKey'
 import { useTocScrollSpy } from './useTocScrollSpy'
 
 type Props = {
   entries: TocEntry[]
   activeId?: string | null
+  downloads?: PageAttachment[]
 }
 
 function getIndentClass(level: number): string {
@@ -17,7 +21,11 @@ function getIndentClass(level: number): string {
   return 'pl-6'
 }
 
-export function TocSidePanel({ entries, activeId: externalActiveId }: Props) {
+export function TocSidePanel({
+  entries,
+  activeId: externalActiveId,
+  downloads = [],
+}: Props) {
   const { t } = useTranslation('viewer')
   const collapsed = useTocPanelStore((state) => state.collapsed)
   const setCollapsed = useTocPanelStore((state) => state.setCollapsed)
@@ -49,7 +57,7 @@ export function TocSidePanel({ entries, activeId: externalActiveId }: Props) {
           )}
           aria-hidden={collapsed}
         >
-          {t('toc.onThisPage')}
+          {t(tocTitleKey(entries.length, downloads.length))}
         </p>
         <button
           type="button"
@@ -98,6 +106,37 @@ export function TocSidePanel({ entries, activeId: externalActiveId }: Props) {
             </button>
           </li>
         ))}
+        {downloads.length > 0 && (
+          <>
+            {entries.length > 0 && (
+              <li>
+                <p
+                  className={cn(
+                    'page-viewer__toc-panel-title mt-3',
+                    collapsed && 'page-viewer__toc-panel-hidden',
+                  )}
+                  aria-hidden={collapsed}
+                >
+                  {t('toc.downloads')}
+                </p>
+              </li>
+            )}
+            {downloads.map((file) => (
+              <li key={file.url}>
+                <a
+                  href={withBasePath(file.url)}
+                  download={file.name}
+                  className="page-viewer__toc-panel-entry"
+                  title={file.name}
+                  data-testid={`toc-download-${file.name}`}
+                  tabIndex={collapsed ? -1 : 0}
+                >
+                  {file.name}
+                </a>
+              </li>
+            ))}
+          </>
+        )}
       </ul>
     </nav>
   )

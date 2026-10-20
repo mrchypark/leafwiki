@@ -24,7 +24,7 @@ func setupPropertiesEffectTest(t *testing.T) (*tree.TreeService, *properties.Pro
 	t.Cleanup(func() { test_utils.WrapCloseWithErrorCheck(store.Close, t) })
 
 	svc := properties.NewPropertiesService(store)
-	effect := NewPropertiesSideEffect(svc, treeSvc, nil)
+	effect := NewPropertiesSideEffect(svc, nil, nil)
 	return treeSvc, svc, effect
 }
 
@@ -66,7 +66,7 @@ func TestPropertiesSideEffect_Apply_Update_ReindexesProperties(t *testing.T) {
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
 
 	newRaw := "---\nstatus: published\n---\n\nUpdated."
-	if err := treeSvc.UpdateNode("system", page.ID, "Update Props", "update-props", &newRaw, tree.VersionUnchecked, nil, nil, true); err != nil {
+	if err := treeSvc.UpdateNode(tree.UpdateNodeInput{UserID: "system", ID: page.ID, Title: "Update Props", Slug: "update-props", Content: &newRaw, ExpectedVersion: tree.VersionUnchecked, PreserveFrontmatter: true}); err != nil {
 		t.Fatalf("UpdateNode: %v", err)
 	}
 	updated, err := treeSvc.GetPage(page.ID)
@@ -98,9 +98,6 @@ func TestPropertiesSideEffect_Apply_Delete_RemovesProperties(t *testing.T) {
 	raw := "---\nstatus: draft\n---\n\nBody."
 	page := createPageWithFrontmatter(t, treeSvc, "Delete Props", "delete-props", raw)
 	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
-	if err := treeSvc.DeleteNode("system", page.ID, false, page.Version()); err != nil {
-		t.Fatalf("DeleteNode: %v", err)
-	}
 
 	effect.Apply(PageSaveEvent{
 		Operation:     PageOperationDelete,
@@ -113,65 +110,5 @@ func TestPropertiesSideEffect_Apply_Delete_RemovesProperties(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("expected properties removed after delete, got %v", ids)
-	}
-}
-
-func TestPropertiesSideEffect_Apply_Update_RemovesDraftAndReindexesWhenPublished(t *testing.T) {
-	treeSvc, propsSvc, effect := setupPropertiesEffectTest(t)
-	page := createPageWithFrontmatter(t, treeSvc, "Draft Props", "draft-props", "---\nstatus: secret\n---\n\nBody.")
-	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: page})
-
-	page = setDraftForTest(t, treeSvc, page, true)
-	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
-	ids, err := propsSvc.GetPageIDsByProperty("status", "secret")
-	if err != nil {
-		t.Fatalf("GetPageIDsByProperty draft: %v", err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("draft page remained in property index: %v", ids)
-	}
-
-	page = setDraftForTest(t, treeSvc, page, false)
-	effect.Apply(PageSaveEvent{Operation: PageOperationUpdate, After: page})
-	ids, err = propsSvc.GetPageIDsByProperty("status", "secret")
-	if err != nil {
-		t.Fatalf("GetPageIDsByProperty published: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != page.ID {
-		t.Fatalf("published page was not reindexed: %v", ids)
-	}
-}
-
-func TestPropertiesSideEffect_Move_ReevaluatesDraftVisibility(t *testing.T) {
-	treeSvc, propsSvc, effect := setupPropertiesEffectTest(t)
-	hidden := createPageWithFrontmatter(t, treeSvc, "Hidden Props", "hidden-props", "---\nstatus: secret\n---\n\nBody.")
-	visible := createPageWithFrontmatter(t, treeSvc, "Visible Props", "visible-props", "---\nstatus: public\n---\n\nBody.")
-	effect.Apply(PageSaveEvent{Operation: PageOperationCreate, After: hidden})
-	draftParentID, err := treeSvc.CreateNodeWithDraft("editor", nil, "Draft Parent", "draft-parent", pageKindPtr(), true)
-	if err != nil {
-		t.Fatalf("CreateNodeWithDraft: %v", err)
-	}
-	if err := treeSvc.MoveNode("editor", hidden.ID, *draftParentID, hidden.Version()); err != nil {
-		t.Fatalf("MoveNode into draft: %v", err)
-	}
-	hidden, err = treeSvc.GetPage(hidden.ID)
-	if err != nil {
-		t.Fatalf("GetPage hidden: %v", err)
-	}
-	effect.Apply(PageSaveEvent{Operation: PageOperationMove, DraftChanged: true, AffectedPages: []*tree.Page{hidden, visible}})
-	ids, err := propsSvc.GetPageIDsByProperty("status", "secret")
-	if err != nil {
-		t.Fatalf("GetPageIDsByProperty draft: %v", err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("draft page remained in property index after move: %v", ids)
-	}
-
-	ids, err = propsSvc.GetPageIDsByProperty("status", "public")
-	if err != nil {
-		t.Fatalf("GetPageIDsByProperty visible: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != visible.ID {
-		t.Fatalf("visible affected page was not indexed after move: %v", ids)
 	}
 }

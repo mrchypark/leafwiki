@@ -14,11 +14,15 @@ import (
 
 	"github.com/perber/wiki/internal/branding"
 	"github.com/perber/wiki/internal/core/auth"
+	"github.com/perber/wiki/internal/core/settings"
 	coreshared "github.com/perber/wiki/internal/core/shared"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
+	"github.com/perber/wiki/internal/core/shared/sqliteutil"
 	"github.com/perber/wiki/internal/favorites"
+	"github.com/perber/wiki/internal/publicaccess"
 	snapshotSvc "github.com/perber/wiki/internal/snapshot"
 	"github.com/perber/wiki/internal/test_utils"
+	"github.com/perber/wiki/internal/tocdisplay"
 	"github.com/perber/wiki/internal/usersettings"
 )
 
@@ -27,12 +31,14 @@ import (
 // snapshot to restore from — mirroring how cmd/leafwiki/main.go wires these
 // together, so the test exercises the same integration points production does.
 type managerFixture struct {
-	manager     *Manager
-	dataDir     string
-	snapshotID  string
-	authService *auth.AuthService
-	branding    *branding.BrandingService
-	resyncCalls int
+	manager      *Manager
+	dataDir      string
+	snapshotID   string
+	authService  *auth.AuthService
+	branding     *branding.BrandingService
+	publicAccess *publicaccess.Service
+	tocDisplay   *tocdisplay.Service
+	resyncCalls  int
 }
 
 func newManagerFixture(t *testing.T, wikiVersion string) *managerFixture {
@@ -67,14 +73,24 @@ func newManagerFixtureWithBranding(t *testing.T, wikiVersion, brandingJSON strin
 		t.Fatalf("NewBrandingService failed: %v", err)
 	}
 
-	f := &managerFixture{dataDir: dataDir, snapshotID: snapshotID, authService: authService, branding: brandingService}
+	// Live instance has both settings off; the snapshot has both on.
+	publicAccessService, err := publicaccess.NewSettingsManaged(dataDir)
+	if err != nil {
+		t.Fatalf("NewSettingsManaged failed: %v", err)
+	}
+	tocDisplayService, err := tocdisplay.New(dataDir)
+	if err != nil {
+		t.Fatalf("tocdisplay.New failed: %v", err)
+	}
+
+	f := &managerFixture{dataDir: dataDir, snapshotID: snapshotID, authService: authService, branding: brandingService, publicAccess: publicAccessService, tocDisplay: tocDisplayService}
 	f.manager = NewManager(Config{
 		SnapshotManager: snapshotMgr,
 		DataDir:         dataDir,
 		WikiVersion:     wikiVersion,
 		WriteGate:       NewWriteGate(),
 		AuthService:     authService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService, publicAccessService, tocDisplayService},
 		TriggerResync:   func() { f.resyncCalls++ },
 	})
 
@@ -188,7 +204,7 @@ func newFullManagerFixtureWithBranding(t *testing.T, brandingJSON string) *fullM
 		APIKeyService:   apiKeyService,
 		Favorites:       favoritesStore,
 		UserSettings:    userSettingsService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService},
 	})
 	return f
 }
@@ -263,6 +279,14 @@ func TestManager_Restore_HappyPath(t *testing.T) {
 	if brandingCfg.SiteName != "Snapshot Site" {
 		t.Errorf("expected branding reloaded from the restored branding.json, got SiteName=%q", brandingCfg.SiteName)
 	}
+
+	// Instance settings are part of the snapshot too and are live right away.
+	if !f.publicAccess.Enabled() {
+		t.Error("expected public access reloaded from the restored public-access.json")
+	}
+	if !f.tocDisplay.AlwaysShow() {
+		t.Error("expected always-show-TOC reloaded from the restored toc-display.json")
+	}
 }
 
 // TestManager_Restore_ByID_DoesNotEnforceUploadExtractionCaps is a
@@ -334,7 +358,7 @@ func TestManager_Restore_ByID_DoesNotEnforceUploadExtractionCaps(t *testing.T) {
 		WikiVersion:     "v1.0.0",
 		WriteGate:       NewWriteGate(),
 		AuthService:     authService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService},
 		TriggerResync:   func() {},
 	})
 
@@ -661,6 +685,65 @@ func TestManager_Restore_WALCleanupFailure_RecoversWithoutTouchingLiveFiles(t *t
 	}
 	if _, err := f.apiKeyService.Resolve(""); err == nil {
 		t.Fatal("expected an empty token to never resolve (sanity check that APIKeyService is usable, not stuck suspended)")
+	}
+}
+
+// TestManager_ReopenAllStores_CorruptLiveDB pins how the restore recovery
+// path meets each store's corruption policy (ADR-0013). Staged files are
+// rejected earlier by sanityCheckSQLiteDB, so this only happens when a live
+// or rolled-back file is unreadable: favorites.db is quarantined and the
+// store keeps working, users.db fails, so the caller reports
+// NeedsIntervention, and stays untouched.
+func TestManager_ReopenAllStores_CorruptLiveDB(t *testing.T) {
+	tests := []struct {
+		name           string
+		filename       string
+		pause          func(f *fullManagerFixture) error
+		wantQuarantine bool
+	}{
+		{
+			name:           "favorites.db is quarantined and reopen continues",
+			filename:       "favorites.db",
+			pause:          func(f *fullManagerFixture) error { return f.favoritesStore.PauseForSwap() },
+			wantQuarantine: true,
+		},
+		{
+			name:     "users.db fails and is left untouched",
+			filename: "users.db",
+			pause:    func(f *fullManagerFixture) error { return f.authService.PauseUserStoreForSwap() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFullManagerFixtureWithBranding(t, `{"siteName":"Snapshot Site"}`)
+			if err := tt.pause(f); err != nil {
+				t.Fatalf("pause: %v", err)
+			}
+			dbPath := filepath.Join(f.dataDir, tt.filename)
+			if err := os.Remove(dbPath + "-shm"); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove live -shm: %v", err)
+			}
+			files := test_utils.WriteCorruptSQLiteDB(t, dbPath)
+
+			err := f.manager.reopenAllStores()
+
+			if !tt.wantQuarantine {
+				var corrupt *sqliteutil.CorruptDatabaseError
+				if !errors.As(err, &corrupt) {
+					t.Fatalf("reopenAllStores error = %v, want it to wrap *sqliteutil.CorruptDatabaseError", err)
+				}
+				test_utils.AssertFilesUnchanged(t, files)
+				return
+			}
+			if err != nil {
+				t.Fatalf("reopenAllStores: %v", err)
+			}
+			test_utils.AssertSQLiteQuarantined(t, dbPath, files)
+			if err := f.favoritesStore.Add("user-1", "page-after-quarantine"); err != nil {
+				t.Fatalf("expected favorites to be usable after the quarantine: %v", err)
+			}
+		})
 	}
 }
 
@@ -1032,7 +1115,7 @@ func TestManager_Restore_HappyPath_PreservesAPIKeys(t *testing.T) {
 		WriteGate:       NewWriteGate(),
 		AuthService:     authService,
 		APIKeyService:   apiKeyService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService},
 	})
 
 	if err := manager.TriggerRestore(snapshotID); err != nil {
@@ -1128,7 +1211,7 @@ func TestManager_Restore_HappyPath_PreservesFavoritesAndUserSettings(t *testing.
 		AuthService:     authService,
 		Favorites:       favoritesStore,
 		UserSettings:    userSettingsService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService},
 	})
 
 	if err := manager.TriggerRestore(snapshotID); err != nil {
@@ -1220,7 +1303,7 @@ func TestManager_Restore_HappyPath_ReloadsUserResolverCache(t *testing.T) {
 		WikiVersion:     "v1.0.0",
 		WriteGate:       NewWriteGate(),
 		AuthService:     authService,
-		BrandingService: brandingService,
+		Reloadables:     []settings.Reloadable{brandingService},
 		UserResolver:    userResolver,
 	})
 

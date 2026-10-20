@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	backupSvc "github.com/perber/wiki/internal/backup"
+	sharedcrypto "github.com/perber/wiki/internal/core/shared/crypto"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -68,7 +71,7 @@ func TestHandleTriggerPull_Success(t *testing.T) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	routes := &Routes{repo: repo}
+	routes := &Routes{mgr: backupSvc.NewEnvManager(repo, nil)}
 	c, rec := newTestGinContext()
 
 	routes.handleTriggerPull(c)
@@ -100,6 +103,33 @@ func testSSHKeyPEM(t *testing.T) string {
 // here would silently discard the actual (and, for conflicts, actionable)
 // error detail in err.Error() and show the literal template string instead.
 func TestHandleTriggerPull_ErrorHasEmptyTemplate(t *testing.T) {
+	routes := newFileConflictRoutes(t)
+	c, rec := newTestGinContext()
+
+	routes.handleTriggerPull(c)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d, body: %s", http.StatusInternalServerError, rec.Code, rec.Body.String())
+	}
+
+	var body BackupErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if body.Error.Template != "" {
+		t.Errorf("expected empty template so the frontend surfaces the real message, got %q", body.Error.Template)
+	}
+	if !strings.Contains(body.Error.Message, "conflict") {
+		t.Errorf("expected message to contain the conflict detail, got %q", body.Error.Message)
+	}
+}
+
+// newFileConflictRoutes returns Routes over a backup whose root/page.md was
+// backed up, then changed on the remote by an external commit and changed
+// differently on local disk: the next pull conflicts and local HEAD is behind
+// the remote tip.
+func newFileConflictRoutes(t *testing.T) *Routes {
+	t.Helper()
 	bareDir := t.TempDir()
 	if _, err := gogit.PlainInit(bareDir, true); err != nil {
 		t.Fatalf("PlainInit bare remote: %v", err)
@@ -108,11 +138,10 @@ func TestHandleTriggerPull_ErrorHasEmptyTemplate(t *testing.T) {
 	tmpDir := t.TempDir()
 	rootDir := filepath.Join(tmpDir, "root")
 	assetsDir := filepath.Join(tmpDir, "assets")
-	if err := os.MkdirAll(rootDir, 0755); err != nil {
-		t.Fatalf("MkdirAll rootDir: %v", err)
-	}
-	if err := os.MkdirAll(assetsDir, 0755); err != nil {
-		t.Fatalf("MkdirAll assetsDir: %v", err)
+	for _, dir := range []string{rootDir, assetsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", dir, err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(rootDir, "page.md"), []byte("# Page\n"), 0644); err != nil {
 		t.Fatalf("WriteFile page.md: %v", err)
@@ -134,7 +163,6 @@ func TestHandleTriggerPull_ErrorHasEmptyTemplate(t *testing.T) {
 		t.Fatalf("initial RunBackup failed: %v", err)
 	}
 
-	// External client changes the same file on the remote...
 	cloneDir := t.TempDir()
 	cloned, err := gogit.PlainClone(cloneDir, false, &gogit.CloneOptions{
 		URL:           "file://" + bareDir,
@@ -147,10 +175,10 @@ func TestHandleTriggerPull_ErrorHasEmptyTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Worktree: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cloneDir, "page.md"), []byte("version B from remote\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(cloneDir, "root", "page.md"), []byte("version B from remote\n"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := wt.Add("page.md"); err != nil {
+	if _, err := wt.Add("root/page.md"); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if _, err := wt.Commit("external commit", &gogit.CommitOptions{
@@ -168,28 +196,415 @@ func TestHandleTriggerPull_ErrorHasEmptyTemplate(t *testing.T) {
 		t.Fatalf("Push: %v", err)
 	}
 
-	// ...while the local wiki has an uncommitted change to the same file.
 	if err := os.WriteFile(filepath.Join(rootDir, "page.md"), []byte("version C local\n"), 0644); err != nil {
 		t.Fatalf("WriteFile local change: %v", err)
 	}
+	return &Routes{mgr: backupSvc.NewEnvManager(repo, nil)}
+}
 
-	routes := &Routes{repo: repo}
+// TestHandleForcePush_RemoteAhead_Returns409 verifies that a force push the
+// backup refuses (local behind the remote) is reported as 409 with its own
+// code, so the UI can explain it instead of showing a generic failure.
+func TestHandleForcePush_RemoteAhead_Returns409(t *testing.T) {
+	routes := newFileConflictRoutes(t)
+	statusBefore, _ := routes.mgr.Status()
 	c, rec := newTestGinContext()
 
-	routes.handleTriggerPull(c)
+	routes.handleForcePush(c)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status %d, got %d, body: %s", http.StatusInternalServerError, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d, body: %s", http.StatusConflict, rec.Code, rec.Body.String())
 	}
-
 	var body BackupErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("failed to unmarshal response body: %v", err)
 	}
-	if body.Error.Template != "" {
-		t.Errorf("expected empty template so the frontend surfaces the real message, got %q", body.Error.Template)
+	if body.Error.Code != ErrCodeBackupForcePushConflict {
+		t.Errorf("code = %q, want %q", body.Error.Code, ErrCodeBackupForcePushConflict)
 	}
-	if !strings.Contains(body.Error.Message, "conflict") {
-		t.Errorf("expected message to contain the conflict detail, got %q", body.Error.Message)
+	if body.Error.Template == "" {
+		t.Error("expected a template so the frontend can translate the refusal")
 	}
+	// The frontend looks the template up verbatim in locales/*/errors.json
+	// (BackupSettings.test.tsx checks every locale for this exact key).
+	const wantTemplate = "force push refused: the remote has changes the local backup has not applied yet"
+	if body.Error.Template != wantTemplate {
+		t.Errorf("template = %q, want %q", body.Error.Template, wantTemplate)
+	}
+	if body.Error.Message != backupSvc.ErrForcePushRemoteAhead.Error() {
+		t.Errorf("message = %q, want %q", body.Error.Message, backupSvc.ErrForcePushRemoteAhead.Error())
+	}
+	if len(body.Error.Args) != 0 {
+		t.Errorf("args = %v, want none", body.Error.Args)
+	}
+	var raw map[string]map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal raw body: %v", err)
+	}
+	for _, key := range []string{"code", "message", "template"} {
+		if _, ok := raw["error"][key]; !ok {
+			t.Errorf("response body %s lacks error.%s", rec.Body.String(), key)
+		}
+	}
+	if statusAfter, _ := routes.mgr.Status(); !reflect.DeepEqual(statusAfter, statusBefore) {
+		t.Errorf("refused force push changed the status:\nbefore %+v\nafter  %+v", statusBefore, statusAfter)
+	}
+}
+
+// ─── settings-mode config endpoints ────────────────────────────────────────
+
+func ginPOSTJSON(t *testing.T, path, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	return c, rec
+}
+
+func settingsRoutes(t *testing.T) *Routes {
+	t.Helper()
+	return settingsRoutesWith(t, "test-secret", nil)
+}
+
+// settingsRoutesWith builds settings-mode routes whose ConfigStore is keyed from
+// jwtSecret. If stored is non-nil it is persisted to git-backup.json first, so
+// CurrentConfig() reflects it. Pass a different jwtSecret on a second call over
+// the same store to simulate a rotated key (undecryptable config).
+func settingsRoutesWith(t *testing.T, jwtSecret string, stored *backupSvc.Config) *Routes {
+	t.Helper()
+	dataDir := t.TempDir()
+	rootDir := filepath.Join(dataDir, "root")
+	assetsDir := filepath.Join(dataDir, "assets")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	key, _ := sharedcrypto.DeriveKey([]byte(jwtSecret), backupSvc.CredentialsKeyInfo)
+	box, _ := sharedcrypto.NewSecretBox(key)
+	if stored != nil {
+		if err := backupSvc.NewConfigStore(dataDir, box).Save(*stored); err != nil {
+			t.Fatalf("seed store.Save: %v", err)
+		}
+	}
+	mgr, err := backupSvc.NewSettingsManager(backupSvc.NewConfigStore(dataDir, box), rootDir, assetsDir)
+	if err != nil {
+		t.Fatalf("NewSettingsManager: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+	return &Routes{mgr: mgr}
+}
+
+// settingsRoutesUndecryptable seeds a config with one key, then builds routes
+// with a different key so git-backup.json can no longer be decrypted.
+func settingsRoutesUndecryptable(t *testing.T, stored backupSvc.Config) *Routes {
+	t.Helper()
+	dataDir := t.TempDir()
+	rootDir := filepath.Join(dataDir, "root")
+	assetsDir := filepath.Join(dataDir, "assets")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	k1, _ := sharedcrypto.DeriveKey([]byte("original-secret"), backupSvc.CredentialsKeyInfo)
+	box1, _ := sharedcrypto.NewSecretBox(k1)
+	if err := backupSvc.NewConfigStore(dataDir, box1).Save(stored); err != nil {
+		t.Fatalf("seed store.Save: %v", err)
+	}
+	k2, _ := sharedcrypto.DeriveKey([]byte("rotated-secret"), backupSvc.CredentialsKeyInfo)
+	box2, _ := sharedcrypto.NewSecretBox(k2)
+	mgr, err := backupSvc.NewSettingsManager(backupSvc.NewConfigStore(dataDir, box2), rootDir, assetsDir)
+	if err != nil {
+		t.Fatalf("NewSettingsManager: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+	return &Routes{mgr: mgr}
+}
+
+func TestHandleSaveBackupConfig_EnvManaged_Returns409(t *testing.T) {
+	bareDir := t.TempDir()
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	tmp := t.TempDir()
+	rootDir := filepath.Join(tmp, "root")
+	assetsDir := filepath.Join(tmp, "assets")
+	_ = os.MkdirAll(rootDir, 0o755)
+	_ = os.MkdirAll(assetsDir, 0o755)
+	repo, err := backupSvc.Init(backupSvc.Config{
+		RootDir: rootDir, AssetsDir: assetsDir, AuthorName: "T", AuthorEmail: "t@t.com", Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	routes := &Routes{mgr: backupSvc.NewEnvManager(repo, nil)}
+
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config", `{"remoteUrl":"https://example.com/r.git","httpUsername":"u","httpPassword":"p","intervalMinutes":30}`)
+	routes.handleSaveBackupConfig(c)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var body BackupErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Error.Code != ErrCodeBackupEnvManaged {
+		t.Fatalf("expected code %q, got %q", ErrCodeBackupEnvManaged, body.Error.Code)
+	}
+}
+
+func TestHandleSaveBackupConfig_IntervalOutOfRange_Returns400(t *testing.T) {
+	routes := settingsRoutes(t)
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config", `{"remoteUrl":"https://example.com/r.git","httpUsername":"u","httpPassword":"p","intervalMinutes":1}`)
+	routes.handleSaveBackupConfig(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a 1-minute interval, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var body BackupErrorResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != ErrCodeBackupInvalidConfig {
+		t.Fatalf("expected %q, got %q", ErrCodeBackupInvalidConfig, body.Error.Code)
+	}
+}
+
+// TestHandleSaveBackupConfig_IntervalOverflow_Returns400 pins that a minutes
+// value large enough to overflow time.Duration(n)*time.Minute back into the
+// valid window is still rejected. 307445737 minutes wraps to ~2m26s of int64
+// nanoseconds, which would otherwise slip past Config.ValidateForSettings.
+func TestHandleSaveBackupConfig_IntervalOverflow_Returns400(t *testing.T) {
+	routes := settingsRoutes(t)
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config",
+		`{"remoteUrl":"https://example.com/r.git","httpUsername":"u","httpPassword":"p","intervalMinutes":307445737}`)
+	routes.handleSaveBackupConfig(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an overflowing interval, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var body BackupErrorResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != ErrCodeBackupInvalidConfig {
+		t.Fatalf("expected %q, got %q", ErrCodeBackupInvalidConfig, body.Error.Code)
+	}
+	if routes.mgr.Enabled() {
+		t.Fatal("backup must not be enabled after a rejected interval")
+	}
+}
+
+// TestBindAndValidateConfig_UnchangedRedactedRemote_KeepsEmbeddedCredentials
+// pins that resubmitting the redacted remote URL (what the browser was given)
+// unchanged keeps the stored credential-bearing URL rather than persisting the
+// "xxxxx" placeholder.
+func TestBindAndValidateConfig_UnchangedRedactedRemote_KeepsEmbeddedCredentials(t *testing.T) {
+	const realURL = "https://alice:s3cr3t-token@example.com/wiki.git"
+	routes := settingsRoutesWith(t, "test-secret", &backupSvc.Config{
+		Enabled: false, RemoteURL: realURL, Branch: "main",
+		AuthorName: "B", AuthorEmail: "b@b.com", Interval: 30 * time.Minute,
+	})
+
+	redacted := backupSvc.RedactRemoteURL(realURL)
+	if redacted == realURL {
+		t.Fatalf("precondition: %q should redact", realURL)
+	}
+
+	body := fmt.Sprintf(`{"remoteUrl":%q,"branch":"main","authorName":"B","authorEmail":"b@b.com","intervalMinutes":30}`, redacted)
+	c, _ := ginPOSTJSON(t, "/api/admin/backup/config", body)
+	cfg, ok := routes.bindAndValidateConfig(c)
+	if !ok {
+		t.Fatal("bindAndValidateConfig rejected an unchanged redacted URL")
+	}
+	if cfg.RemoteURL != realURL {
+		t.Fatalf("embedded credentials lost: got %q, want %q", cfg.RemoteURL, realURL)
+	}
+}
+
+// TestBindAndValidateConfig_CorruptStore_ReturnsReadableError pins that an
+// undecryptable git-backup.json produces a clear "re-enter the config" error
+// rather than a misleading "credentials required".
+func TestBindAndValidateConfig_CorruptStore_ReturnsReadableError(t *testing.T) {
+	routes := settingsRoutesUndecryptable(t, backupSvc.Config{
+		Enabled: false, RemoteURL: "https://example.com/wiki.git",
+		HTTPUsername: "u", HTTPPassword: "stored-token",
+		Branch: "main", AuthorName: "B", AuthorEmail: "b@b.com", Interval: 30 * time.Minute,
+	})
+
+	// Submit a change without re-entering the password (relies on "keep existing").
+	body := `{"remoteUrl":"https://example.com/wiki.git","httpUsername":"u","branch":"main","authorName":"B","authorEmail":"b@b.com","intervalMinutes":45}`
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config", body)
+	if _, ok := routes.bindAndValidateConfig(c); ok {
+		t.Fatal("expected rejection when the stored config is undecryptable")
+	}
+	var respBody BackupErrorResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &respBody)
+	if respBody.Error.Code != ErrCodeBackupConfigCorrupt {
+		t.Fatalf("expected %q, got %q (msg %q)", ErrCodeBackupConfigCorrupt, respBody.Error.Code, respBody.Error.Message)
+	}
+}
+
+func TestHandleSaveBackupConfig_UnreachableRemote_Returns400AndPersistsNothing(t *testing.T) {
+	routes := settingsRoutes(t)
+	// Well-formed HTTPS URL (passes ValidateForSettings) that cannot connect,
+	// so the failure comes from TestRemote, not validation.
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config",
+		`{"remoteUrl":"https://127.0.0.1:1/nope.git","httpUsername":"u","httpPassword":"p","intervalMinutes":30}`)
+	routes.handleSaveBackupConfig(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unreachable remote, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var body BackupErrorResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != ErrCodeBackupRemoteUnreachable {
+		t.Fatalf("expected %q, got %q", ErrCodeBackupRemoteUnreachable, body.Error.Code)
+	}
+	if routes.mgr.Enabled() {
+		t.Fatal("backup must not be enabled after a failed save")
+	}
+	if cur, _ := routes.mgr.CurrentConfig(); cur.RemoteURL != "" {
+		t.Fatal("nothing should have been persisted after a failed save")
+	}
+}
+
+// TestBindAndValidateConfig_ParsesPath checks that the monorepo-prefix Path
+// field (previously only settable via --git-backup-path/LEAFWIKI_GIT_BACKUP_PATH)
+// is parsed from the POST body into Config, the way every other field already is.
+func TestBindAndValidateConfig_ParsesPath(t *testing.T) {
+	routes := settingsRoutes(t)
+	body := `{"remoteUrl":"https://example.com/wiki.git","path":"docs/wiki","httpUsername":"u","httpPassword":"p","intervalMinutes":30}`
+	c, _ := ginPOSTJSON(t, "/api/admin/backup/config", body)
+	cfg, ok := routes.bindAndValidateConfig(c)
+	if !ok {
+		t.Fatal("bindAndValidateConfig rejected a valid path")
+	}
+	if cfg.Path != "docs/wiki" {
+		t.Fatalf("cfg.Path = %q, want %q", cfg.Path, "docs/wiki")
+	}
+}
+
+// TestHandleGetBackupConfig_ReturnsPath checks that GET /backup/config
+// reflects a configured Path back to the settings form.
+func TestHandleGetBackupConfig_ReturnsPath(t *testing.T) {
+	routes := settingsRoutes(t)
+	bareDir := t.TempDir()
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	// Reconfigure skips the URL-scheme validation (see
+	// TestHandleGetBackupConfig_RedactsSecrets), so a local file:// remote works.
+	if err := routes.mgr.Reconfigure(backupSvc.Config{
+		RemoteURL: "file://" + bareDir,
+		Path:      "docs/wiki",
+		Branch:    "main",
+		SSHKey:    testEd25519PEM(t),
+		Interval:  30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+
+	get, getRec := ginPOSTJSON(t, "/api/admin/backup/config", "")
+	routes.handleGetBackupConfig(get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get failed: %d", getRec.Code)
+	}
+	if !strings.Contains(getRec.Body.String(), `"path":"docs/wiki"`) {
+		t.Fatalf("expected path in GET response, got:\n%s", getRec.Body.String())
+	}
+}
+
+// TestBindAndValidateConfig_InvalidPath_Returns400 checks that a Path value
+// normalizeBackupPath rejects (e.g. a ".." traversal segment) is caught here
+// as a clean validation error, rather than only failing later and deeper
+// inside Manager.Reconfigure -> backup.Init.
+func TestBindAndValidateConfig_InvalidPath_Returns400(t *testing.T) {
+	routes := settingsRoutes(t)
+	body := `{"remoteUrl":"https://example.com/wiki.git","path":"../escape","httpUsername":"u","httpPassword":"p","intervalMinutes":30}`
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config", body)
+	if _, ok := routes.bindAndValidateConfig(c); ok {
+		t.Fatal("expected rejection for a path containing \"..\"")
+	}
+	var respBody BackupErrorResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &respBody)
+	if respBody.Error.Code != ErrCodeBackupInvalidConfig {
+		t.Fatalf("expected %q, got %q (msg %q)", ErrCodeBackupInvalidConfig, respBody.Error.Code, respBody.Error.Message)
+	}
+}
+
+func TestHandleGetBackupConfig_RedactsSecrets(t *testing.T) {
+	routes := settingsRoutes(t)
+
+	// Bring a backup up directly (Manager.Reconfigure skips the URL-scheme
+	// validation, so we can point at a local bare repo) then check the GET.
+	bareDir := t.TempDir()
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	if err := routes.mgr.Reconfigure(backupSvc.Config{
+		RemoteURL: "file://" + bareDir,
+		Branch:    "main",
+		SSHKey:    testEd25519PEM(t),
+		Interval:  30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+
+	get, getRec := ginPOSTJSON(t, "/api/admin/backup/config", "")
+	routes.handleGetBackupConfig(get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get failed: %d", getRec.Code)
+	}
+	body := getRec.Body.String()
+	if strings.Contains(body, "PRIVATE KEY") {
+		t.Fatalf("GET /backup/config leaked the SSH key:\n%s", body)
+	}
+	if !strings.Contains(body, `"hasSshKey":true`) {
+		t.Fatalf("expected hasSshKey:true in response, got:\n%s", body)
+	}
+}
+
+// TestHandleGetBackupConfig_NoEncryptionKey_ReportsUnencrypted pins that a
+// settings manager without an encryption key (i.e. --disable-auth) still serves
+// the config form and simply advertises encryptionKeyAvailable:false rather than
+// blocking credential entry.
+func TestHandleGetBackupConfig_NoEncryptionKey_ReportsUnencrypted(t *testing.T) {
+	dataDir := t.TempDir()
+	rootDir := filepath.Join(dataDir, "root")
+	assetsDir := filepath.Join(dataDir, "assets")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mgr, err := backupSvc.NewSettingsManager(backupSvc.NewConfigStore(dataDir, nil), rootDir, assetsDir)
+	if err != nil {
+		t.Fatalf("NewSettingsManager: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+	routes := &Routes{mgr: mgr}
+
+	c, rec := ginPOSTJSON(t, "/api/admin/backup/config", "")
+	routes.handleGetBackupConfig(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"encryptionKeyAvailable":false`) {
+		t.Fatalf("expected encryptionKeyAvailable:false, got:\n%s", rec.Body.String())
+	}
+}
+
+func testEd25519PEM(t *testing.T) string {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	block, err := gossh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatalf("MarshalPrivateKey: %v", err)
+	}
+	return string(pem.EncodeToMemory(block))
 }

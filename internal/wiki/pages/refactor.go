@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/perber/wiki/internal/core/pagevisibility"
+	"github.com/perber/wiki/internal/core/revision"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	httpmetrics "github.com/perber/wiki/internal/http/metrics"
@@ -59,15 +59,12 @@ type RefactorAffectedPage struct {
 
 // RefactorApplyInput extends the preview with apply options.
 type RefactorApplyInput struct {
-	UserID       string
-	Version      string
-	Tags         []string
-	Properties   map[string]string
-	Draft        *bool
-	DraftAllowed bool
-	Position     *int
+	UserID  string
+	Version string
 	RefactorPreviewInput
 	RewriteLinks bool
+	// Position is the target sibling index for RefactorKindMove; nil appends at the end.
+	Position *int
 }
 
 // PreviewPageRefactorUseCase computes what would change if a refactor is applied.
@@ -94,6 +91,7 @@ func (uc *PreviewPageRefactorUseCase) Execute(_ context.Context, in RefactorPrev
 	if err != nil {
 		return nil, err
 	}
+
 	oldPath := page.CalculatePath()
 	newPath, err := uc.computeTargetPath(page, in)
 	if err != nil {
@@ -103,11 +101,7 @@ func (uc *PreviewPageRefactorUseCase) Execute(_ context.Context, in RefactorPrev
 	excludeIDs := subtreeIDSet(page.PageNode)
 	// For renames that change the title, also surface pages that reference the
 	// old title via [[OldTitle]] wiki-link sentinels.
-	sentinelTitle := ""
-	if in.Kind == RefactorKindRename && in.Title != page.Title {
-		sentinelTitle = page.Title
-	}
-	affectedPages, matchedLinks, err := uc.getAffectedPages(oldPath, page.Title, page.ID, excludeIDs, sentinelTitle)
+	affectedPages, matchedLinks, err := uc.getAffectedPages(oldPath, page.Title, excludeIDs, sentinelTitleForRefactor(page, in))
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +172,7 @@ func (uc *PreviewPageRefactorUseCase) resolveParentPath(parentID string) (string
 	return parent.CalculatePath(), nil
 }
 
-func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle string, targetID string, excludeIDs map[string]struct{}, sentinelTitle string) ([]RefactorAffectedPage, int, error) {
+func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle string, excludeIDs map[string]struct{}, sentinelTitle string) ([]RefactorAffectedPage, int, error) {
 	if uc.links == nil {
 		return nil, 0, nil
 	}
@@ -215,10 +209,12 @@ func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle
 	// For title-changing renames, also include pages that reference the old
 	// title via [[OldTitle]] wiki-link sentinels (not matched by path prefix).
 	if sentinelTitle != "" {
-		// If another published page shares the old title, [[OldTitle]] belongs to
-		// that public candidate rather than exclusively to the refactor target.
-		// Draft duplicates do not participate in public title resolution.
-		if !hasOtherPublishedTitleMatch(uc.tree, sentinelTitle, targetID) {
+		// If multiple pages share the old title the [[OldTitle]] sentinel is
+		// ambiguous. After the rename the title will belong to fewer pages and
+		// ReconcileTitle will resolve the sentinel
+		// automatically. Showing these links in the refactor preview would be
+		// misleading — skip them.
+		if len(uc.tree.FindPagesByTitle(sentinelTitle)) <= 1 {
 			sentinelIDs, err := uc.links.GetRefactorSourcePageIDsForWikiLinkTitle(sentinelTitle)
 			if err != nil {
 				return nil, 0, err
@@ -251,6 +247,7 @@ func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle
 	}
 
 	engine := links.NewMarkdownRefactorEngine()
+	finder := links.CompileWikiLinkFinder(oldPath, pageTitle)
 	items := make([]RefactorAffectedPage, 0, len(grouped))
 	for _, item := range grouped {
 		sourcePage, err := uc.tree.GetPage(item.FromPageID)
@@ -261,7 +258,7 @@ func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle
 		// Replace raw route paths in matchedPaths with their wiki-link syntax
 		// when the page content uses [[Title]] or [[path/hint]] instead of
 		// a standard markdown link.
-		wikiLinks := engine.FindWikiLinksForPath(sourcePage.Content, oldPath, pageTitle)
+		wikiLinks := engine.FindWikiLinksPrecompiled(sourcePage.Content, finder)
 		for _, wl := range wikiLinks {
 			if !containsString(item.MatchedPaths, wl) {
 				item.MatchedPaths = append(item.MatchedPaths, wl)
@@ -296,36 +293,32 @@ func (uc *PreviewPageRefactorUseCase) getAffectedPages(oldPath string, pageTitle
 
 // ApplyPageRefactorUseCase applies a rename or move with optional link rewriting.
 type ApplyPageRefactorUseCase struct {
-	tree         *tree.TreeService
-	slug         *tree.SlugService
-	links        *links.LinkService
-	orchestrator *pagesave.PageSaveOrchestrator
-	log          *slog.Logger
-	preview      *PreviewPageRefactorUseCase
-	metrics      *httpmetrics.HTTPMetrics
+	tree     *tree.TreeService
+	slug     *tree.SlugService
+	revision *revision.Service
+	links    *links.LinkService
+	log      *slog.Logger
+	preview  *PreviewPageRefactorUseCase
+	metrics  *httpmetrics.HTTPMetrics
 }
 
 // NewApplyPageRefactorUseCase constructs an ApplyPageRefactorUseCase.
 func NewApplyPageRefactorUseCase(
 	t *tree.TreeService,
 	s *tree.SlugService,
+	r *revision.Service,
 	l *links.LinkService,
-	o *pagesave.PageSaveOrchestrator,
 	log *slog.Logger,
-	metrics ...*httpmetrics.HTTPMetrics,
+	metrics *httpmetrics.HTTPMetrics,
 ) *ApplyPageRefactorUseCase {
-	var m *httpmetrics.HTTPMetrics
-	if len(metrics) > 0 {
-		m = metrics[0]
-	}
 	return &ApplyPageRefactorUseCase{
-		tree:         t,
-		slug:         s,
-		links:        l,
-		orchestrator: o,
-		log:          log,
-		preview:      NewPreviewPageRefactorUseCase(t, s, l, log),
-		metrics:      m,
+		tree:     t,
+		slug:     s,
+		revision: r,
+		links:    l,
+		log:      log,
+		preview:  NewPreviewPageRefactorUseCase(t, s, l, log),
+		metrics:  metrics,
 	}
 }
 
@@ -336,99 +329,103 @@ func (uc *ApplyPageRefactorUseCase) Execute(ctx context.Context, in RefactorAppl
 	if err != nil {
 		return nil, err
 	}
-	defer uc.metrics.ObserveRefactor(in.Kind, in.RewriteLinks, plan.affectedPages, plan.matchedLinks, started)
 
-	snapshots := captureSnapshots(plan.page)
+	snapshots, err := uc.captureSnapshots(plan.page, in)
+	if err != nil {
+		return nil, err
+	}
 
-	var rewriteRules []links.RewriteRule
 	if in.RewriteLinks {
 		rule := links.RewriteRule{OldPath: plan.oldPath, NewPath: plan.newPath}
 		if in.Kind == RefactorKindRename && in.Title != plan.page.Title {
 			rule.OldTitle = plan.page.Title
 			rule.NewTitle = in.Title
 		}
-		rewriteRules = []links.RewriteRule{rule}
-	}
-
-	var updated *tree.Page
-	switch in.Kind {
-	case RefactorKindRename:
 		stepStarted := time.Now()
-		updateUC := NewUpdatePageUseCase(uc.tree, uc.slug, uc.orchestrator, uc.log)
-		result, err := updateUC.Execute(ctx, UpdatePageInput{
-			UserID:       in.UserID,
-			ID:           in.PageID,
-			Version:      in.Version,
-			Title:        in.Title,
-			Slug:         in.Slug,
-			Content:      in.Content,
-			Tags:         in.Tags,
-			Properties:   in.Properties,
-			Draft:        in.Draft,
-			DraftAllowed: in.DraftAllowed,
-			PathPreconditions: &tree.PathPreconditions{
-				ExpectedSourcePath: plan.oldPath,
-			},
-		})
-		uc.metrics.ObserveRefactorStep(in.Kind, "update_target_page", stepStarted)
+		err := uc.rewriteAffectedPages(in.UserID, plan.affectedPageIDs, []links.RewriteRule{rule})
+		uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_affected_pages", stepStarted)
 		if err != nil {
 			return nil, err
 		}
-		updated = result.Page
+	}
+
+	o := pagesave.NewPageSaveOrchestrator(
+		uc.metrics,
+		pagesave.NewLinkIndexSideEffect(uc.links, uc.log, uc.metrics),
+		pagesave.NewRevisionSideEffect(uc.revision, uc.log, uc.metrics),
+	)
+
+	switch in.Kind {
+	case RefactorKindRename:
+		updateStepStarted := time.Now()
+		updateUC := NewUpdatePageUseCase(uc.tree, uc.slug, o, uc.log, uc.metrics)
+		updated, err := updateUC.Execute(ctx, UpdatePageInput{
+			UserID:  in.UserID,
+			ID:      in.PageID,
+			Version: in.Version,
+			Title:   in.Title,
+			Slug:    in.Slug,
+			Content: in.Content,
+			Kind:    kindPage(),
+		})
+		uc.metrics.ObserveRefactorStep(in.Kind, "update_target_page", updateStepStarted)
+		if err != nil {
+			return nil, err
+		}
+		return uc.finishPathChange(in, plan, snapshots, updated.Page.ID, started)
 
 	case RefactorKindMove:
 		parentID := ""
 		if in.NewParentID != nil {
 			parentID = *in.NewParentID
 		}
-		stepStarted := time.Now()
-		moveUC := NewMovePageUseCase(uc.tree, uc.orchestrator, uc.log)
-		err := moveUC.Execute(ctx, MovePageInput{
-			UserID: in.UserID, ID: in.PageID, Version: in.Version, ParentID: parentID, Position: in.Position,
-			PathPreconditions: &tree.PathPreconditions{
-				ExpectedSourcePath:            plan.oldPath,
-				ExpectedDestinationParentPath: plan.destinationParentPath,
-			},
-		})
-		uc.metrics.ObserveRefactorStep(in.Kind, "move_target_page", stepStarted)
+		moveStepStarted := time.Now()
+		moveUC := NewMovePageUseCase(uc.tree, o, uc.log, uc.metrics)
+		err := moveUC.Execute(ctx, MovePageInput{UserID: in.UserID, ID: in.PageID, Version: in.Version, ParentID: parentID, Position: in.Position})
+		uc.metrics.ObserveRefactorStep(in.Kind, "move_target_page", moveStepStarted)
 		if err != nil {
 			return nil, err
 		}
-		updated, err = uc.tree.GetPage(in.PageID)
-		if err != nil {
-			return nil, err
-		}
+		return uc.finishPathChange(in, plan, snapshots, in.PageID, started)
 
 	default:
 		return nil, fmt.Errorf("unsupported refactor kind: %s", in.Kind)
 	}
+}
 
-	rewriteIncoming := in.RewriteLinks && !pagevisibility.IsInDraftSubtree(updated.PageNode)
-	if rewriteIncoming {
-		stepStarted := time.Now()
-		err := uc.rewriteAffectedPages(in.Kind, in.UserID, plan.affectedPageIDs, rewriteRules)
-		uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_affected_pages", stepStarted)
+// finishPathChange runs the steps rename and move share once the target page
+// itself has been updated: fix links inside the subtree whose path changed,
+// refresh the link state of pages whose incoming links were rewritten, and
+// reload the target page.
+func (uc *ApplyPageRefactorUseCase) finishPathChange(in RefactorApplyInput, plan *applyRefactorPlan, snapshots []pathChangeSnapshot, pageID string, started time.Time) (*tree.Page, error) {
+	subtreeStepStarted := time.Now()
+	err := uc.rewritePathChangedSubtree(in.UserID, snapshots, plan.oldPath, plan.newPath)
+	uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_path_changed_subtree", subtreeStepStarted)
+	if err != nil {
+		return nil, err
+	}
+	if in.RewriteLinks {
+		refreshStepStarted := time.Now()
+		err := uc.refreshAffectedPageLinks(plan.affectedPageIDs)
+		uc.metrics.ObserveRefactorStep(in.Kind, "refresh_affected_links", refreshStepStarted)
 		if err != nil {
 			return nil, err
 		}
 	}
-	stepStarted := time.Now()
-	err = uc.rewritePathChangedSubtree(in.UserID, snapshots, plan.oldPath, plan.newPath)
-	uc.metrics.ObserveRefactorStep(in.Kind, "rewrite_path_changed_subtree", stepStarted)
-	if err != nil {
-		return nil, err
+	page, err := uc.tree.GetPage(pageID)
+	if err == nil {
+		uc.metrics.ObserveRefactor(in.Kind, in.RewriteLinks, plan.affectedPages, plan.matchedLinks, started)
 	}
-	return uc.tree.GetPage(updated.ID)
+	return page, err
 }
 
 type applyRefactorPlan struct {
-	page                  *tree.Page
-	oldPath               string
-	newPath               string
-	destinationParentPath string
-	affectedPageIDs       []string
-	affectedPages         int
-	matchedLinks          int
+	page            *tree.Page
+	oldPath         string
+	newPath         string
+	affectedPageIDs []string
+	affectedPages   int
+	matchedLinks    int
 }
 
 func (uc *ApplyPageRefactorUseCase) buildApplyPlan(in RefactorApplyInput) (*applyRefactorPlan, error) {
@@ -436,41 +433,24 @@ func (uc *ApplyPageRefactorUseCase) buildApplyPlan(in RefactorApplyInput) (*appl
 	if err != nil {
 		return nil, err
 	}
+
 	oldPath := page.CalculatePath()
-	newPath := ""
-	destinationParentPath := ""
-	if in.Kind == RefactorKindMove {
-		parentID := ""
-		if in.NewParentID != nil {
-			parentID = *in.NewParentID
-		}
-		destinationParentPath, err = uc.preview.resolveParentPath(parentID)
-		if err != nil {
-			return nil, err
-		}
-		newPath = "/" + page.Slug
-		if destinationParentPath != "" {
-			newPath = destinationParentPath + newPath
-		}
-	} else {
-		newPath, err = uc.preview.computeTargetPath(page, in.RefactorPreviewInput)
-		if err != nil {
-			return nil, err
-		}
+	newPath, err := uc.preview.computeTargetPath(page, in.RefactorPreviewInput)
+	if err != nil {
+		return nil, err
 	}
 
 	plan := &applyRefactorPlan{
-		page:                  page,
-		oldPath:               oldPath,
-		newPath:               newPath,
-		destinationParentPath: destinationParentPath,
+		page:    page,
+		oldPath: oldPath,
+		newPath: newPath,
 	}
 
 	if !in.RewriteLinks || uc.links == nil {
 		return plan, nil
 	}
 
-	affectedPages, matchedLinks, err := uc.preview.getAffectedPages(oldPath, page.Title, page.ID, subtreeIDSet(page.PageNode), sentinelTitleForRefactor(page, in))
+	affectedPages, matchedLinks, err := uc.preview.getAffectedPages(oldPath, page.Title, subtreeIDSet(page.PageNode), sentinelTitleForRefactor(page, in.RefactorPreviewInput))
 	if err != nil {
 		return nil, err
 	}
@@ -495,10 +475,11 @@ func (uc *ApplyPageRefactorUseCase) buildApplyPlan(in RefactorApplyInput) (*appl
 	// title via a sentinel (wikilink:OldTitle). These are stored as sentinels and
 	// are not found by the prefix-based lookup above.
 	if in.Kind == RefactorKindRename && in.Title != plan.page.Title {
-		// Another published same-title page owns or shares [[OldTitle]] resolution;
-		// including those links would silently rewrite references that do not
-		// exclusively identify this target. Draft duplicates are not candidates.
-		if !hasOtherPublishedTitleMatch(uc.tree, plan.page.Title, plan.page.ID) {
+		// If multiple pages share the old title the sentinel is ambiguous.
+		// ReconcileTitle resolves it automatically after the
+		// rename — including them here would silently rewrite links the user
+		// never approved (preview showed 0 affected pages for this case).
+		if len(uc.tree.FindPagesByTitle(plan.page.Title)) <= 1 {
 			sentinelIDs, err := uc.links.GetRefactorSourcePageIDsForWikiLinkTitle(plan.page.Title)
 			if err != nil {
 				return nil, err
@@ -517,50 +498,51 @@ func (uc *ApplyPageRefactorUseCase) buildApplyPlan(in RefactorApplyInput) (*appl
 	return plan, nil
 }
 
-func sentinelTitleForRefactor(page *tree.Page, in RefactorApplyInput) string {
+// sentinelTitleForRefactor returns the old title whose [[OldTitle]] sentinels a
+// title-changing rename affects, or "" when the refactor keeps the title.
+func sentinelTitleForRefactor(page *tree.Page, in RefactorPreviewInput) string {
 	if in.Kind == RefactorKindRename && in.Title != page.Title {
 		return page.Title
 	}
 	return ""
 }
 
-func hasOtherPublishedTitleMatch(treeService *tree.TreeService, title, targetID string) bool {
-	for _, match := range treeService.SnapshotPagesByTitle(title) {
-		if match.ID == targetID || pagevisibility.IsInDraftSubtree(match) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
 type pathChangeSnapshot struct {
-	PageID  string
-	OldPath string
+	PageID   string
+	OldPath  string
+	Content  string
+	RootPage bool
 }
 
-func captureSnapshots(page *tree.Page) []pathChangeSnapshot {
-	snapshots := make([]pathChangeSnapshot, 0)
-	var collect func(*tree.PageNode)
-	collect = func(node *tree.PageNode) {
-		snapshots = append(snapshots, pathChangeSnapshot{PageID: node.ID, OldPath: node.CalculatePath()})
-		for _, child := range node.Children {
-			collect(child)
-		}
+func (uc *ApplyPageRefactorUseCase) captureSnapshots(page *tree.Page, in RefactorApplyInput) ([]pathChangeSnapshot, error) {
+	ids := collectSubtreeIDs(page.PageNode)
+	if len(ids) == 0 {
+		ids = []string{in.PageID}
 	}
-	collect(page.PageNode)
-	return snapshots
+	pages, errs := uc.tree.GetPages(ids)
+	snapshots := make([]pathChangeSnapshot, 0, len(ids))
+	for i, p := range pages {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		content := p.Content
+		if ids[i] == in.PageID && in.Content != nil {
+			content = *in.Content
+		}
+		snapshots = append(snapshots, pathChangeSnapshot{
+			PageID: p.ID, OldPath: p.CalculatePath(), Content: content, RootPage: ids[i] == in.PageID,
+		})
+	}
+	return snapshots, nil
 }
 
-func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(kind, userID string, affectedPageIDs []string, rules []links.RewriteRule) error {
+func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(userID string, affectedPageIDs []string, rules []links.RewriteRule) error {
 	engine := links.NewMarkdownRefactorEngine()
 	compiledWikiRewrites := links.CompileWikiLinkRewrites(rules)
 
 	uc.log.Debug("rewriting wiki-links in affected pages", "pages", len(affectedPageIDs), "rules", len(rules))
 
-	var pageIDs []string
-	var bulk []tree.BulkContentUpdate
-
+	var rewrites []contentRewrite
 	pagesByID := uc.loadPagesByID(affectedPageIDs, "failed to get page for link rewrite, skipping")
 
 	for _, pageID := range affectedPageIDs {
@@ -574,40 +556,95 @@ func (uc *ApplyPageRefactorUseCase) rewriteAffectedPages(kind, userID string, af
 		if mdResult.Count() == 0 && wikiResult.Count() == 0 || newContent == page.Content {
 			continue
 		}
-		pageIDs = append(pageIDs, page.ID)
-		bulk = append(bulk, contentRewriteUpdate(page, newContent))
+		rewrites = append(rewrites, contentRewrite{page: page, content: newContent})
 	}
 
-	if len(bulk) == 0 {
+	if len(rewrites) == 0 {
 		return nil
 	}
 
-	errs := uc.tree.BulkUpdateContent(userID, bulk)
-	updatedPageIDs := pageIDs[:0]
-	var rewriteErr error
+	updatedPages := uc.persistContentRewrites(userID, rewrites, "failed to rewrite links in page")
 
-	for i, pageID := range pageIDs {
+	if uc.links != nil && len(updatedPages) > 0 {
+		if err := uc.links.UpdateRewrittenLinksAndHealForPages(updatedPages, rules); err != nil {
+			uc.log.Warn(
+				"failed to update link index after rewrite",
+				"pageCount", len(updatedPages),
+				"pageIDSample", samplePageIDs(updatedPages, 5),
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+// contentRewrite is a page whose content a refactor step replaces.
+type contentRewrite struct {
+	page    *tree.Page
+	content string
+}
+
+// persistContentRewrites writes all rewrites in one bulk update and records a
+// content revision for each page that was written. A page whose write fails is
+// logged with writeFailedMsg and left out of the returned pages; callers then
+// update the link index for the returned pages in their own way.
+func (uc *ApplyPageRefactorUseCase) persistContentRewrites(userID string, rewrites []contentRewrite, writeFailedMsg string) []*tree.Page {
+	bulk := make([]tree.BulkContentUpdate, 0, len(rewrites))
+	for _, r := range rewrites {
+		bulk = append(bulk, tree.BulkContentUpdate{ID: r.page.ID, Content: r.content})
+	}
+
+	errs := uc.tree.BulkUpdateContent(userID, bulk)
+	updatedPages := make([]*tree.Page, 0, len(rewrites))
+	for i, r := range rewrites {
 		if errs[i] != nil {
-			uc.log.Warn("failed to rewrite links in page", "pageID", pageID, "error", errs[i])
-			if rewriteErr == nil {
-				rewriteErr = errs[i]
-			}
+			uc.log.Warn(writeFailedMsg, "pageID", r.page.ID, "error", errs[i])
 			continue
 		}
-		updatedPageIDs = append(updatedPageIDs, pageID)
+		updatedPages = append(updatedPages, &tree.Page{
+			PageNode: r.page.PageNode,
+			Content:  r.content,
+		})
 	}
-	stepStarted := time.Now()
-	uc.runPostRewriteEffects(userID, updatedPageIDs)
-	uc.metrics.ObserveRefactorStep(kind, "refresh_affected_links", stepStarted)
-	return rewriteErr
+
+	if uc.revision != nil {
+		revErrs := uc.revision.RecordContentUpdates(updatedPages, userID, "")
+		for i, err := range revErrs {
+			if err != nil {
+				uc.log.Warn("failed to record content revision", "pageID", updatedPages[i].ID, "error", err)
+			}
+		}
+	}
+	return updatedPages
+}
+
+func (uc *ApplyPageRefactorUseCase) refreshAffectedPageLinks(pageIDs []string) error {
+	if uc.links == nil || len(pageIDs) == 0 {
+		return nil
+	}
+
+	pagesByID := uc.loadPagesByID(pageIDs, "failed to get page for link refresh, skipping")
+	currentPages := make([]*tree.Page, 0, len(pageIDs))
+	for _, pageID := range pageIDs {
+		page, ok := pagesByID[pageID]
+		if !ok {
+			continue
+		}
+		currentPages = append(currentPages, page)
+	}
+
+	if len(currentPages) == 0 {
+		return nil
+	}
+
+	return uc.links.UpdateLinksAndHealForPages(currentPages)
 }
 
 func (uc *ApplyPageRefactorUseCase) rewritePathChangedSubtree(userID string, snapshots []pathChangeSnapshot, oldPath, newPath string) error {
 	engine := links.NewMarkdownRefactorEngine()
 	rules := []links.RewriteRule{{OldPath: oldPath, NewPath: newPath}}
 
-	var updatedIDs []string
-	var bulk []tree.BulkContentUpdate
+	var rewrites []contentRewrite
 
 	pageIDs := make([]string, 0, len(snapshots))
 	for _, snap := range snapshots {
@@ -622,7 +659,7 @@ func (uc *ApplyPageRefactorUseCase) rewritePathChangedSubtree(userID string, sna
 		}
 		currentPath := current.CalculatePath()
 		// First, fix relative links whose base path changed because the page moved.
-		relResult := engine.RewriteRelativeLinksForPathChange(current.Content, snap.OldPath, currentPath, rules)
+		relResult := engine.RewriteRelativeLinksForPathChange(snap.Content, snap.OldPath, currentPath, rules)
 		// Then, fix absolute links within the moved subtree (e.g. /old/sub → /new/sub).
 		// RewriteRelativeLinksForPathChange skips absolute links, so they need a
 		// second pass. Using the new current path is safe here: relative links were
@@ -635,57 +672,26 @@ func (uc *ApplyPageRefactorUseCase) rewritePathChangedSubtree(userID string, sna
 		if finalContent == current.Content {
 			continue
 		}
-		updatedIDs = append(updatedIDs, current.ID)
-		bulk = append(bulk, contentRewriteUpdate(current, finalContent))
+		rewrites = append(rewrites, contentRewrite{page: current, content: finalContent})
 	}
 
-	if len(bulk) == 0 {
+	if len(rewrites) == 0 {
 		return nil
 	}
 
-	errs := uc.tree.BulkUpdateContent(userID, bulk)
-	updatedPageIDs := updatedIDs[:0]
-	var rewriteErr error
+	updatedPages := uc.persistContentRewrites(userID, rewrites, "failed to rewrite relative links in subtree page")
 
-	for i, pageID := range updatedIDs {
-		if errs[i] != nil {
-			uc.log.Warn("failed to rewrite relative links in subtree page", "pageID", pageID, "error", errs[i])
-			if rewriteErr == nil {
-				rewriteErr = errs[i]
-			}
-			continue
+	if uc.links != nil && len(updatedPages) > 0 {
+		if err := uc.links.UpdateLinksAndHealForPages(updatedPages); err != nil {
+			uc.log.Warn(
+				"failed to update link index after subtree rewrite",
+				"pageCount", len(updatedPages),
+				"pageIDSample", samplePageIDs(updatedPages, 5),
+				"error", err,
+			)
 		}
-		updatedPageIDs = append(updatedPageIDs, pageID)
 	}
-	uc.runPostRewriteEffects(userID, updatedPageIDs)
-	return rewriteErr
-}
-
-func contentRewriteUpdate(page *tree.Page, content string) tree.BulkContentUpdate {
-	return tree.BulkContentUpdate{
-		ID:              page.ID,
-		Content:         content,
-		ExpectedVersion: page.Version(),
-	}
-}
-
-func (uc *ApplyPageRefactorUseCase) runPostRewriteEffects(userID string, pageIDs []string) {
-	if uc.orchestrator == nil || len(pageIDs) == 0 {
-		return
-	}
-	pagesByID := uc.loadPagesByID(pageIDs, "failed to get rewritten page for post-save effects, skipping")
-	for _, pageID := range pageIDs {
-		page, ok := pagesByID[pageID]
-		if !ok {
-			continue
-		}
-		uc.orchestrator.Run(pagesave.PageSaveEvent{
-			Operation:      pagesave.PageOperationUpdate,
-			UserID:         userID,
-			After:          page,
-			ContentChanged: true,
-		})
-	}
+	return nil
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -724,6 +730,24 @@ func ensureStrings(values []string) []string {
 	return values
 }
 
+func samplePageIDs(pages []*tree.Page, limit int) []string {
+	if limit <= 0 || len(pages) == 0 {
+		return []string{}
+	}
+	if len(pages) < limit {
+		limit = len(pages)
+	}
+
+	ids := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		if pages[i] == nil {
+			continue
+		}
+		ids = append(ids, pages[i].ID)
+	}
+	return ids
+}
+
 func (uc *ApplyPageRefactorUseCase) loadPagesByID(ids []string, warningMessage string) map[string]*tree.Page {
 	if len(ids) == 0 {
 		return map[string]*tree.Page{}
@@ -756,4 +780,9 @@ func collectPreviewWarnings(pages []RefactorAffectedPage) []string {
 	}
 	sort.Strings(warnings)
 	return ensureStrings(warnings)
+}
+
+func kindPage() *tree.NodeKind {
+	k := tree.NodeKindPage
+	return &k
 }

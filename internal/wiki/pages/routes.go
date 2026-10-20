@@ -8,13 +8,11 @@ import (
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/perber/wiki/internal/core/auth"
 	"github.com/perber/wiki/internal/core/markdown"
-	"github.com/perber/wiki/internal/core/pagevisibility"
 	sharederrors "github.com/perber/wiki/internal/core/shared/errors"
 	"github.com/perber/wiki/internal/core/tree"
 	httpinternal "github.com/perber/wiki/internal/http"
 	"github.com/perber/wiki/internal/http/dto"
 	authmw "github.com/perber/wiki/internal/http/middleware/auth"
-	"github.com/perber/wiki/internal/http/middleware/security"
 )
 
 const (
@@ -25,85 +23,72 @@ const (
 
 // Routes is the RouteRegistrar for the pages domain.
 type Routes struct {
-	treeService      *tree.TreeService
-	createPage       *CreatePageUseCase
-	updatePage       *UpdatePageUseCase
-	deletePage       *DeletePageUseCase
-	movePage         *MovePageUseCase
-	convertPage      *ConvertPageUseCase
-	copyPage         *CopyPageUseCase
-	getPage          *GetPageUseCase
-	findByPath       *FindByPathUseCase
-	findByTitle      *FindByTitleUseCase
-	lookupPath       *LookupPagePathUseCase
-	resolvePermalink *ResolvePermalinkUseCase
-	sortPages        *SortPagesUseCase
-	ensurePath       *EnsurePathUseCase
-	suggestSlug      *SuggestSlugUseCase
-	previewRefactor  *PreviewPageRefactorUseCase
-	applyRefactor    *ApplyPageRefactorUseCase
-	pinPage          *PinPageUseCase
-	addFavorite      *AddFavoriteUseCase
-	removeFavorite   *RemoveFavoriteUseCase
-	listFavorites    *ListFavoritesUseCase
-	userResolver     *coreauth.UserResolver
-	authService      *coreauth.AuthService
-	authDisabled     bool
+	treeService     *tree.TreeService
+	createPage      *CreatePageUseCase
+	updatePage      *UpdatePageUseCase
+	deletePage      *DeletePageUseCase
+	movePage        *MovePageUseCase
+	convertPage     *ConvertPageUseCase
+	copyPage        *CopyPageUseCase
+	queries         *PageQueries
+	sortPages       *SortPagesUseCase
+	ensurePath      *EnsurePathUseCase
+	suggestSlug     *SuggestSlugUseCase
+	previewRefactor *PreviewPageRefactorUseCase
+	applyRefactor   *ApplyPageRefactorUseCase
+	pinPage         *PinPageUseCase
+	addFavorite     *AddFavoriteUseCase
+	removeFavorite  *RemoveFavoriteUseCase
+	listFavorites   *ListFavoritesUseCase
+	userResolver    *coreauth.UserResolver
+	authService     *coreauth.AuthService
 }
 
 // RoutesConfig holds the dependencies required to build a Routes instance.
 type RoutesConfig struct {
-	TreeService      *tree.TreeService
-	CreatePage       *CreatePageUseCase
-	UpdatePage       *UpdatePageUseCase
-	DeletePage       *DeletePageUseCase
-	MovePage         *MovePageUseCase
-	ConvertPage      *ConvertPageUseCase
-	CopyPage         *CopyPageUseCase
-	GetPage          *GetPageUseCase
-	FindByPath       *FindByPathUseCase
-	FindByTitle      *FindByTitleUseCase
-	LookupPath       *LookupPagePathUseCase
-	ResolvePermalink *ResolvePermalinkUseCase
-	SortPages        *SortPagesUseCase
-	EnsurePath       *EnsurePathUseCase
-	SuggestSlug      *SuggestSlugUseCase
-	PreviewRefactor  *PreviewPageRefactorUseCase
-	ApplyRefactor    *ApplyPageRefactorUseCase
-	PinPage          *PinPageUseCase
-	AddFavorite      *AddFavoriteUseCase
-	RemoveFavorite   *RemoveFavoriteUseCase
-	ListFavorites    *ListFavoritesUseCase
-	UserResolver     *coreauth.UserResolver
-	AuthService      *coreauth.AuthService
+	TreeService     *tree.TreeService
+	CreatePage      *CreatePageUseCase
+	UpdatePage      *UpdatePageUseCase
+	DeletePage      *DeletePageUseCase
+	MovePage        *MovePageUseCase
+	ConvertPage     *ConvertPageUseCase
+	CopyPage        *CopyPageUseCase
+	Queries         *PageQueries
+	SortPages       *SortPagesUseCase
+	EnsurePath      *EnsurePathUseCase
+	SuggestSlug     *SuggestSlugUseCase
+	PreviewRefactor *PreviewPageRefactorUseCase
+	ApplyRefactor   *ApplyPageRefactorUseCase
+	PinPage         *PinPageUseCase
+	AddFavorite     *AddFavoriteUseCase
+	RemoveFavorite  *RemoveFavoriteUseCase
+	ListFavorites   *ListFavoritesUseCase
+	UserResolver    *coreauth.UserResolver
+	AuthService     *coreauth.AuthService
 }
 
 // NewRoutes constructs the pages RouteRegistrar.
 func NewRoutes(cfg RoutesConfig) *Routes {
 	return &Routes{
-		treeService:      cfg.TreeService,
-		createPage:       cfg.CreatePage,
-		updatePage:       cfg.UpdatePage,
-		deletePage:       cfg.DeletePage,
-		movePage:         cfg.MovePage,
-		convertPage:      cfg.ConvertPage,
-		copyPage:         cfg.CopyPage,
-		getPage:          cfg.GetPage,
-		findByPath:       cfg.FindByPath,
-		findByTitle:      cfg.FindByTitle,
-		lookupPath:       cfg.LookupPath,
-		resolvePermalink: cfg.ResolvePermalink,
-		sortPages:        cfg.SortPages,
-		ensurePath:       cfg.EnsurePath,
-		suggestSlug:      cfg.SuggestSlug,
-		previewRefactor:  cfg.PreviewRefactor,
-		applyRefactor:    cfg.ApplyRefactor,
-		pinPage:          cfg.PinPage,
-		addFavorite:      cfg.AddFavorite,
-		removeFavorite:   cfg.RemoveFavorite,
-		listFavorites:    cfg.ListFavorites,
-		userResolver:     cfg.UserResolver,
-		authService:      cfg.AuthService,
+		treeService:     cfg.TreeService,
+		createPage:      cfg.CreatePage,
+		updatePage:      cfg.UpdatePage,
+		deletePage:      cfg.DeletePage,
+		movePage:        cfg.MovePage,
+		convertPage:     cfg.ConvertPage,
+		copyPage:        cfg.CopyPage,
+		queries:         cfg.Queries,
+		sortPages:       cfg.SortPages,
+		ensurePath:      cfg.EnsurePath,
+		suggestSlug:     cfg.SuggestSlug,
+		previewRefactor: cfg.PreviewRefactor,
+		applyRefactor:   cfg.ApplyRefactor,
+		pinPage:         cfg.PinPage,
+		addFavorite:     cfg.AddFavorite,
+		removeFavorite:  cfg.RemoveFavorite,
+		listFavorites:   cfg.ListFavorites,
+		userResolver:    cfg.UserResolver,
+		authService:     cfg.AuthService,
 	}
 }
 
@@ -111,166 +96,117 @@ func NewRoutes(cfg RoutesConfig) *Routes {
 func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
 	opts := ctx.Opts
 
-	if opts.PublicAccess {
-		pub := ctx.Base.Group("/api")
-		if !opts.AuthDisabled {
-			pub.Use(authmw.OptionalAuth(r.authService, ctx.AuthCookies))
-		}
-		pub.GET("/tree", r.handleGetTree)
-		pub.GET("/pages/by-path", r.handleGetByPath)
-		pub.GET("/pages/by-title", r.handleFindByTitle)
-		pub.GET("/pages/lookup", r.handleLookupPath)
-		pub.GET("/pages/permalink/:id", r.handleResolvePermalink)
-		pub.GET(pagesIdRoutePath, r.handleGetPage)
-	}
-	r.authDisabled = opts.AuthDisabled
+	// Read routes registered once, gated per request so they can flip between
+	// authenticated-only and public without a restart (see APIReadGroup).
+	readGroup := ctx.APIReadGroup(r.authService)
+	readGroup.GET("/tree", r.handleGetTree)
+	readGroup.GET(pagesIdRoutePath, r.handleGetPage)
+	readGroup.GET("/pages/lookup", r.handleLookupPath)
+	readGroup.GET("/pages/by-path", r.handleGetByPath)
+	readGroup.GET("/pages/by-title", r.handleFindByTitle)
+	readGroup.GET("/pages/permalink/:id", r.handleResolvePermalink)
 
-	authGroup := ctx.Base.Group("/api")
-	authGroup.Use(
-		authmw.InjectPublicEditor(opts.AuthDisabled),
-		authmw.RequireAuth(r.authService, ctx.AuthCookies, opts.AuthDisabled),
-		security.CSRFMiddleware(ctx.CSRFCookie),
-	)
-
-	if !opts.PublicAccess {
-		authGroup.GET("/tree", r.handleGetTree)
-		authGroup.GET(pagesIdRoutePath, r.handleGetPage)
-		authGroup.GET("/pages/lookup", r.handleLookupPath)
-		authGroup.GET("/pages/by-path", r.handleGetByPath)
-		authGroup.GET("/pages/by-title", r.handleFindByTitle)
-		authGroup.GET("/pages/permalink/:id", r.handleResolvePermalink)
-	}
+	// Everything below needs a real authenticated user regardless of public
+	// mode (writes, editor-gated reads, per-user favorites).
+	authGroup := ctx.APIAuthGroup(r.authService)
 
 	authGroup.GET("/pages/slug-suggestion", authmw.RequireEditorOrAdmin(), r.handleSuggestSlug)
 	authGroup.POST("/pages", authmw.RequireEditorOrAdmin(), r.handleCreate)
 	authGroup.PUT(pagesIdRoutePath, authmw.RequireEditorOrAdmin(), r.handleUpdate)
-	authGroup.PUT("/pages/:id/draft", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleSetDraft)
-	authGroup.DELETE(pagesIdRoutePath, authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleDelete)
+	authGroup.DELETE(pagesIdRoutePath, authmw.RequireEditorOrAdmin(), r.handleDelete)
 	authGroup.PUT("/pages/:id/move", authmw.RequireEditorOrAdmin(), r.handleMove)
 	authGroup.PUT("/pages/:id/sort", authmw.RequireEditorOrAdmin(), r.handleSort)
-	authGroup.PUT("/pages/:id/pin", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handlePin)
+	authGroup.PUT("/pages/:id/pin", authmw.RequireEditorOrAdmin(), r.handlePin)
 	// Favorites are a personal bookmark, not an editorial action — any
 	// authenticated user (already enforced by authGroup) may set their own.
 	authGroup.PUT("/pages/:id/favorite", r.handleAddFavorite)
 	authGroup.DELETE("/pages/:id/favorite", r.handleRemoveFavorite)
 	authGroup.GET("/favorites", r.handleListFavorites)
 	authGroup.POST("/pages/ensure", authmw.RequireEditorOrAdmin(), r.handleEnsurePath)
-	authGroup.POST("/pages/convert/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleConvert)
-	authGroup.POST("/pages/copy/:id", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleCopy)
+	authGroup.POST("/pages/convert/:id", authmw.RequireEditorOrAdmin(), r.handleConvert)
+	authGroup.POST("/pages/copy/:id", authmw.RequireEditorOrAdmin(), r.handleCopy)
 	if opts.EnableLinkRefactor {
-		authGroup.POST("/pages/:id/refactor/preview", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleRefactorPreview)
-		authGroup.POST("/pages/:id/refactor/apply", authmw.RequireEditorOrAdmin(), r.requireVisiblePage(), r.handleRefactorApply)
+		authGroup.POST("/pages/:id/refactor/preview", authmw.RequireEditorOrAdmin(), r.handleRefactorPreview)
+		authGroup.POST("/pages/:id/refactor/apply", authmw.RequireEditorOrAdmin(), r.handleRefactorApply)
 	}
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
 func (r *Routes) handleGetTree(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
-	root := pagevisibility.Prune(r.treeService.SnapshotTree(), authmw.TryGetUser(c), r.authDisabled)
-	depth := -1
-	if depthStr := strings.TrimSpace(c.Query("depth")); depthStr != "" {
-		if parsed, err := strconv.Atoi(depthStr); err == nil {
-			depth = parsed
-		}
+	root := r.treeService.GetTree()
+	depthStr := strings.TrimSpace(c.Query("depth"))
+	if depthStr == "" {
+		c.JSON(http.StatusOK, dto.ToAPINode(root, "", r.userResolver))
+		return
+	}
+	depth, err := strconv.Atoi(depthStr)
+	if err != nil {
+		depth = -1
 	}
 	c.JSON(http.StatusOK, dto.ToAPINodeWithDepth(root, "", r.userResolver, depth))
 }
 
 func (r *Routes) handleGetPage(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	id := strings.TrimSpace(c.Param("id"))
-	out, err := r.getPage.Execute(c.Request.Context(), GetPageInput{ID: id})
+	page, err := r.queries.GetPage(id)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	if !pagevisibility.CanView(out.Page.PageNode, authmw.TryGetUser(c), r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	r.respondPage(c, http.StatusOK, out.Page)
+	r.respondPage(c, http.StatusOK, page)
 }
 
 func (r *Routes) handleGetByPath(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	routePath := strings.TrimSpace(c.Query("path"))
 	if routePath == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingPath, "Missing path", "missing path")
 		return
 	}
-	out, err := r.findByPath.Execute(c.Request.Context(), FindByPathInput{RoutePath: routePath})
+	page, err := r.queries.FindByPath(routePath)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	if !pagevisibility.CanView(out.Page.PageNode, authmw.TryGetUser(c), r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
 	depth := 0
-	if out.Page.Kind == tree.NodeKindSection {
+	if page.Kind == tree.NodeKindSection {
 		depth = 1
 	}
-	r.respondPageWithDepth(c, http.StatusOK, out.Page, depth)
+	r.respondPageWithDepth(c, http.StatusOK, page, depth)
 }
 
 func (r *Routes) handleFindByTitle(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	title := strings.TrimSpace(c.Query("title"))
 	if title == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingTitle, "Missing title query parameter", "missing title")
 		return
 	}
-	out := r.findByTitle.Execute(c.Request.Context(), title)
-	visible := out.Matches[:0]
-	for _, match := range out.Matches {
-		if pagevisibility.CanView(match.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
-			visible = append(visible, match)
-		}
-	}
-	out.Matches = visible
-	out.Count = len(visible)
+	out := r.queries.FindByTitle(title)
 	c.JSON(http.StatusOK, out)
 }
 
 func (r *Routes) handleLookupPath(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	path := strings.TrimSpace(c.Query("path"))
-	out, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: path})
+	lookup, err := r.queries.LookupPath(path)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	for _, segment := range out.Lookup.Segments {
-		if segment.ID == nil {
-			continue
-		}
-		if !pagevisibility.CanView(segment.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
-			respondWithPageError(c, tree.ErrPageNotFound)
-			return
-		}
-	}
-	c.JSON(http.StatusOK, out.Lookup)
+	c.JSON(http.StatusOK, lookup)
 }
 
 func (r *Routes) handleResolvePermalink(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingID, "Page ID is required", "page id is required")
 		return
 	}
-	out, err := r.resolvePermalink.Execute(c.Request.Context(), ResolvePermalinkInput{ID: id})
+	target, err := r.queries.ResolvePermalink(id)
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
-	if !pagevisibility.CanView(out.Target.VisibilityNode, authmw.TryGetUser(c), r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	c.JSON(http.StatusOK, out.Target)
+	c.JSON(http.StatusOK, target)
 }
 
 func (r *Routes) handleSuggestSlug(c *gin.Context) {
@@ -278,11 +214,6 @@ func (r *Routes) handleSuggestSlug(c *gin.Context) {
 	if title == "" {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageMissingTitle, "Title query param is required", "title query param is required")
 		return
-	}
-	for _, id := range []string{strings.TrimSpace(c.Query("parentId")), strings.TrimSpace(c.Query("currentId"))} {
-		if id != "" && id != "root" && !r.requireVisibleNode(c, id) {
-			return
-		}
 	}
 	out, err := r.suggestSlug.Execute(c.Request.Context(), SuggestSlugInput{
 		ParentID:  strings.TrimSpace(c.Query("parentId")),
@@ -302,7 +233,6 @@ func (r *Routes) handleCreate(c *gin.Context) {
 		Title    string  `json:"title" binding:"required"`
 		Slug     string  `json:"slug" binding:"required"`
 		Kind     *string `json:"kind"`
-		Draft    bool    `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -312,48 +242,15 @@ func (r *Routes) handleCreate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.Draft && r.authDisabled {
-		respondWithDraftUnavailable(c)
-		return
-	}
-	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
-		return
-	}
 	kind := kindFromString(req.Kind)
 	out, err := r.createPage.Execute(c.Request.Context(), CreatePageInput{
-		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind, Draft: req.Draft,
-		DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
+		UserID: user.ID, ParentID: req.ParentID, Title: req.Title, Slug: req.Slug, Kind: &kind,
 	})
 	if err != nil {
 		respondWithPageError(c, err)
 		return
 	}
 	r.respondPage(c, http.StatusCreated, out.Page)
-}
-
-func (r *Routes) handleSetDraft(c *gin.Context) {
-	id := strings.TrimSpace(c.Param("id"))
-	var req struct {
-		Version string `json:"version" binding:"required"`
-		Draft   *bool  `json:"draft" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
-		return
-	}
-	user := authmw.MustGetUser(c)
-	if user == nil {
-		return
-	}
-	out, err := r.updatePage.Execute(c.Request.Context(), UpdatePageInput{
-		UserID: user.ID, ID: id, Version: req.Version,
-		Draft: req.Draft, DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
-	})
-	if err != nil {
-		respondWithPageError(c, err)
-		return
-	}
-	r.respondPage(c, http.StatusOK, out.Page)
 }
 
 func (r *Routes) handleUpdate(c *gin.Context) {
@@ -365,7 +262,6 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		Content    *string           `json:"content"`
 		Tags       []string          `json:"tags"`
 		Properties map[string]string `json:"properties"`
-		Draft      *bool             `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -379,20 +275,6 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	node, err := r.treeService.SnapshotPageSubtree(id)
-	if err != nil || !pagevisibility.CanView(node, user, r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	draftChanging := req.Draft != nil && *req.Draft != node.Draft
-	if req.Slug != node.Slug && !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	if draftChanging && !pagevisibility.CanManageDraft(node, user, r.authDisabled) {
-		respondWithDraftUnavailable(c)
-		return
-	}
 
 	// Normalize tags to lowercase so the on-disk file is always consistent with
 	// what the search index stores. Preserve nil so callers can distinguish
@@ -402,11 +284,11 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 		normalizedTags = normalizeTagInputs(req.Tags)
 	}
 
+	kind := tree.NodeKindPage
 	out, err := r.updatePage.Execute(c.Request.Context(), UpdatePageInput{
 		UserID: user.ID, ID: id, Version: req.Version, Title: req.Title, Slug: req.Slug,
-		Content: req.Content,
-		Tags:    normalizedTags, Properties: req.Properties,
-		Draft: req.Draft, DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
+		Content: req.Content, Kind: &kind,
+		Tags: normalizedTags, Properties: req.Properties,
 	})
 	if err != nil {
 		respondWithPageError(c, err)
@@ -415,57 +297,12 @@ func (r *Routes) handleUpdate(c *gin.Context) {
 	r.respondPage(c, http.StatusOK, out.Page)
 }
 
-func (r *Routes) canView(c *gin.Context, id string) bool {
-	node, err := r.treeService.SnapshotPageNode(id)
-	return err == nil && pagevisibility.CanView(node, authmw.TryGetUser(c), r.authDisabled)
-}
-
-func (r *Routes) setVisibilityCacheHeader(c *gin.Context) {
-	if !r.authDisabled {
-		c.Header("Cache-Control", "private, no-store")
-	}
-}
-
-func (r *Routes) requireVisibleSubtree(c *gin.Context, id string) bool {
-	node, err := r.treeService.SnapshotPageSubtree(id)
-	if err != nil || !pagevisibility.CanViewSubtree(node, authmw.TryGetUser(c), r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return false
-	}
-	return true
-}
-
-func (r *Routes) requireVisibleNode(c *gin.Context, id string) bool {
-	if !r.canView(c, id) {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return false
-	}
-	return true
-}
-
-func (r *Routes) requireVisiblePage() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if !r.requireVisibleNode(c, strings.TrimSpace(c.Param("id"))) {
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
-func (r *Routes) requireVisibleID(c *gin.Context, id string) bool {
-	return r.requireVisibleNode(c, id)
-}
-
 func (r *Routes) handleDelete(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	recursive := c.DefaultQuery("recursive", "false") == "true"
 	version := c.Query("version")
 	user := authmw.MustGetUser(c)
 	if user == nil {
-		return
-	}
-	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.deletePage.Execute(c.Request.Context(), DeletePageInput{
@@ -492,9 +329,6 @@ func (r *Routes) handleMove(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if !r.requireVisibleSubtree(c, id) || req.ParentID != "" && req.ParentID != "root" && !r.requireVisibleSubtree(c, req.ParentID) {
-		return
-	}
 	if err := r.movePage.Execute(c.Request.Context(), MovePageInput{
 		UserID: user.ID, ID: id, Version: req.Version, ParentID: req.ParentID, Position: req.Position,
 	}); err != nil {
@@ -513,14 +347,6 @@ func (r *Routes) handleSort(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if parentID != "" && parentID != "root" && !r.requireVisibleSubtree(c, parentID) {
-		return
-	}
-	for _, id := range req.OrderedIDs {
-		if !r.requireVisibleNode(c, id) {
-			return
-		}
-	}
 	if err := r.sortPages.Execute(c.Request.Context(), SortPagesInput{
 		ParentID: parentID, OrderedIDs: req.OrderedIDs,
 	}); err != nil {
@@ -538,9 +364,6 @@ func (r *Routes) handlePin(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
-		return
-	}
-	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	out, err := r.pinPage.Execute(c.Request.Context(), PinPageInput{
@@ -562,7 +385,7 @@ func (r *Routes) handleAddFavorite(c *gin.Context) {
 		return
 	}
 	if err := r.addFavorite.Execute(c.Request.Context(), AddFavoriteInput{
-		UserID: user.ID, PageID: id, User: user, AuthDisabled: r.authDisabled,
+		UserID: user.ID, PageID: id,
 	}); err != nil {
 		respondWithPageError(c, err)
 		return
@@ -586,14 +409,11 @@ func (r *Routes) handleRemoveFavorite(c *gin.Context) {
 }
 
 func (r *Routes) handleListFavorites(c *gin.Context) {
-	r.setVisibilityCacheHeader(c)
 	user := authmw.MustGetUser(c)
 	if user == nil {
 		return
 	}
-	out, err := r.listFavorites.Execute(c.Request.Context(), ListFavoritesInput{
-		UserID: user.ID, User: user, AuthDisabled: r.authDisabled,
-	})
+	out, err := r.listFavorites.Execute(c.Request.Context(), ListFavoritesInput{UserID: user.ID})
 	if err != nil {
 		respondWithPageError(c, err)
 		return
@@ -601,7 +421,7 @@ func (r *Routes) handleListFavorites(c *gin.Context) {
 	apiPages := make([]*dto.Page, 0, len(out.Pages))
 	for _, p := range out.Pages {
 		apiPage := dto.ToAPIPage(p, r.userResolver)
-		r.enrichPageMetadata(apiPage, p.RawContent)
+		r.enrichPageMetadata(apiPage)
 		apiPages = append(apiPages, apiPage)
 	}
 	c.JSON(http.StatusOK, gin.H{"pages": apiPages})
@@ -612,7 +432,6 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 		Path  string  `json:"path" binding:"required"`
 		Title string  `json:"title" binding:"required"`
 		Kind  *string `json:"kind"`
-		Draft bool    `json:"draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
@@ -622,35 +441,12 @@ func (r *Routes) handleEnsurePath(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.Draft && r.authDisabled {
-		respondWithDraftUnavailable(c)
-		return
-	}
-	lookup, err := r.lookupPath.Execute(c.Request.Context(), LookupPagePathInput{Path: req.Path})
-	if err != nil {
-		respondWithPageError(c, err)
-		return
-	}
-	for _, segment := range lookup.Lookup.Segments {
-		if segment.ID == nil {
-			continue
-		}
-		if !r.canView(c, *segment.ID) {
-			respondWithPageError(c, tree.ErrPageNotFound)
-			return
-		}
-	}
 	kind := kindFromString(req.Kind)
 	out, err := r.ensurePath.Execute(c.Request.Context(), EnsurePathInput{
-		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind, Draft: req.Draft,
+		UserID: user.ID, TargetPath: req.Path, TargetTitle: req.Title, Kind: &kind,
 	})
 	if err != nil {
 		respondWithPageError(c, err)
-		return
-	}
-	node, err := r.treeService.SnapshotPageSubtree(out.Page.ID)
-	if err != nil || !pagevisibility.CanViewSubtree(node, user, r.authDisabled) {
-		respondWithPageError(c, tree.ErrPageNotFound)
 		return
 	}
 	r.respondPage(c, http.StatusOK, out.Page)
@@ -672,9 +468,6 @@ func (r *Routes) handleConvert(c *gin.Context) {
 	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
-		return
-	}
-	if !r.requireVisibleSubtree(c, id) {
 		return
 	}
 	if err := r.convertPage.Execute(c.Request.Context(), ConvertPageInput{
@@ -701,9 +494,6 @@ func (r *Routes) handleCopy(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	if req.ParentID != nil && *req.ParentID != "" && *req.ParentID != "root" && !r.requireVisibleSubtree(c, *req.ParentID) {
-		return
-	}
 	out, err := r.copyPage.Execute(c.Request.Context(), CopyPageInput{
 		UserID: user.ID, SourcePageID: sourceID, TargetParentID: req.ParentID,
 		Title: req.Title, Slug: req.Slug,
@@ -728,9 +518,6 @@ func (r *Routes) handleRefactorPreview(c *gin.Context) {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
 		return
 	}
-	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
-		return
-	}
 	out, err := r.previewRefactor.Execute(c.Request.Context(), RefactorPreviewInput{
 		PageID: id, Kind: req.Kind, Title: req.Title, Slug: req.Slug,
 		Content: req.Content, NewParentID: req.NewParentID,
@@ -745,48 +532,26 @@ func (r *Routes) handleRefactorPreview(c *gin.Context) {
 func (r *Routes) handleRefactorApply(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	var req struct {
-		Version      string            `json:"version" binding:"required"`
-		Kind         string            `json:"kind" binding:"required"`
-		Title        string            `json:"title"`
-		Slug         string            `json:"slug"`
-		Content      *string           `json:"content"`
-		Tags         []string          `json:"tags"`
-		Properties   map[string]string `json:"properties"`
-		Draft        *bool             `json:"draft"`
-		NewParentID  *string           `json:"parentId"`
-		RewriteLinks bool              `json:"rewriteLinks"`
-		Position     *int              `json:"position"`
+		Version      string  `json:"version" binding:"required"`
+		Kind         string  `json:"kind" binding:"required"`
+		Title        string  `json:"title"`
+		Slug         string  `json:"slug"`
+		Content      *string `json:"content"`
+		NewParentID  *string `json:"parentId"`
+		RewriteLinks bool    `json:"rewriteLinks"`
+		Position     *int    `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondWithPageStatusError(c, http.StatusBadRequest, ErrCodePageInvalidRequest, errInvalidRequestUserMsg, errInvalidRequestLogMsg)
-		return
-	}
-	if req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleID(c, *req.NewParentID) {
 		return
 	}
 	user := authmw.MustGetUser(c)
 	if user == nil {
 		return
 	}
-	if err := validatePageMetadataInput(req.Tags, req.Properties); err != nil {
-		respondWithPageError(c, err)
-		return
-	}
-	if !r.requireVisibleSubtree(c, id) || req.NewParentID != nil && *req.NewParentID != "" && *req.NewParentID != "root" && !r.requireVisibleSubtree(c, *req.NewParentID) {
-		return
-	}
-	if req.Draft != nil && *req.Draft && r.authDisabled {
-		respondWithDraftUnavailable(c)
-		return
-	}
-	normalizedTags := req.Tags
-	if req.Tags != nil {
-		normalizedTags = normalizeTagInputs(req.Tags)
-	}
 	page, err := r.applyRefactor.Execute(c.Request.Context(), RefactorApplyInput{
-		Version: req.Version, UserID: user.ID,
-		Tags: normalizedTags, Properties: req.Properties, Draft: req.Draft,
-		DraftAllowed: pagevisibility.CanViewDrafts(user, r.authDisabled),
+		Version: req.Version,
+		UserID:  user.ID,
 		RefactorPreviewInput: RefactorPreviewInput{
 			PageID: id, Kind: req.Kind, Title: req.Title, Slug: req.Slug,
 			Content: req.Content, NewParentID: req.NewParentID,
@@ -802,28 +567,29 @@ func (r *Routes) handleRefactorApply(c *gin.Context) {
 }
 
 func (r *Routes) respondPage(c *gin.Context, status int, page *tree.Page) {
-	r.respondPageWithDepth(c, status, page, -1)
-}
-
-func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
-	visible := *page
-	visible.PageNode = pagevisibility.Prune(page.PageNode, authmw.TryGetUser(c), r.authDisabled)
-	if visible.PageNode == nil {
-		respondWithPageError(c, tree.ErrPageNotFound)
-		return
-	}
-	apiPage := dto.ToAPIPageWithDepth(&visible, r.userResolver, depth)
-	r.enrichPageMetadata(apiPage, visible.RawContent)
+	apiPage := dto.ToAPIPage(page, r.userResolver)
+	r.enrichPageMetadata(apiPage)
 	c.JSON(status, apiPage)
 }
 
-func (r *Routes) enrichPageMetadata(page *dto.Page, raw string) {
+func (r *Routes) respondPageWithDepth(c *gin.Context, status int, page *tree.Page, depth int) {
+	apiPage := dto.ToAPIPageWithDepth(page, r.userResolver, depth)
+	r.enrichPageMetadata(apiPage)
+	c.JSON(status, apiPage)
+}
+
+func (r *Routes) enrichPageMetadata(page *dto.Page) {
 	if page == nil {
 		return
 	}
 
 	page.Tags = []string{}
 	page.Properties = map[string]string{}
+
+	raw, err := r.treeService.ReadPageRaw(page.ID)
+	if err != nil {
+		return
+	}
 
 	fm, _, has, err := markdown.ParseFrontmatter(raw)
 	if err != nil || !has || len(fm.ExtraFields) == 0 {

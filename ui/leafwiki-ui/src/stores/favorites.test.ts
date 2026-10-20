@@ -36,7 +36,7 @@ describe('useFavoritesStore', () => {
       makePage('page-2'),
     ])
 
-    await useFavoritesStore.getState().loadFavorites('user-a')
+    await useFavoritesStore.getState().loadFavorites()
 
     expect(useFavoritesStore.getState().favoritePageIds).toEqual(
       new Set(['page-1', 'page-2']),
@@ -50,30 +50,9 @@ describe('useFavoritesStore', () => {
     )
 
     await expect(
-      useFavoritesStore.getState().loadFavorites('user-a'),
+      useFavoritesStore.getState().loadFavorites(),
     ).resolves.toBeUndefined()
     expect(useFavoritesStore.getState().favoritePageIds.size).toBe(0)
-  })
-
-  it('a stale load cannot overwrite favorites after the user changes', async () => {
-    let resolveFirst: (pages: Page[]) => void = () => {}
-    vi.mocked(favoritesAPI.getFavorites)
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveFirst = resolve
-        }),
-      )
-      .mockResolvedValueOnce([makePage('user-b-page')])
-
-    const firstLoad = useFavoritesStore.getState().loadFavorites('user-a')
-    useFavoritesStore.getState().clearFavorites()
-    await useFavoritesStore.getState().loadFavorites('user-b')
-    resolveFirst([makePage('user-a-page')])
-    await firstLoad
-
-    expect(useFavoritesStore.getState().favoritePageIds).toEqual(
-      new Set(['user-b-page']),
-    )
   })
 
   it('addFavorite optimistically adds the page id before the API resolves', async () => {
@@ -107,26 +86,6 @@ describe('useFavoritesStore', () => {
     )
   })
 
-  it('a failed add does not erase a concurrent successful favorite', async () => {
-    let rejectFirst: (error: Error) => void = () => {}
-    vi.mocked(favoritesAPI.addFavorite)
-      .mockReturnValueOnce(
-        new Promise((_, reject) => {
-          rejectFirst = reject
-        }),
-      )
-      .mockResolvedValueOnce(undefined)
-
-    const failed = useFavoritesStore.getState().addFavorite('page-1')
-    await useFavoritesStore.getState().addFavorite('page-2')
-    rejectFirst(new Error('boom'))
-    await expect(failed).rejects.toThrow('boom')
-
-    expect(useFavoritesStore.getState().favoritePageIds).toEqual(
-      new Set(['page-2']),
-    )
-  })
-
   it('removeFavorite optimistically removes the page id before the API resolves', async () => {
     useFavoritesStore.setState({ favoritePageIds: new Set(['page-1']) })
     let resolveRemove: () => void = () => {}
@@ -157,29 +116,6 @@ describe('useFavoritesStore', () => {
     ).rejects.toThrow('boom')
     expect(useFavoritesStore.getState().favoritePageIds.has('page-1')).toBe(
       true,
-    )
-  })
-
-  it('a failed remove does not restore another concurrently removed favorite', async () => {
-    useFavoritesStore.setState({
-      favoritePageIds: new Set(['page-1', 'page-2']),
-    })
-    let rejectFirst: (error: Error) => void = () => {}
-    vi.mocked(favoritesAPI.removeFavorite)
-      .mockReturnValueOnce(
-        new Promise((_, reject) => {
-          rejectFirst = reject
-        }),
-      )
-      .mockResolvedValueOnce(undefined)
-
-    const failed = useFavoritesStore.getState().removeFavorite('page-1')
-    await useFavoritesStore.getState().removeFavorite('page-2')
-    rejectFirst(new Error('boom'))
-    await expect(failed).rejects.toThrow('boom')
-
-    expect(useFavoritesStore.getState().favoritePageIds).toEqual(
-      new Set(['page-1']),
     )
   })
 

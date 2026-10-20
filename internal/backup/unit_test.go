@@ -1,125 +1,19 @@
 package backup
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	gogit "github.com/go-git/go-git/v5"
 )
-
-// --- hasFiles ---
-
-func TestHasFiles_EmptyDir(t *testing.T) {
-	dir := t.TempDir()
-	got, err := hasFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Error("expected false for empty dir")
-	}
-}
-
-func TestHasFiles_DirWithFile(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "file.md", "content")
-	got, err := hasFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !got {
-		t.Error("expected true for dir with file")
-	}
-}
-
-func TestHasFiles_OnlyEmptySubdirs(t *testing.T) {
-	dir := t.TempDir()
-	mkdirAll(t, dir, "sub/nested")
-	got, err := hasFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Error("expected false for dir with only empty subdirs")
-	}
-}
-
-func TestHasFiles_FileInSubdir(t *testing.T) {
-	dir := t.TempDir()
-	mkdirAll(t, dir, "sub")
-	writeFile(t, dir, "sub/deep.md", "content")
-	got, err := hasFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !got {
-		t.Error("expected true for file in subdirectory")
-	}
-}
-
-func TestHasFiles_NonExistentDir(t *testing.T) {
-	_, err := hasFiles("/nonexistent/path/that/does/not/exist")
-	if err == nil {
-		t.Error("expected error for non-existent directory")
-	}
-}
-
-// --- hasStagedChanges ---
-
-func TestHasStagedChanges_EmptyStatus(t *testing.T) {
-	if hasStagedChanges(gogit.Status{}) {
-		t.Error("expected false for empty status")
-	}
-}
-
-func TestHasStagedChanges_OnlyUntracked(t *testing.T) {
-	s := gogit.Status{
-		"outside.txt": &gogit.FileStatus{Staging: gogit.Untracked, Worktree: gogit.Untracked},
-	}
-	if hasStagedChanges(s) {
-		t.Error("expected false: untracked files must not trigger a commit")
-	}
-}
-
-func TestHasStagedChanges_Added(t *testing.T) {
-	s := gogit.Status{"new.md": &gogit.FileStatus{Staging: gogit.Added}}
-	if !hasStagedChanges(s) {
-		t.Error("expected true for Added file")
-	}
-}
-
-func TestHasStagedChanges_Modified(t *testing.T) {
-	s := gogit.Status{"page.md": &gogit.FileStatus{Staging: gogit.Modified}}
-	if !hasStagedChanges(s) {
-		t.Error("expected true for Modified file")
-	}
-}
-
-func TestHasStagedChanges_Deleted(t *testing.T) {
-	s := gogit.Status{"gone.md": &gogit.FileStatus{Staging: gogit.Deleted}}
-	if !hasStagedChanges(s) {
-		t.Error("expected true for Deleted file")
-	}
-}
-
-func TestHasStagedChanges_MixUntrackedAndModified(t *testing.T) {
-	s := gogit.Status{
-		"outside.txt": &gogit.FileStatus{Staging: gogit.Untracked},
-		"page.md":     &gogit.FileStatus{Staging: gogit.Modified},
-	}
-	if !hasStagedChanges(s) {
-		t.Error("expected true: modified file alongside untracked")
-	}
-}
 
 // --- Status ---
 
 func TestStatus_SetSuccessClearsAllFields(t *testing.T) {
 	s := &Status{}
-	s.SetNeedsIntervention("conflict details")
+	s.SetNeedsIntervention(ConflictKindDiverged, "conflict details")
 	s.SetSuccess(time.Now())
 
 	snap := s.Snapshot()
@@ -139,7 +33,7 @@ func TestStatus_SetSuccessClearsAllFields(t *testing.T) {
 
 func TestStatus_SetNeedsInterventionSetsAllFields(t *testing.T) {
 	s := &Status{}
-	s.SetNeedsIntervention("some conflict")
+	s.SetNeedsIntervention(ConflictKindFileConflict, "some conflict")
 
 	snap := s.Snapshot()
 	if !snap.NeedsIntervention {
@@ -150,6 +44,36 @@ func TestStatus_SetNeedsInterventionSetsAllFields(t *testing.T) {
 	}
 	if snap.LastError != "some conflict" {
 		t.Errorf("expected LastError %q, got %q", "some conflict", snap.LastError)
+	}
+}
+
+func TestStatus_ConflictKind(t *testing.T) {
+	resets := []struct {
+		name  string
+		reset func(*Status)
+	}{
+		{"SetSuccess", func(s *Status) { s.SetSuccess(time.Now()) }},
+		{"SetError", func(s *Status) { s.SetError("network down") }},
+		{"ClearIntervention", func(s *Status) { s.ClearIntervention() }},
+	}
+	for _, kind := range []ConflictKind{ConflictKindDiverged, ConflictKindFileConflict} {
+		t.Run(string(kind)+"/set", func(t *testing.T) {
+			s := &Status{}
+			s.SetNeedsIntervention(kind, "details")
+			if got := s.Snapshot().ConflictKind; got != kind {
+				t.Errorf("ConflictKind = %q, want %q", got, kind)
+			}
+		})
+		for _, r := range resets {
+			t.Run(string(kind)+"/"+r.name+" resets", func(t *testing.T) {
+				s := &Status{}
+				s.SetNeedsIntervention(kind, "details")
+				r.reset(s)
+				if got := s.Snapshot().ConflictKind; got != "" {
+					t.Errorf("ConflictKind = %q after %s, want empty", got, r.name)
+				}
+			})
+		}
 	}
 }
 
@@ -178,22 +102,72 @@ func TestStatus_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// --- helpers ---
-
-func writeFile(t *testing.T, base, rel, content string) {
-	t.Helper()
-	p := filepath.Join(base, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-		t.Fatalf("writeFile MkdirAll %s: %v", rel, err)
+func TestFileConflictMessage_CapsListedPaths(t *testing.T) {
+	paths := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("root/p%02d.md", i)
+		}
+		return out
 	}
-	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
-		t.Fatalf("writeFile %s: %v", rel, err)
+	tests := []struct {
+		name     string
+		paths    []string
+		wantMore string // "" means no "and N more" suffix
+		lastShow string
+		hidden   string
+	}{
+		{"one path", paths(1), "", `"root/p00.md"`, ""},
+		{"exactly the cap", paths(10), "", `"root/p09.md"`, ""},
+		{"one over the cap", paths(11), " and 1 more", `"root/p09.md"`, "root/p10.md"},
+		{"many over the cap", paths(25), " and 15 more", `"root/p09.md"`, "root/p24.md"},
+		{"unicode and spaces", []string{"root/Über uns/ä ö.md"}, "", `"root/Über uns/ä ö.md"`, ""},
+		{"comma in name", []string{"root/a, b.md"}, "", `"root/a, b.md"`, ""},
+		{"control character", []string{"root/a\nb.md"}, "", `"root/a\nb.md"`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := fileConflictMessage(tt.paths)
+			if !strings.Contains(msg, tt.lastShow) {
+				t.Errorf("message %q does not name %q", msg, tt.lastShow)
+			}
+			if tt.hidden != "" && strings.Contains(msg, tt.hidden) {
+				t.Errorf("message %q names %q beyond the cap", msg, tt.hidden)
+			}
+			if tt.wantMore == "" {
+				if strings.Contains(msg, " more") {
+					t.Errorf("message %q has an unexpected 'more' suffix", msg)
+				}
+			} else if !strings.Contains(msg, tt.lastShow+tt.wantMore+";") {
+				t.Errorf("message %q, want %q right after the last listed path", msg, tt.wantMore)
+			}
+		})
 	}
 }
 
-func mkdirAll(t *testing.T, base, rel string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Join(base, filepath.FromSlash(rel)), 0755); err != nil {
-		t.Fatalf("mkdirAll %s: %v", rel, err)
+func TestStatusSnapshot_ConflictKindJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		kind ConflictKind
+		want string // "" means the field must be omitted
+	}{
+		{"diverged", ConflictKindDiverged, `"conflictKind":"diverged"`},
+		{"fileConflict", ConflictKindFileConflict, `"conflictKind":"fileConflict"`},
+		{"cleared", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(StatusSnapshot{NeedsIntervention: tt.kind != "", ConflictKind: tt.kind})
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			got := string(b)
+			if tt.want == "" && strings.Contains(got, "conflictKind") {
+				t.Errorf("JSON %s, want conflictKind omitted", got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("JSON %s, want it to contain %s", got, tt.want)
+			}
+		})
 	}
 }
